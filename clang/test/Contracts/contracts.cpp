@@ -1,11 +1,4 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected -verify-ignore-unexpected=warning %s -fcontracts
-// XFAIL: *
-// Result-name / non-static data-member name lookup bug: in
-// result_name_scope_test, a result name 'r' used in a function body (where it
-// is out of scope) is resolved to an unrelated struct's data member 'r' and
-// diagnosed as "invalid use of non-static data member" instead of "use of
-// undeclared identifier". Deferred base-facility bug (distinct from the
-// constification cluster); see final-passes/clang-review-ledger.md.
 
 
 void test_pre_parse(int x) pre(x != 0);
@@ -31,7 +24,7 @@ struct A {
     post(x : x != 0); // expected-error {{declaration of result name 'x' shadows parameter}}
   void test_this_access() post(r != 0);
 
-  int r;
+  int r; // expected-note {{'A::r' declared here}}
 };
 
 int test_return_parse(const int x) post(r : r == x) {
@@ -84,7 +77,13 @@ void test_converted_to_bool(int x)
 namespace result_name_scope_test {
 
 int test_scope(const int x) post(r : r != x) {
-  return r; // expected-error {{use of undeclared identifier 'r'}}
+  // The result name is out of scope in the body. Clang emits the primary
+  // "undeclared identifier" error; upstream typo-correction additionally offers
+  // the unrelated member A::r here (a value context whose type matches), which
+  // cascades into a non-static-data-member error. (Cf. the clean case in
+  // test_result_name_scope below, whose discarded-value context does not.)
+  return r; // expected-error {{use of undeclared identifier 'r'}} \
+            // expected-error {{invalid use of non-static data member 'r'}}
 }
 
 struct T {
