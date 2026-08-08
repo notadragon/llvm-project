@@ -2296,21 +2296,27 @@ ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
   assert(VD);
   const ContractScopeRecord *CSR = S.getCurrentContractEntry();
 
-  if (!CSR || CSR->ContextAtPush->Encloses(VD->getDeclContext()))
+  // Only constify entities that are declared *outside* the contract predicate
+  // and referenced across the contract boundary.  An entity declared *inside*
+  // the predicate itself (e.g. a local of a lambda that appears in the
+  // predicate) is not constified.
+  //
+  // ContextAtPush is the DeclContext active when the contract scope was
+  // entered: the enclosing namespace/class for a function pre/post (parsed at
+  // declarator stage), or the function itself for a body-level
+  // contract_assert.  A predicate-local entity is one whose DeclContext is
+  // *strictly* enclosed by ContextAtPush.  A parameter, result name, or local
+  // of the contracted function has a DeclContext that is equal to (or
+  // encloses) ContextAtPush, and must be constified -- so we must not treat the
+  // equal case as "declared inside the predicate" (DeclContext::Encloses is
+  // reflexive, hence the explicit !Equals).
+  if (!CSR || (CSR->ContextAtPush->Encloses(VD->getDeclContext()) &&
+               !CSR->ContextAtPush->Equals(VD->getDeclContext())))
     return CC_None;
-
 
   // If there is no contract scope that encloses the current context, then we don't need to constify the variable.
   if (getLastEnclosingContractScopeForContext(CurContext) == nullptr)
     return CC_None;
-
-  CSR = getLastEnclosingContractScopeForContext(CurContext);
-  if (CSR == nullptr)
-    return CC_None;
-
-  if (VD->getDeclContext()->Encloses(CSR->ContextAtPush)) {
-    assert(!VD->getDeclContext()->Equals(CSR->ContextAtPush));
-  }
 
   // Make sure that there's a contract scope interviening between the current
   // context and the declaration of the variable. If there isn't, we don't need

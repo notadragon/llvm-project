@@ -1,6 +1,4 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -fcolor-diagnostics -verify %s -fcontracts
-// XFAIL: *
-// constification of this-capture in lambdas not working after trunk rebase
 
 
 namespace test_one {

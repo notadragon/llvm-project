@@ -1,19 +1,17 @@
 // RUN: %clang_cc1 -std=c++26 -fcontracts -verify %s
-// XFAIL: *
-// constification of locals incomplete; missing expected-* markers
 
 
 namespace BasicTest {
 template<class T>
 T f(T x) {
   T local = x;
-  contract_assert(++x);
-  contract_assert(++local);
+  contract_assert(++x);     // expected-error {{cannot assign to variable 'x' because it is considered 'const' inside of a contract}}
+  contract_assert(++local); // expected-error {{cannot assign to variable 'local' because it is considered 'const' inside of a contract}}
   return x;
 }
 
 void basic() {
-  f(1);
+  f(1); // expected-note {{in instantiation of function template specialization 'BasicTest::f<int>' requested here}}
 }
 } // namespace BasicTest
 
@@ -21,13 +19,13 @@ namespace LambdaTest {
 template<class T>
 void f(T x) {
   T local = x;
-  contract_assert(++x);
-  contract_assert(++local);
-  struct X {
+  contract_assert(++x);     // expected-error {{cannot assign to variable 'x' because it is considered 'const' inside of a contract}}
+  contract_assert(++local); // expected-error {{cannot assign to variable 'local' because it is considered 'const' inside of a contract}}
+  struct X { // expected-note {{in instantiation of member function 'LambdaTest::f(int)::X::foo' requested here}}
     auto foo(T z) {
-      return [=]() mutable {
+      return [=]() mutable { // expected-note {{while substituting into a lambda expression here}}
 
-        contract_assert(++z);
+        contract_assert(++z); // expected-error {{cannot assign to a variable captured by reference which was captured as const because it is inside a contract}}
 
       };
     }
@@ -35,6 +33,6 @@ void f(T x) {
 }
 
 void instant() {
-  f(42);
+  f(42); // expected-note 2 {{in instantiation of function template specialization 'LambdaTest::f<int>' requested here}}
 }
 }

@@ -1,6 +1,4 @@
 // RUN: %clang_cc1 -std=c++26 -fcontracts -fsyntax-only -fcolor-diagnostics -verify  %s
-// XFAIL: *
-// unexpected access-check diagnostics after trunk rebase
 
 namespace ContractIsFriend {
 

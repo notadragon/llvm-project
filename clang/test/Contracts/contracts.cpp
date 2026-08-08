@@ -1,6 +1,11 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected -verify-ignore-unexpected=warning %s -fcontracts
 // XFAIL: *
-// unexpected data member diagnostic after trunk rebase
+// Result-name / non-static data-member name lookup bug: in
+// result_name_scope_test, a result name 'r' used in a function body (where it
+// is out of scope) is resolved to an unrelated struct's data member 'r' and
+// diagnosed as "invalid use of non-static data member" instead of "use of
+// undeclared identifier". Deferred base-facility bug (distinct from the
+// constification cluster); see final-passes/clang-review-ledger.md.
 
 
 void test_pre_parse(int x) pre(x != 0);
