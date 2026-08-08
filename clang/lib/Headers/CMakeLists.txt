@@ -22,6 +22,8 @@ set(core_files
   __stdarg_va_list.h
   stdatomic.h
   stdbool.h
+  contracts.h
+  stdcontracts.h
   stdcountof.h
   stdckdint.h
   stddef.h

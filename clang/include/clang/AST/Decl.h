@@ -1284,7 +1284,8 @@ public:
   ///
   ///   void foo() { int x; static int y; extern int z; }
   bool isLocalVarDecl() const {
-    if (getKind() != Decl::Var && getKind() != Decl::Decomposition)
+    if (getKind() != Decl::Var && getKind() != Decl::Decomposition &&
+        getKind() != Decl::PostconditionCapture)
       return false;
     if (const DeclContext *DC = getLexicalDeclContext())
       return DC->getEnclosingNonExpansionStatementContext()

@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "namespace": "ign_ns", "group": "ub:expr.shift.neg.and.width"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:expr.shift.neg.and.width"}, "output": {"semantic": "observe"}}
+]

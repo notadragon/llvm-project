@@ -7,6 +7,7 @@ set(LIBCXX_SOURCES
   charconv.cpp
   chrono.cpp
   contracts.cpp
+  contracts_abi.cpp
   error_category.cpp
   exception.cpp
   expected.cpp
@@ -209,6 +210,21 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
     target_link_libraries(cxx_shared PUBLIC libcxx-abi-shared)
   endif()
 
+# Link against libcontracts (the pure-C contracts ABI core).  libc++ carries
+# the C++26 contracts runtime (contract_violation members, the default
+# handler, the _noexcept entry-point wrappers), which unconditionally
+# reference libcontracts symbols (__cxa_find_field, __contract_dispatch_core).
+# Linking it here gives libc++ a DT_NEEDED on libcontracts.so, so C++ programs
+# resolve those references transitively.  libcontracts is a hard dependency of
+# libc++: mirror the libcxxabi/libunwind contract and fail loudly at configure
+# time if it was not requested, rather than silently producing a libc++ with
+# undefined references.  libcontracts is registered before libcxx in
+# LLVM_ENABLE_RUNTIMES, so its CMake target is visible here.
+if (NOT TARGET contracts_shared)
+  message(FATAL_ERROR "libc++ requires libcontracts, but it is not in LLVM_ENABLE_RUNTIMES.")
+endif()
+target_link_libraries(cxx_shared PUBLIC contracts_shared)
+
   # Maybe force some symbols to be weak, not weak or not exported.
   # TODO: This shouldn't depend on the platform, and ideally it should be done in the sources.
   if (APPLE AND LIBCXX_CXX_ABI MATCHES "libcxxabi$"
@@ -298,6 +314,12 @@ endif()
 if (LIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY)
   target_link_libraries(cxx_static PRIVATE libcxx-abi-static-objects)
 endif()
+
+# Link static libc++ against static libcontracts (see the shared-library note
+# above): the C++26 contract runtime in libc++.a references libcontracts.
+# libcontracts builds contracts_static alongside contracts_shared, so the
+# FATAL_ERROR guard above already ensures this target exists.
+target_link_libraries(cxx_static PUBLIC contracts_static)
 
 # Build the experimental static library
 set(LIBCXX_EXPERIMENTAL_SOURCES

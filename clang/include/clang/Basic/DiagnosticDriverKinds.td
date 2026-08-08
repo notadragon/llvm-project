@@ -306,6 +306,29 @@ def err_drv_malformed_sanitizer_coverage_ignorelist : Error<
   "malformed sanitizer coverage ignorelist: '%0'">;
 def err_drv_malformed_sanitizer_metadata_ignorelist : Error<
   "malformed sanitizer metadata ignorelist: '%0'">;
+// P3100 -fsanitize-semantic= diagnostics.
+def err_drv_sanitize_semantic_malformed : Error<
+  "'-fsanitize-semantic=' argument '%0' is not of the form 'check:semantic'">;
+def err_drv_sanitize_semantic_unknown_check : Error<
+  "'-fsanitize-semantic=' unknown sanitizer check '%0'">;
+def err_drv_sanitize_semantic_unknown_semantic : Error<
+  "'-fsanitize-semantic=' unknown contract evaluation semantic '%0'">;
+def err_drv_sanitize_semantic_unsupported : Error<
+  "'-fsanitize-semantic=%0:%1' is not supported">;
+def err_drv_sanitize_semantic_routed_enforce : Error<
+  "'-fsanitize-semantic=%0:enforce' is not supported for a routed sanitizer "
+  "check (a throwing handler cannot propagate); use 'noexcept_enforce' (with "
+  "'-fcontracts-p4298') or 'quick_enforce'">;
+def err_drv_sanitize_semantic_routed_observe : Error<
+  "'-fsanitize-semantic=%0:observe' is not supported for a routed sanitizer "
+  "check (a throwing handler cannot propagate); use 'noexcept_observe' with "
+  "'-fcontracts-p4298'">;
+def err_drv_sanitize_semantic_requires_p4298 : Error<
+  "'-fsanitize-semantic=%0:%1' requires '-fcontracts-p4298'">;
+def err_drv_sanitize_recover_routed_requires_p4298 : Error<
+  "'-fsanitize-recover=%0' routing to the contract-violation handler requires "
+  "'-fcontracts-p4298' (for the 'noexcept_observe' semantic; a throwing "
+  "handler cannot propagate from a routed sanitizer check)">;
 def err_drv_unsupported_static_sanitizer_darwin : Error<
   "static %0 runtime is not supported on darwin">;
 def err_drv_duplicate_config : Error<

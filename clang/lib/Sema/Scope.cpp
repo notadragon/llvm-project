@@ -98,6 +98,7 @@ void Scope::Init(Scope *parent, unsigned long flags) {
 
   DeclsInScope.clear();
   UsingDirectives.clear();
+  ContractControlUsingDirectives.clear();
   Entity = nullptr;
   ErrorTrap.reset();
   PrecedingLabel = nullptr;

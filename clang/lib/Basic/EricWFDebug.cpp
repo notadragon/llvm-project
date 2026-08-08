@@ -5,8 +5,10 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/TextNodeDumper.h"
 
+#include <cstdio>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 namespace clang {
 

@@ -3445,6 +3445,9 @@ void TextNodeDumper::VisitContractStmt(const ContractStmt *S) {
   case ContractKind::Assert:
     OS << " contract_assert";
     break;
+  case ContractKind::Implicit:
+    OS << " implicit";
+    break;
   }
   if (Context) {
     switch (S->getSemantic(*Context)) {
@@ -3459,6 +3462,9 @@ void TextNodeDumper::VisitContractStmt(const ContractStmt *S) {
       break;
     case ContractEvaluationSemantic::Observe:
       OS << " observe";
+      break;
+    case ContractEvaluationSemantic::Assume:
+      OS << " assume";
       break;
     }
   }

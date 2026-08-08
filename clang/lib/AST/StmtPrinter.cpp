@@ -2894,12 +2894,21 @@ void StmtPrinter::VisitContractStmt(ContractStmt *Node) {
       return "pre";
     case ContractKind::Post:
       return "post";
+    case ContractKind::Implicit:
+      return "implicit";
     }
     llvm_unreachable("unhandled case");
   }();
 
   // Print the contract keyword...
   OS << Keyword;
+
+  // Then the label (if present)...
+  if (Node->hasLabel()) {
+    OS << "<";
+    PrintExpr(Node->getLabelExpr());
+    OS << ">";
+  }
 
   // Then any attributes...
   // FIXME: We assume any attributes appear in this position rather than at the
@@ -2913,6 +2922,10 @@ void StmtPrinter::VisitContractStmt(ContractStmt *Node) {
   }
   OS << "(";
   PrintExpr(Node->getCond());
+  if (Node->hasMessage()) {
+    OS << ", ";
+    PrintExpr(Node->getMessageExpr());
+  }
   OS << ")";
   if (Node->getContractKind() == ContractKind::Assert)
     OS << ";";

@@ -755,7 +755,9 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                                     CharUnits Alignment,
                                     SanitizerSet SkippedChecks,
                                     llvm::Value *ArraySize) {
-  if (!sanitizePerformTypeCheck())
+  // P3100 implicit null-dereference contract assertions reuse this null-check
+  // choke point even when no sanitizer requests a type check.
+  if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
     return;
 
   // Don't check pointers outside the default address space. The null check
@@ -794,7 +796,19 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
 
     llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
     bool AllowNullPointers = isNullPointerAllowed(TCK);
-    if ((SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
+
+    // P3100: a genuine data access (load/store) through a possibly-null pointer
+    // carries an implicit ub:expr.unary.dereference.nullptr contract assertion.
+    // Emit its configured reaction here; it takes precedence over the sanitizer
+    // null check on the null edge.  (assume/ignore emit nothing and fall
+    // through.)
+    bool P3100NullHandled = false;
+    if (getLangOpts().ContractsP3100 && !IsGuaranteedNonNull &&
+        (TCK == TCK_Load || TCK == TCK_Store))
+      P3100NullHandled = EmitImplicitNullDerefGuard(Ptr, Loc);
+
+    if (!P3100NullHandled &&
+        (SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
         !IsGuaranteedNonNull) {
       // The glvalue must not be an empty glvalue.
       IsNonNull = Builder.CreateIsNotNull(Ptr);
@@ -1697,7 +1711,11 @@ bool CodeGenFunction::IsWrappedCXXThis(const Expr *Obj) {
 
 LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
   LValue LV;
-  if (SanOpts.has(SanitizerKind::ArrayBounds) && isa<ArraySubscriptExpr>(E))
+  if ((SanOpts.has(SanitizerKind::ArrayBounds) || getLangOpts().ContractsP3100) &&
+      isa<ArraySubscriptExpr>(E))
+    // Mark the subscript as accessed so the P3100 implicit bounds guard (like
+    // the array-bounds sanitizer) treats index == bound as a violation for a
+    // dereference; a one-past address &a[N] is formed elsewhere and stays legal.
     LV = EmitArraySubscriptExpr(cast<ArraySubscriptExpr>(E), /*Accessed*/true);
   else
     LV = EmitLValue(E);
@@ -2252,9 +2270,18 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(Address Addr, bool Volatile,
 
   CGM.DecorateInstructionWithTBAA(Load, TBAAInfo);
 
-  maybeAttachRangeForLoad(Load, Ty, Loc);
+  // P3100: guard an invalid bool/enum value load.  When the guard is active
+  // (non-assume) it substitutes a defined valid value, and range metadata must
+  // NOT be attached (that would let the optimizer assume validity and discard
+  // the guard); when inactive it returns Load and the metadata/sanitizer path
+  // runs as usual.
+  llvm::Value *V = Load;
+  if (getLangOpts().ContractsP3100)
+    V = EmitImplicitInvalidValueGuard(Load, Ty, Loc);
+  if (V == Load)
+    maybeAttachRangeForLoad(Load, Ty, Loc);
 
-  return EmitFromMemory(Load, Ty);
+  return EmitFromMemory(V, Ty);
 }
 
 /// Converts a scalar value from its primary IR type (as returned
@@ -3728,7 +3755,10 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Check if this is a global variable.
-    if (VD->hasLinkage() || VD->isStaticDataMember())
+    // PostconditionCaptureDecls are always local, even if their DeclContext
+    // is a CXXRecordDecl (from inline class body parsing).
+    if ((VD->hasLinkage() || VD->isStaticDataMember()) &&
+        !isa<PostconditionCaptureDecl>(VD))
       return EmitGlobalVarDeclLValue(*this, E, VD);
 
     Address addr = Address::invalid();
@@ -5043,6 +5073,19 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
 
     if (SanOpts.has(SanitizerKind::ArrayBounds))
       EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, Accessed);
+    else if (getLangOpts().ContractsP3100) {
+      // P3100 implicit array-bounds contract assertion.  Only the statically-
+      // known-bound case is handled; an out-of-range subscript is redirected to
+      // the defined valid index 0.
+      QualType IndexedType;
+      const LangOptions::StrictFlexArraysLevelKind StrictFlexArraysLevel =
+          getLangOpts().getStrictFlexArraysLevel();
+      if (llvm::Value *Bound = getArrayIndexingBound(
+              *this, E->getBase(), IndexedType, StrictFlexArraysLevel))
+        if (isa<llvm::ConstantInt>(Bound))
+          Idx = EmitImplicitArrayBoundsGuard(Idx, IdxTy, Bound, Accessed,
+                                             E->getExprLoc());
+    }
 
     // Extend or truncate the index type to 32 or 64-bits.
     if (Promote && Idx->getType() != IntPtrTy)

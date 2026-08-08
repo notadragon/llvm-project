@@ -470,6 +470,7 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::OpenACCDeclare:
   case Decl::OpenACCRoutine:
   case Decl::CXXExpansionStmt:
+  case Decl::PostconditionCapture:
   case Decl::ResultName:
     return false;
 

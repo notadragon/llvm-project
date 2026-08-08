@@ -13126,9 +13126,9 @@ def warn_contract_requirement_failed : Warning<
   InGroup<ContractViolation>;
 
 def err_constexpr_contract_failure : Error<
-  "contract failed during execution of constexpr function">;
+  "contract failed during execution of constexpr function%select{|: %1}0">;
 def warn_constexpr_contract_failure : Warning<
-    "contract failed during execution of constexpr function">,
+    "contract failed during execution of constexpr function%select{|: %1}0">,
     InGroup<ContractViolation>;
 
 def err_initialization_of_constant_initialized_variable_failed : Error<
@@ -13152,7 +13152,11 @@ def note_previous_contracts : Note<
   "|<ERROR>"
   "|as '%sub{select_contract_kind}1'"
   "|%select{without|with}2 result name"
-  "|with a non-equivalent condition}0">;
+  "|with a non-equivalent condition"
+  "|with different captures"
+  "|with a non-equivalent requires clause"
+  "|with a different diagnostic message"
+  "|with a different assertion-control label}0">;
 
 def err_contract_attr_bool_arg_not_constant : Error<
   "argument to %0 attribute must be a boolean constant expression">;
@@ -13193,6 +13197,35 @@ def err_keyword_not_allowed_in_contract : Error<
 
 def err_lambda_decl_ref_not_modifiable_lvalue_contract : Error<
   "cannot assign to a variable captured by reference which was captured as const because it is inside a contract">;
+def err_contract_message_and_attribute : Error<
+  "cannot use both a syntactic diagnostic message and "
+  "'[[clang::contract_message]]' on the same contract assertion">;
+def err_contract_invalid_label : Error<
+  "value of type %0 is not a valid assertion-control label; its type must be a "
+  "class type with an 'assertion_control_object' member type">;
+// P4283 requires clause on contracts diagnostics
+def err_contract_requires_clause_non_template : Error<
+  "requires clause on contract assertion is only allowed on templated functions">;
+
+// P3097 virtual function contracts diagnostics
+def err_contracts_on_virtual_require_flag : Error<
+  "contracts on virtual functions require '-fcontracts-p3097'">;
+
+// P3098 postcondition capture diagnostics
+def err_postcondition_capture_by_reference : Error<
+  "capture-by-reference not allowed in postcondition captures">;
+def err_postcondition_capture_default : Error<
+  "default capture not allowed in postcondition captures">;
+def err_postcondition_capture_this : Error<
+  "cannot capture 'this' in postcondition captures">;
+def err_postcondition_capture_not_parameter : Error<
+  "only function parameters can be captured by copy in postcondition captures; "
+  "use an init-capture instead">;
+def err_postcondition_capture_noncopyable : Error<
+  "postcondition capture type %0 is not copyable">;
+def err_postcondition_capture_nondestructible : Error<
+  "postcondition capture type %0 is not destructible">;
+
 } // end of contracts issues
 let CategoryName = "Documentation Issue" in {
 def warn_not_a_doxygen_trailing_member_comment : Warning<

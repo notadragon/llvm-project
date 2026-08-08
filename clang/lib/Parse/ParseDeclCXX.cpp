@@ -459,6 +459,14 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDirectiveOrDeclaration(
         << FixItHint::CreateRemoval(TemplateLoc);
   }
 
+  // 'using contract_control namespace' means this is a contract-control
+  // using-directive (P3400).
+  if (Tok.is(tok::kw_contract_control) && NextToken().is(tok::kw_namespace)) {
+    ConsumeToken(); // consume 'contract_control'
+    Decl *UsingDir = ParseContractControlUsingDirective(UsingLoc, DeclEnd);
+    return Actions.ConvertDeclToDeclGroup(UsingDir);
+  }
+
   // 'using namespace' means this is a using-directive.
   if (Tok.is(tok::kw_namespace)) {
     // Template parameters are always an error here.
@@ -541,6 +549,46 @@ Decl *Parser::ParseUsingDirective(DeclaratorContext Context,
 
   return Actions.ActOnUsingDirective(getCurScope(), UsingLoc, NamespcLoc, SS,
                                      IdentLoc, NamespcName, attrs);
+}
+
+Decl *Parser::ParseContractControlUsingDirective(SourceLocation UsingLoc,
+                                                 SourceLocation &DeclEnd) {
+  assert(Tok.is(tok::kw_namespace) && "Not 'namespace' token");
+  SourceLocation NamespcLoc = ConsumeToken();
+
+  CXXScopeSpec SS;
+  ParseOptionalCXXScopeSpecifier(SS, /*ObjectType=*/nullptr,
+                                 /*ObjectHasErrors=*/false,
+                                 /*EnteringContext=*/false,
+                                 /*MayBePseudoDestructor=*/nullptr,
+                                 /*IsTypename=*/false,
+                                 /*LastII=*/nullptr,
+                                 /*OnlyNamespace=*/true);
+
+  IdentifierInfo *NamespcName = nullptr;
+  SourceLocation IdentLoc = SourceLocation();
+
+  if (Tok.isNot(tok::identifier)) {
+    Diag(Tok, diag::err_expected_namespace_name);
+    SkipUntil(tok::semi);
+    return nullptr;
+  }
+
+  if (SS.isInvalid()) {
+    SkipUntil(tok::semi);
+    return nullptr;
+  }
+
+  NamespcName = Tok.getIdentifierInfo();
+  IdentLoc = ConsumeToken();
+
+  DeclEnd = Tok.getLocation();
+  if (ExpectAndConsume(tok::semi, diag::err_expected_semi_after_namespace_name))
+    SkipUntil(tok::semi);
+
+  return Actions.ActOnContractControlUsingDirective(getCurScope(), UsingLoc,
+                                                    NamespcLoc, SS,
+                                                    IdentLoc, NamespcName);
 }
 
 bool Parser::ParseUsingDeclarator(DeclaratorContext Context,

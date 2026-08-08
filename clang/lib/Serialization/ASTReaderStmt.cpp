@@ -13,6 +13,7 @@
 
 #include "clang/AST/ASTConcept.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclAccessPair.h"
@@ -521,11 +522,40 @@ void ASTStmtReader::VisitContractStmt(ContractStmt *S) {
   S->setCondition(Record.readExpr());
   if (S->hasResultName())
     S->setResultName(cast<DeclStmt>(Record.readStmt()));
+  if (S->hasMessage())
+    S->setMessage(Record.readExpr());
+  if (S->hasLabel())
+    S->setLabel(Record.readExpr());
+  if (S->hasCaptures())
+    S->setCaptures(cast<DeclStmt>(Record.readStmt()));
+  if (S->hasRequiresClause())
+    S->setRequiresClause(Record.readExpr());
   AttrVec Attrs;
   Record.readAttributes(Attrs);
   assert(Attrs.size() == NumAttrs);
   ((void)NumAttrs);
   std::copy(Attrs.begin(), Attrs.end(), S->getAttrPtr());
+
+  std::string TC = Record.readString();
+  if (!TC.empty())
+    S->setTransformedComment(Record.getContext().backupStr(TC));
+  std::string TM = Record.readString();
+  if (!TM.empty())
+    S->setTransformedMessage(Record.getContext().backupStr(TM));
+
+  // P3595 dynamic selection: restore the descriptor + precomputed transform
+  // table written by ASTStmtWriter::VisitContractStmt.
+  bool IsDynamic = Record.readInt();
+  if (IsDynamic) {
+    std::string DynName = Record.readString();
+    int DynLinkage = Record.readInt();
+    bool DynProvideWeak = Record.readInt();
+    uint8_t Table[4];
+    for (unsigned I = 0; I < 4; ++I)
+      Table[I] = static_cast<uint8_t>(Record.readInt());
+    S->setDynamicInfo(Record.getContext().backupStr(DynName), DynLinkage,
+                      DynProvideWeak, Table);
+  }
 }
 
 void ASTStmtReader::VisitCapturedStmt(CapturedStmt *S) {
@@ -4605,10 +4635,24 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       BitsUnpacker ContractBits(Record[ASTStmtReader::NumStmtFields]);
       ContractKind CK = static_cast<ContractKind>(ContractBits.getNextBits(2));
       bool HasResultName = ContractBits.getNextBit();
+      bool HasMessage = ContractBits.getNextBit();
+      bool HasLabel = ContractBits.getNextBit();
+      unsigned AllowedMask = ContractBits.getNextBits(8);
+      bool HasLocalHandler = ContractBits.getNextBit();
+      bool HasQuery = ContractBits.getNextBit();
+      bool HasCaptures = ContractBits.getNextBit();
+      bool HasRequiresClause = ContractBits.getNextBit();
 
       unsigned NumAttrs = Record[ASTStmtReader::NumStmtFields + 1];
 
-      S = ContractStmt::CreateEmpty(Context, CK, HasResultName, NumAttrs);
+      S = ContractStmt::CreateEmpty(Context, CK, HasResultName, HasMessage,
+                                    HasLabel, HasCaptures, HasRequiresClause,
+                                    NumAttrs);
+      cast<ContractStmt>(S)->setAllowedMask(AllowedMask);
+      if (HasLocalHandler)
+        cast<ContractStmt>(S)->setHasLocalHandler(true);
+      if (HasQuery)
+        cast<ContractStmt>(S)->setHasQuery(true);
       break;
     }
 

@@ -2582,6 +2582,12 @@ public:
   UnnamedGlobalConstantDecl *
   BuildViolationObject(const ContractStmt *CS,
                        const FunctionDecl *CurDecl = nullptr);
+  /// P3100: build a violation object for a compiler-synthesized implicit
+  /// contract assertion (no ContractStmt) from a raw location and comment.
+  UnnamedGlobalConstantDecl *
+  BuildViolationObject(SourceLocation Loc, StringRef Comment,
+                       std::optional<StringRef> Message,
+                       const FunctionDecl *CurDecl = nullptr);
 
 
   /// Retrieve the implicitly-predeclared 'struct type_info' declaration.

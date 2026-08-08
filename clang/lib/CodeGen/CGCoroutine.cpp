@@ -902,10 +902,20 @@ struct GetReturnObjectManager {
 static void emitBodyAndFallthrough(CodeGenFunction &CGF,
                                    const CoroutineBodyStmt &S, Stmt *Body) {
   CGF.EmitStmt(Body);
-  const bool CanFallthrough = CGF.Builder.GetInsertBlock();
-  if (CanFallthrough)
-    if (Stmt *OnFallthrough = S.getFallthroughHandler())
+  if (CGF.Builder.GetInsertBlock()) {
+    Stmt *OnFallthrough = S.getFallthroughHandler();
+    // P3100: with no usable return_void, flowing off the end of a coroutine is
+    // undefined behavior ({stmt.return.coroutine.flow.off}).  OnFallthrough is
+    // the co_return synthesized for return_void; it is null or a NullStmt when
+    // there is no return_void -- exactly the UB case to guard.
+    bool NoReturnVoid = !OnFallthrough || isa<NullStmt>(OnFallthrough);
+    if (NoReturnVoid && CGF.getLangOpts().ContractsP3100)
+      CGF.EmitImplicitCoroutineFlowOffReaction(S.getBeginLoc());
+    // An enforcing/quick reaction terminates the block; re-check before emitting
+    // the (return_void) fall-through handler.
+    if (CGF.Builder.GetInsertBlock() && OnFallthrough)
       CGF.EmitStmt(OnFallthrough);
+  }
 }
 
 void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {

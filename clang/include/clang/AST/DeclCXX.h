@@ -3151,6 +3151,9 @@ class UsingDirectiveDecl : public NamedDecl {
   /// namespace.
   DeclContext *CommonAncestor;
 
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned IsContractControl : 1;
+
   UsingDirectiveDecl(DeclContext *DC, SourceLocation UsingLoc,
                      SourceLocation NamespcLoc,
                      NestedNameSpecifierLoc QualifierLoc,
@@ -3159,7 +3162,8 @@ class UsingDirectiveDecl : public NamedDecl {
                      DeclContext *CommonAncestor)
       : NamedDecl(UsingDirective, DC, IdentLoc, getName()), UsingLoc(UsingLoc),
         NamespaceLoc(NamespcLoc), QualifierLoc(QualifierLoc),
-        NominatedNamespace(Nominated), CommonAncestor(CommonAncestor) {}
+        NominatedNamespace(Nominated), CommonAncestor(CommonAncestor),
+        IsContractControl(false) {}
 
   /// Returns special DeclarationName used by using-directives.
   ///
@@ -3213,6 +3217,9 @@ public:
 
   /// Returns the location of this using declaration's identifier.
   SourceLocation getIdentLocation() const { return getLocation(); }
+
+  bool isContractControl() const { return IsContractControl; }
+  void setContractControl(bool V = true) { IsContractControl = V; }
 
   static UsingDirectiveDecl *Create(ASTContext &C, DeclContext *DC,
                                     SourceLocation UsingLoc,
@@ -4543,6 +4550,46 @@ public:
 const StreamingDiagnostic &operator<<(const StreamingDiagnostic &DB,
                                       AccessSpecifier AS);
 
+/// A capture variable in a postcondition. For instance, given:
+///
+///   int foo(int x) post [old = x] (r: r > old);
+///
+/// Where `old` is a PostconditionCaptureDecl capturing the value of `x`.
+class PostconditionCaptureDecl : public VarDecl {
+  friend class ASTDeclReader;
+  friend class ASTDeclWriter;
+
+  bool IsParameterCapture = false;
+  bool IsPackExpansion = false;
+
+  PostconditionCaptureDecl(ASTContext &Ctx, DeclContext *DC,
+                           SourceLocation StartLoc, SourceLocation IdLoc,
+                           const IdentifierInfo *Id, QualType T,
+                           TypeSourceInfo *TInfo, StorageClass SC)
+      : VarDecl(Decl::PostconditionCapture, Ctx, DC, StartLoc, IdLoc, Id, T,
+                TInfo, SC) {
+    setImplicit();
+  }
+
+public:
+  static PostconditionCaptureDecl *
+  Create(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+         SourceLocation IdLoc, const IdentifierInfo *Id, QualType T,
+         TypeSourceInfo *TInfo, StorageClass SC = SC_None);
+
+  static PostconditionCaptureDecl *CreateDeserialized(ASTContext &C,
+                                                      GlobalDeclID ID);
+
+  bool isParameterCapture() const { return IsParameterCapture; }
+  void setIsParameterCapture(bool V = true) { IsParameterCapture = V; }
+
+  bool isPackExpansion() const { return IsPackExpansion; }
+  void setIsPackExpansion(bool V = true) { IsPackExpansion = V; }
+
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == Decl::PostconditionCapture; }
+};
+
 /// A result name introduces in a post condition. For instance, given:
 ///
 ///   int foo() post(r : r > 0);
@@ -4719,6 +4766,8 @@ public:
         llvm::map_range(postconditions(), ExtractResultName),
         [](ResultNameDecl *R) { return R != nullptr; });
   }
+
+  bool hasCaptures() const;
 
   /// Returns true if this function contract sequence contains result names &
   /// those result names use an invented placeholder type to allow us to delay

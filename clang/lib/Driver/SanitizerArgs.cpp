@@ -6,8 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Driver/SanitizerArgs.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Basic/DiagnosticDriver.h"
 #include "clang/Driver/ToolChain.h"
 #include "clang/Options/Options.h"
 #include "llvm/ADT/SmallVector.h"
@@ -369,6 +371,128 @@ static SanitizerMask parseSanitizeTrapArgs(const Driver &D,
   return parseSanitizeArgs(D, Args, DiagnoseErrors, TrappingDefault, AlwaysTrap,
                            NeverTrap, options::OPT_fsanitize_trap_EQ,
                            options::OPT_fno_sanitize_trap_EQ);
+}
+
+//===----------------------------------------------------------------------===//
+// P3100 -fsanitize-semantic= routed-sanitizer contract-evaluation model.
+//===----------------------------------------------------------------------===//
+
+/// The sanitizer checks whose detected error is ROUTED to the C++
+/// contract-violation handler at run time (P3100 Task 4.1).  The user-space
+/// address check (ASan) and a growing set of UBSan runtime checks (vptr,
+/// function, alignment, object-size, nonnull-attribute,
+/// returns-nonnull-attribute, pointer-overflow) are wired; new routed checks OR
+/// their bit in here.  (Clang's "address" is already the user-space bit --
+/// kernel-address is a separate SanitizerKind -- so no separate USER-address bit
+/// is needed, unlike GCC's SANITIZE_USER_ADDRESS.)  quick_enforce is realized in
+/// the routing runtime (a wire byte -> silent terminate), not as a compile-time
+/// trap, so it is offered for a routed check regardless of the check's can_trap
+/// capability (ASan and vptr both lack a trap mode yet offer quick_enforce; the
+/// other routed UBSan checks route quick_enforce through the runtime too, not a
+/// trap).  Note: -fsanitize=function is Clang-only (GCC has no such check), so
+/// this set is a superset of GCC's ROUTED_SANITIZER_BITS by exactly Function.
+static const SanitizerMask RoutedSanitizerBits =
+    SanitizerKind::Address | SanitizerKind::Vptr | SanitizerKind::Function |
+    SanitizerKind::Alignment | SanitizerKind::ObjectSize |
+    SanitizerKind::NonnullAttribute | SanitizerKind::ReturnsNonnullAttribute |
+    SanitizerKind::PointerOverflow |
+    // Full libubsan coverage: every UBSan runtime check that reports through
+    // libubsan's ScopedReport is routed, including those with a native
+    // (Group-B) path (double-check is intentional).  Clang additionally routes
+    // the checks GCC has no bit for (unsigned-integer-overflow, the
+    // implicit-conversion group, local-bounds, objc-cast).
+    SanitizerKind::Null | SanitizerKind::ShiftBase |
+    SanitizerKind::ShiftExponent | SanitizerKind::IntegerDivideByZero |
+    SanitizerKind::SignedIntegerOverflow | SanitizerKind::Bool |
+    SanitizerKind::Enum | SanitizerKind::FloatCastOverflow |
+    SanitizerKind::ArrayBounds | SanitizerKind::Return |
+    SanitizerKind::Unreachable | SanitizerKind::VLABound |
+    SanitizerKind::Builtin | SanitizerKind::FloatDivideByZero |
+    SanitizerKind::UnsignedIntegerOverflow | SanitizerKind::ImplicitConversion |
+    SanitizerKind::LocalBounds | SanitizerKind::ObjCCast |
+    // The two ASan pointer-pair checks report through the ASan runtime (not
+    // libubsan), each governed by its own wire byte so the address routing
+    // scope is unchanged (see CodeGenModule::emitAsanContractSemanticDescriptor
+    // and compiler-rt/lib/asan/asan_report.cpp).
+    SanitizerKind::PointerCompare | SanitizerKind::PointerSubtract |
+    // ThreadSanitizer reports a data race through compiler-rt's libtsan
+    // OutputReport (its own wire byte __tsan_contract_semantic).  Like the other
+    // whole-program tools it has no compile-time trap and no per-access
+    // recover/abort codegen variant -- continue-vs-terminate is decided in the
+    // runtime report leg -- so it is excluded from the recover-forcing loop
+    // below; noexcept_observe is offered even though native thread has
+    // can_recover=false (the routed runtime provides the continue).
+    SanitizerKind::Thread |
+    // MemorySanitizer (Clang-only) reports a use-of-uninitialized-value through
+    // compiler-rt's __msan_warning* leg (its own wire byte
+    // __msan_contract_semantic).  Unlike TSan it HAS recover codegen
+    // (__msan_warning vs __msan_warning_noreturn), so it participates normally in
+    // the recover-forcing code-path selection below (observe -> recover leg,
+    // terminate -> noreturn leg).
+    SanitizerKind::Memory;
+
+/// True iff Name is a sanitizer meta-group ("undefined"/"all") whose members
+/// a request silently restricts to (rather than an individual check, which
+/// hard-errors on an unsupported semantic).  Mirrors GCC's group/individual
+/// split keyed strictly on the two meta-group names.
+static bool isSanitizerMetaGroup(StringRef Name) {
+  return Name == "undefined" || Name == "all";
+}
+
+/// Iterate every individual sanitizer bit of Kinds, invoking Fn(Bit, Name)
+/// with the single-bit mask and its canonical (broadest/first, non-meta) name.
+template <typename FnTy>
+static void forEachSanitizerBit(SanitizerMask Kinds, FnTy Fn) {
+#define SANITIZER(NAME, ID)                                                    \
+  if (Kinds & SanitizerKind::ID)                                              \
+    Fn(SanitizerKind::ID, StringRef(NAME));
+#include "clang/Basic/Sanitizers.def"
+}
+
+/// The canonical (broadest/first, non-meta) name for a single sanitizer bit,
+/// or empty if none.  Mirrors GCC's canonical_sanitizer_opt.
+static StringRef canonicalSanitizerName(SanitizerMask Bit) {
+  StringRef Result;
+  forEachSanitizerBit(Bit, [&](SanitizerMask, StringRef Name) {
+    if (Result.empty())
+      Result = Name;
+  });
+  return Result;
+}
+
+/// The allowed contract-evaluation semantics (as a bit N == semantic value N
+/// mask) for a single non-routed sanitizer bit: {assume, enforce} always, plus
+/// observe iff the bit can recover, plus quick_enforce iff it can trap; never
+/// ignore.  Mirrors GCC's per-member-bit allowed-set (P3100 Task 1.3).
+static unsigned genericAllowedSemantics(SanitizerMask Bit) {
+  unsigned Allowed =
+      (1u << static_cast<unsigned>(ContractEvaluationSemantic::Assume)) |
+      (1u << static_cast<unsigned>(ContractEvaluationSemantic::Enforce));
+  // A bit "can recover" iff it is not permanently unrecoverable; "can trap"
+  // iff trapping is supported for it.  These mirror the capability fields GCC
+  // stores in sanitizer_opts[].
+  if (Bit & ~Unrecoverable)
+    Allowed |=
+        (1u << static_cast<unsigned>(ContractEvaluationSemantic::Observe));
+  if (Bit & setGroupBits(TrappingSupported))
+    Allowed |=
+        (1u << static_cast<unsigned>(ContractEvaluationSemantic::QuickEnforce));
+  return Allowed;
+}
+
+/// The allowed contract-evaluation semantics for a ROUTED sanitizer bit: the
+/// non-throwing set {assume, quick_enforce, noexcept_enforce, noexcept_observe}
+/// (P3100 Task 4.1).  The noexcept_* semantics are accepted and stored here
+/// regardless of -fcontracts-p4298; the p4298 gate is applied separately so a
+/// tailored diagnostic can be produced.  Plain throwing enforce/observe and
+/// ignore are never in the set.
+static unsigned routedAllowedSemantics() {
+  return (1u << static_cast<unsigned>(ContractEvaluationSemantic::Assume)) |
+         (1u << static_cast<unsigned>(ContractEvaluationSemantic::QuickEnforce)) |
+         (1u << static_cast<unsigned>(
+              ContractEvaluationSemantic::NoexceptEnforce)) |
+         (1u << static_cast<unsigned>(
+              ContractEvaluationSemantic::NoexceptObserve));
 }
 
 static SanitizerMaskCutoffs
@@ -1359,6 +1483,284 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
   // Zero out SkipHotCutoffs for unused sanitizers
   SkipHotCutoffs.clear(~Sanitizers.Mask);
+
+  // P3100: parse -fsanitize-semantic= and enforce the per-check allowed set.
+  // -fcontracts-p3100/-p4298 are ordinary contract feature flags visible in the
+  // driver arg list; -fcontracts-p3850 implies neither of them here (it only
+  // implies p3099/p3290/p3400), so both are queried directly.
+  ContractsP3100 = Args.hasFlag(options::OPT_fcontracts_p3100,
+                                options::OPT_fno_contracts_p3100, false);
+  ContractsP4298 = Args.hasFlag(options::OPT_fcontracts_p4298,
+                                options::OPT_fno_contracts_p4298, false);
+  SanitizeSemanticPrint = Args.hasArg(options::OPT_fsanitize_semantic_print);
+  // P3100 Task 3.1: the global opt-out.  Parsed unconditionally (like GCC's
+  // Common Driver flag_sanitize_noncontract_callbacks); it only has an effect
+  // when routing would otherwise be active (-fcontracts-p3100 with a routed
+  // check), realized in CodeGen (CL2/CL3) and the compiler-rt guardrail.
+  SanitizeNoncontractCallbacks =
+      Args.hasArg(options::OPT_fsanitize_noncontract_callbacks);
+  parseSanitizeSemanticArgs(D, Args, DiagnoseErrors);
+  applyRoutedSemanticP4298Gate(D, DiagnoseErrors);
+
+  // P3100: the resolved contract-evaluation semantic selects which of the
+  // sanitizer's OWN code paths a routed check is integrated along, by driving
+  // the recover bit (the sanitizer pass reads it to pick the report entry
+  // point).  A CONTINUING semantic (observe/noexcept_observe) rides the RECOVER
+  // path -- the recoverable entry (e.g. __asan_report_*_noabort, or UBSan's
+  // non-abort handler) reports and returns, so execution needs a fallthrough
+  // edge; SET the bit.  A TERMINATING semantic (enforce/noexcept_enforce/
+  // quick_enforce) rides the NON-recovering (noreturn/abort) path -- CLEAR the
+  // bit.  Neither may be left to the check's default: continuing on the noreturn
+  // path re-faults with clobbered regs, and a check whose default is recover
+  // (e.g. vptr) would otherwise land a terminating semantic on the recover path,
+  // which for some shapes does not detect (and quick_enforce could fail to
+  // terminate).  This also serializes as -fsanitize-recover= to cc1.  Only when
+  // routing is active.  Mirrors GCC's finish_options selection (gcc/opts.cc).
+  if (ContractsP3100 && !SanitizeNoncontractCallbacks) {
+    forEachSanitizerBit(RoutedSanitizerBits, [&](SanitizerMask Bit, StringRef) {
+      if (!Sanitizers.has(Bit) || TrapSanitizers.has(Bit))
+        return;
+      // ThreadSanitizer has no per-access recover/abort codegen variant: its
+      // continue-vs-terminate is decided in the runtime report leg from the wire
+      // byte, so the recover bit is meaningless for it (and -fsanitize-recover=
+      // thread is not a supported cc1 argument).  Leave it out entirely.
+      if (Bit == SanitizerKind::Thread)
+        return;
+      ContractEvaluationSemantic Sem = resolvedSanitizerSemantic(Bit);
+      if (Sem == ContractEvaluationSemantic::NoexceptObserve ||
+          Sem == ContractEvaluationSemantic::Observe) {
+        // An inherently non-recoverable check (unreachable, return) cannot ride
+        // the recover path -- its emitCheck lowering is always Unrecoverable, so
+        // requesting recover would assert.  Leave it fatal: the routed handler
+        // still fires (via the noreturn report leg) and then terminates, which
+        // is the correct no-defined-fallback observe behavior.
+        if (!(Bit & Unrecoverable))
+          RecoverableSanitizers.Mask |= Bit;
+      } else if (Sem == ContractEvaluationSemantic::NoexceptEnforce ||
+                 Sem == ContractEvaluationSemantic::Enforce ||
+                 Sem == ContractEvaluationSemantic::QuickEnforce)
+        RecoverableSanitizers.Mask &= ~Bit;
+    });
+
+    // local-bounds is trap-by-default (TrappingDefault), so the loop above
+    // skipped it.  To route it to the contract-violation handler for a
+    // handler-calling semantic, clear its trap so the BoundsChecking pass emits
+    // __ubsan_handle_local_out_of_bounds (which flows through libubsan's
+    // ScopedReport) instead of a bare ubsantrap, and drive the recover bit from
+    // the semantic (continuing -> recover path, terminating -> abort path).  A
+    // quick_enforce keeps the trap: a silent ubsantrap already is quick_enforce.
+    if (Sanitizers.has(SanitizerKind::LocalBounds) &&
+        TrapSanitizers.has(SanitizerKind::LocalBounds)) {
+      ContractEvaluationSemantic Sem =
+          resolvedSanitizerSemantic(SanitizerKind::LocalBounds);
+      if (Sem == ContractEvaluationSemantic::NoexceptObserve ||
+          Sem == ContractEvaluationSemantic::Observe) {
+        TrapSanitizers.Mask &= ~SanitizerKind::LocalBounds;
+        RecoverableSanitizers.Mask |= SanitizerKind::LocalBounds;
+      } else if (Sem == ContractEvaluationSemantic::NoexceptEnforce ||
+                 Sem == ContractEvaluationSemantic::Enforce) {
+        TrapSanitizers.Mask &= ~SanitizerKind::LocalBounds;
+        RecoverableSanitizers.Mask &= ~SanitizerKind::LocalBounds;
+      }
+    }
+  }
+}
+
+/// P3100: parse the comma-separated <check>:<semantic> pairs of every
+/// -fsanitize-semantic= argument, validate each request against the check's
+/// allowed set, and store the accepted per-bit semantics in ExplicitSemantics.
+/// Mirrors GCC's parse_sanitizer_semantic_options (opts.cc):
+///   * name validation (unknown check / unknown semantic) is a hard error;
+///   * "ignore" is never allowed for any check (individual or group);
+///   * an individual check with an unsupported semantic is a hard error naming
+///     the typed check; a meta-group ("undefined"/"all") silently restricts to
+///     supported members;
+///   * a routed check offers only the non-throwing set (assume, quick_enforce,
+///     noexcept_*), rejecting plain throwing enforce/observe with a tailored
+///     message; the noexcept-requires-p4298 gate is applied later (in
+///     applyRoutedSemanticP4298Gate) so it can also cover the derived case.
+/// No out-of-set semantic is ever stored, so resolvedSanitizerSemantic can
+/// never return an illegal semantic for any bit.
+void SanitizerArgs::parseSanitizeSemanticArgs(const Driver &D,
+                                              const llvm::opt::ArgList &Args,
+                                              bool DiagnoseErrors) {
+  for (const auto *Arg : Args.filtered(options::OPT_fsanitize_semantic_EQ)) {
+    Arg->claim();
+    for (unsigned I = 0, N = Arg->getNumValues(); I != N; ++I) {
+      StringRef Pair = Arg->getValue(I);
+      if (Pair.empty())
+        continue;
+
+      auto Colon = Pair.find(':');
+      if (Colon == StringRef::npos) {
+        if (DiagnoseErrors)
+          D.Diag(diag::err_drv_sanitize_semantic_malformed) << Pair;
+        continue;
+      }
+      StringRef CheckName = Pair.substr(0, Colon);
+      StringRef SemName = Pair.substr(Colon + 1);
+
+      // Resolve the check name against the -fsanitize= taxonomy (groups OK).
+      SanitizerMask CheckMask =
+          parseSanitizerValue(CheckName, /*AllowGroups=*/true);
+      if (!CheckMask) {
+        if (DiagnoseErrors)
+          D.Diag(diag::err_drv_sanitize_semantic_unknown_check) << CheckName;
+        continue;
+      }
+
+      ContractEvaluationSemantic Semantic;
+      if (!contractSemanticFromName(SemName, Semantic)) {
+        if (DiagnoseErrors)
+          D.Diag(diag::err_drv_sanitize_semantic_unknown_semantic) << SemName;
+        continue;
+      }
+
+      // "ignore" is out of every check's set -- always a hard error, whether
+      // the name is individual or a meta-group.
+      if (Semantic == ContractEvaluationSemantic::Ignore) {
+        if (DiagnoseErrors)
+          D.Diag(diag::err_drv_sanitize_semantic_unsupported)
+              << CheckName << contractSemanticName(Semantic);
+        continue;
+      }
+
+      bool IsGroup = isSanitizerMetaGroup(CheckName);
+      unsigned SemBit = 1u << static_cast<unsigned>(Semantic);
+
+      bool Errored = false;
+      forEachSanitizerBit(expandSanitizerGroups(CheckMask), [&](SanitizerMask
+                                                                   Bit,
+                                                               StringRef) {
+        // Routed-ness is per EXPANDED MEMBER BIT, not per named mask.  A
+        // meta-group ("all"/"undefined") whose group bit does not itself
+        // contain the routing bit would otherwise misclassify the routed
+        // address member as non-routed and admit a throwing observe/enforce
+        // on it (the noexcept libasan path can never propagate).  (For an
+        // individual name this is identical to a per-name test, since
+        // Clang's routed "address" is a single bit.)
+        bool Routed = isRoutedSanitizerCheck(Bit);
+        unsigned Allowed =
+            Routed ? routedAllowedSemantics() : genericAllowedSemantics(Bit);
+        if (Allowed & SemBit) {
+          storeExplicitSemantic(Bit, Semantic);
+          return;
+        }
+        if (IsGroup || Errored)
+          return; // group member that can't support it -> silently skip.
+        Errored = true;
+        if (!DiagnoseErrors)
+          return;
+        if (Routed && Semantic == ContractEvaluationSemantic::Enforce)
+          D.Diag(diag::err_drv_sanitize_semantic_routed_enforce) << CheckName;
+        else if (Routed && Semantic == ContractEvaluationSemantic::Observe)
+          D.Diag(diag::err_drv_sanitize_semantic_routed_observe) << CheckName;
+        else
+          D.Diag(diag::err_drv_sanitize_semantic_unsupported)
+              << CheckName << contractSemanticName(Semantic);
+      });
+    }
+  }
+}
+
+void SanitizerArgs::storeExplicitSemantic(SanitizerMask Bit,
+                                          ContractEvaluationSemantic Semantic) {
+  // A later -fsanitize-semantic= entry for the same bit overrides an earlier
+  // one (last wins), matching -fsanitize-recover=/-trap= left-to-right order.
+  for (auto &Entry : ExplicitSemantics)
+    if (Entry.first == Bit) {
+      Entry.second = Semantic;
+      return;
+    }
+  ExplicitSemantics.emplace_back(Bit, Semantic);
+}
+
+bool SanitizerArgs::isRoutedSanitizerCheck(SanitizerMask Bit) {
+  return static_cast<bool>(Bit & RoutedSanitizerBits);
+}
+
+bool SanitizerArgs::explicitSanitizerSemantic(
+    SanitizerMask Bit, ContractEvaluationSemantic &Out) const {
+  for (const auto &Entry : ExplicitSemantics)
+    if (Entry.first & Bit) {
+      Out = Entry.second;
+      return true;
+    }
+  return false;
+}
+
+ContractEvaluationSemantic
+SanitizerArgs::resolvedSanitizerSemantic(SanitizerMask Bit) const {
+  ContractEvaluationSemantic Explicit;
+  if (explicitSanitizerSemantic(Bit, Explicit))
+    return Explicit;
+
+  // P3100 Task 4.1: a routed check uses the p4298-gated non-throwing
+  // derivation.  (The "recover without p4298" combination is a hard error
+  // caught in applyRoutedSemanticP4298Gate; here it maps to noexcept_observe
+  // for the print seam, but the compile is already doomed in that case.)
+  if (isRoutedSanitizerCheck(Bit)) {
+    if (!Sanitizers.has(Bit))
+      return ContractEvaluationSemantic::Assume;
+    if (TrapSanitizers.has(Bit))
+      return ContractEvaluationSemantic::QuickEnforce;
+    if (RecoverableSanitizers.has(Bit))
+      // noexcept_observe under p4298; without p4298 this combination is a hard
+      // error (applyRoutedSemanticP4298Gate), so the value is inert there.
+      return ContractEvaluationSemantic::NoexceptObserve;
+    return ContractsP4298 ? ContractEvaluationSemantic::NoexceptEnforce
+                          : ContractEvaluationSemantic::QuickEnforce;
+  }
+
+  // Generic derivation (P3100 Task 1.2): not enabled -> assume; trap -> quick;
+  // recover -> observe; else enforce.
+  if (!Sanitizers.has(Bit))
+    return ContractEvaluationSemantic::Assume;
+  if (TrapSanitizers.has(Bit))
+    return ContractEvaluationSemantic::QuickEnforce;
+  if (RecoverableSanitizers.has(Bit))
+    return ContractEvaluationSemantic::Observe;
+  return ContractEvaluationSemantic::Enforce;
+}
+
+void SanitizerArgs::applyRoutedSemanticP4298Gate(const Driver &D,
+                                                 bool DiagnoseErrors) {
+  // Routing is only in effect under -fcontracts-p3100 and when the global
+  // opt-out -fsanitize-noncontract-callbacks is NOT set (it suppresses
+  // descriptor emission, so the runtime keeps stock behavior and no report is
+  // ever dispatched through the handler); when routing is off there is nothing
+  // to gate.  With -fcontracts-p4298 every noexcept_* request is legal.  This
+  // mirrors GCC's gate exactly (gcc/opts.cc: flag_contracts_p3100 &&
+  // !flag_sanitize_noncontract_callbacks && !flag_contracts_p4298).  The Task
+  // 1.3 allowed-set validation (address:ignore, throwing enforce/observe on a
+  // routed check) is done at parse time in parseSanitizeSemanticArgs and is
+  // NOT gated on the opt-out, matching GCC's parse_sanitizer_semantic_options.
+  if (!ContractsP3100 || SanitizeNoncontractCallbacks || ContractsP4298)
+    return;
+
+  forEachSanitizerBit(RoutedSanitizerBits, [&](SanitizerMask Bit, StringRef) {
+    if (!Sanitizers.has(Bit))
+      return;
+    StringRef CName = canonicalSanitizerName(Bit);
+
+    ContractEvaluationSemantic Explicit;
+    if (explicitSanitizerSemantic(Bit, Explicit)) {
+      if (Explicit == ContractEvaluationSemantic::NoexceptEnforce ||
+          Explicit == ContractEvaluationSemantic::NoexceptObserve) {
+        if (DiagnoseErrors)
+          D.Diag(diag::err_drv_sanitize_semantic_requires_p4298)
+              << CName << contractSemanticName(Explicit);
+      }
+      return;
+    }
+
+    // Derived noexcept_observe (from -fsanitize-recover=) without p4298: there
+    // is no non-throwing way to honor continue-on-violation.
+    if (!TrapSanitizers.has(Bit) && RecoverableSanitizers.has(Bit)) {
+      if (DiagnoseErrors)
+        D.Diag(diag::err_drv_sanitize_recover_routed_requires_p4298) << CName;
+    }
+  });
 }
 
 static std::string toString(const clang::SanitizerSet &Sanitizers) {
@@ -1550,6 +1952,30 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
   if (!TrapSanitizers.empty())
     CmdArgs.push_back(
         Args.MakeArgString("-fsanitize-trap=" + toString(TrapSanitizers)));
+
+  // P3100: re-render the resolved per-check contract evaluation semantic for
+  // every enabled sanitizer check to cc1, so CodeGen (CL2) consumes the fully
+  // resolved value without re-deriving it.  Only checks visited under their
+  // canonical name are emitted (each shared-bit group once).
+  if (ContractsP3100) {
+    forEachSanitizerBit(Sanitizers.Mask, [&](SanitizerMask Bit, StringRef Name) {
+      // Only emit under the canonical name for the bit so an aliased/multi-bit
+      // check is not emitted more than once for the same underlying semantic.
+      if (canonicalSanitizerName(Bit) != Name)
+        return;
+      ContractEvaluationSemantic Sem = resolvedSanitizerSemantic(Bit);
+      CmdArgs.push_back(Args.MakeArgString(
+          "-fsanitize-semantic=" + Name + ":" + contractSemanticName(Sem)));
+    });
+    if (SanitizeSemanticPrint)
+      CmdArgs.push_back("-fsanitize-semantic-print");
+  }
+
+  // P3100 Task 3.1: re-render the global opt-out to cc1 unconditionally (not
+  // gated on ContractsP3100), mirroring GCC's plain Common Driver flag; it is
+  // a strict no-op unless routing would otherwise be active.
+  if (SanitizeNoncontractCallbacks)
+    CmdArgs.push_back("-fsanitize-noncontract-callbacks");
 
   if (!MergeHandlers.empty())
     CmdArgs.push_back(

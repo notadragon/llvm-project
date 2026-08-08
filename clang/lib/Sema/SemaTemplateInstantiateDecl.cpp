@@ -4774,6 +4774,57 @@ Decl *TemplateDeclInstantiator::VisitRecordDecl(RecordDecl *D) {
   llvm_unreachable("There are only CXXRecordDecls in C++");
 }
 
+Decl *TemplateDeclInstantiator::VisitPostconditionCaptureDecl(
+    PostconditionCaptureDecl *D) {
+  // Substitute the initializer up front: an init-capture whose type was
+  // type-dependent must re-deduce its type from the substituted initializer
+  // (see below), so the initializer is needed before the type is finalized.
+  ExprResult NewInit;
+  if (D->hasInit()) {
+    NewInit = SemaRef.SubstExpr(D->getInit(), TemplateArgs);
+    if (NewInit.isInvalid())
+      return nullptr;
+  }
+
+  QualType NewType = SemaRef.SubstType(D->getType(), TemplateArgs,
+                                       D->getLocation(), D->getDeclName());
+  if (NewType.isNull())
+    return nullptr;
+
+  TypeSourceInfo *NewTInfo = SemaRef.SubstType(D->getTypeSourceInfo(),
+                                                TemplateArgs,
+                                                D->getLocation(),
+                                                D->getDeclName());
+
+  // A postcondition init-capture written with a type-dependent initializer --
+  // e.g. [c = x.val] on a dependent parameter x -- carries the <dependent type>
+  // placeholder as its parse-time type (ActOnPostconditionCapture deduces the
+  // type from the initializer, which is dependent here).  SubstType leaves that
+  // placeholder unchanged, so recompute the capture type from the substituted
+  // initializer, mirroring the non-dependent deduction ActOnPostconditionCapture
+  // performs.  Without this the placeholder reaches CodeGen and asserts
+  // ("Unknown builtin type" in getTypeInfoImpl).  Parameter captures are
+  // unaffected: their type is a template parameter that SubstType resolves.
+  if (!D->isParameterCapture() && NewInit.isUsable() &&
+      NewType->isDependentType()) {
+    NewType = NewInit.get()->getType();
+    NewTInfo =
+        SemaRef.Context.getTrivialTypeSourceInfo(NewType, D->getLocation());
+  }
+
+  auto *NewD = PostconditionCaptureDecl::Create(
+      SemaRef.Context, Owner, D->getBeginLoc(), D->getLocation(),
+      D->getIdentifier(), NewType, NewTInfo, D->getStorageClass());
+  NewD->setIsParameterCapture(D->isParameterCapture());
+  NewD->setIsPackExpansion(D->isPackExpansion());
+
+  if (NewInit.isUsable())
+    NewD->setInit(NewInit.get());
+
+  SemaRef.CurrentInstantiationScope->InstantiatedLocal(D, NewD);
+  return NewD;
+}
+
 Decl *TemplateDeclInstantiator::VisitResultNameDecl(ResultNameDecl *D) {
   QualType NewType = SemaRef.SubstType(D->getType(), TemplateArgs,
                                        D->getLocation(), D->getDeclName());
@@ -5909,6 +5960,50 @@ FunctionDecl *Sema::InstantiateFunctionDeclaration(
                                        /*Final=*/false);
 
   return cast_or_null<FunctionDecl>(SubstDecl(FD, FD->getParent(), MArgs));
+}
+
+void Sema::InstantiateVirtualFunctionContractsOnUse(
+    SourceLocation PointOfInstantiation, CXXMethodDecl *Function) {
+  // Only relevant under P3097: a virtual function's interface contracts are
+  // evaluated by the contract wrapper around the vtable dispatch, so they must
+  // exist as an instantiated (non-dependent) contract specifier even when the
+  // function's own definition is never instantiated.
+  if (!getLangOpts().ContractsP3097 || !Function->isVirtual())
+    return;
+
+  // Only for template instantiations: the pattern must carry contracts, and the
+  // instantiation must still be holding the pattern's own (dependent) contract
+  // specifier as a placeholder.  If it already has a substituted specifier
+  // (e.g. its definition was instantiated first), there is nothing to do.
+  const FunctionDecl *PatternDecl = Function->getTemplateInstantiationPattern();
+  if (!PatternDecl || !PatternDecl->hasContracts())
+    return;
+  if (!Function->getContracts() ||
+      Function->getContracts() != PatternDecl->getContracts())
+    return;
+  if (Function->isInvalidDecl() || Function->isDependentContext())
+    return;
+
+  // Guard against recursive / re-entrant instantiation.
+  InstantiatingTemplate Inst(*this, PointOfInstantiation, Function);
+  if (Inst.isInvalid())
+    return;
+
+  Sema::ContextRAII SavedContext(*this, Function);
+  LocalInstantiationScope Scope(*this);
+
+  MultiLevelTemplateArgumentList TemplateArgs = getTemplateInstantiationArgs(
+      Function, Function->getLexicalDeclContext(), /*Final=*/false,
+      /*Innermost=*/std::nullopt, /*RelativeToPrimary=*/false, PatternDecl);
+
+  // Make the instantiated parameters visible so the contract predicate's
+  // references resolve to this function's own parameters.
+  if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
+                                       TemplateArgs))
+    return;
+
+  InstantiateContractSpecifier(PointOfInstantiation, Function, PatternDecl,
+                               TemplateArgs);
 }
 
 void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
@@ -7290,7 +7385,8 @@ NamedDecl *Sema::FindInstantiatedDecl(SourceLocation Loc, NamedDecl *D,
       !cast<ParmVarDecl>(D)->getType()->isInstantiationDependentType())
     return D;
   if (isa<ParmVarDecl>(D) || isa<NonTypeTemplateParmDecl>(D) ||
-      isa<ResultNameDecl>(D) || isa<TemplateTypeParmDecl>(D) ||
+      isa<ResultNameDecl>(D) || isa<PostconditionCaptureDecl>(D) ||
+      isa<TemplateTypeParmDecl>(D) ||
       isa<TemplateTemplateParmDecl>(D) ||
       (ParentDependsOnArgs && (ParentDC->isFunctionOrMethod() ||
                                isa<OMPDeclareReductionDecl>(ParentDC) ||

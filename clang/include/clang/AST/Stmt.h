@@ -76,6 +76,7 @@ enum class PredefinedIdentKind;
 enum class SourceLocIdentKind;
 enum class StringLiteralKind;
 enum class ContractKind;
+enum class ContractEvaluationSemantic;
 
 //===----------------------------------------------------------------------===//
 // AST classes for statements.
@@ -927,7 +928,34 @@ protected:
     LLVM_PREFERRED_TYPE(ContractKind)
     unsigned ContractKind : 2;
 
-    enum { NumContractAssertBits = 3 };
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasMessage : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasLabel : 1;
+
+    // Bitmask of semantics allowed by the label's allowed_semantics facet.
+    // Bit N set means ContractEvaluationSemantic(N) is allowed.  The default
+    // (when no label restricts) is AllContractSemanticsMask.  The field is
+    // wide enough to hold every semantic value, including QuickEnforce (bit 4),
+    // the P3100 "assume" semantic (bit 5), and the D4298 NoexceptEnforce /
+    // NoexceptObserve semantics (bits 6 and 7).
+    LLVM_PREFERRED_TYPE(unsigned)
+    unsigned AllowedMask : 8;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasLocalHandler : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasQuery : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasCaptures : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasRequiresClause : 1;
+
+    enum { NumContractAssertBits = 17 };
 
     LLVM_PREFERRED_TYPE(unsigned)
     unsigned NumAttrs : 32 - NumStmtBits - NumContractAssertBits;

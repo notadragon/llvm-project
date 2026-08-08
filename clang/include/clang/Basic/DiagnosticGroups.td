@@ -2027,7 +2027,11 @@ def TrivialAutoVarInit : DiagGroup<"trivial-auto-var-init">;
 
 def ContractViolation : DiagGroup<"contract-violation">;
 
-def ContractWarning : DiagGroup<"contracts", [ContractViolation]>;
+// Warnings about problems in the P3595 contract configuration.
+def ContractConfiguration : DiagGroup<"contract-configuration">;
+
+def ContractWarning : DiagGroup<"contracts",
+                                [ContractViolation, ContractConfiguration]>;
 
 def EricWFFixme : DiagGroup<"ericwf-fixme">;
 

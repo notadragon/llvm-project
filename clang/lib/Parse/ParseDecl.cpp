@@ -2393,7 +2393,11 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
     ParseLexedAttributeList(LateParsedAttrs, FirstDecl, true, false);
   if (auto *FD = dyn_cast_or_null<FunctionDecl>(FirstDecl)) {
     if (!FD->isInvalidDecl() && !D.LateParsedContracts.empty()) {
-      assert(false);
+      // A contract on a non-defining function declaration (a prototype, e.g. in
+      // a header).  Parse its late-parsed contract predicates so an ill-formed
+      // predicate is diagnosed; they attach to this declaration only and are not
+      // merged onto a later definition (P4299 N-1: no cross-declaration contract
+      // merge for C).
       assert(!FD->isThisDeclarationADefinition());
       ParseLexedFunctionContracts(D.LateParsedContracts, FD, CES_AllScopes);
     }
@@ -7453,6 +7457,11 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       }
     } else {
       MaybeParseCXX11Attributes(FnAttrs);
+      // D4299: save C contract specifier tokens for later replay.
+      if (getLangOpts().ContractsP4299 &&
+          isFunctionContractKeyword(Tok)) {
+        LateParseFunctionContractSpecifierSeq(D.LateParsedContracts);
+      }
     }
   }
 

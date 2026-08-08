@@ -246,6 +246,7 @@ private:
 
   using UsingDirectivesTy = SmallVector<UsingDirectiveDecl *, 2>;
   UsingDirectivesTy UsingDirectives;
+  UsingDirectivesTy ContractControlUsingDirectives;
 
   /// Used to determine if errors occurred in this scope.
   DiagnosticErrorTrap ErrorTrap;
@@ -675,12 +676,21 @@ public:
     UsingDirectives.push_back(UDir);
   }
 
+  void PushContractControlUsingDirective(UsingDirectiveDecl *UDir) {
+    ContractControlUsingDirectives.push_back(UDir);
+  }
+
   using using_directives_range =
       llvm::iterator_range<UsingDirectivesTy::iterator>;
 
   using_directives_range using_directives() {
     return using_directives_range(UsingDirectives.begin(),
                                   UsingDirectives.end());
+  }
+
+  using_directives_range contract_control_using_directives() {
+    return using_directives_range(ContractControlUsingDirectives.begin(),
+                                  ContractControlUsingDirectives.end());
   }
 
   void updateNRVOCandidate(VarDecl *VD);

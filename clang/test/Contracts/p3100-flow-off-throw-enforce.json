@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:stmt.return.flow.off"}, "output": {"semantic": "enforce"}}
+]

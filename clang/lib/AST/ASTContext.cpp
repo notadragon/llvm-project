@@ -10453,26 +10453,39 @@ CreateBuiltinContractDestriptorTable(const ASTContext *Context) {
 
 static RecordDecl *
 CreateBuiltinContractViolationRecordDecl(const ASTContext *Context) {
+  // The data block layout for the new __cxa_contract_violation ABI.
+  // This matches the __cxa_contract_data_block wire format:
+  //   Field 0: const void* __descriptor_   (pointer to descriptor table)
+  //   Field 1: const void* __next_         (pointer to next block, null)
+  //   Field 2: const char* __file_         \
+  //   Field 3: const char* __function_      > source_location layout
+  //   Field 4: unsigned    __line_          |
+  //   Field 5: unsigned    __column_       /
+  //   Field 6: const char* __comment_
+  //   Field 7: const char* __message_
   RecordDecl *ViolationInfoT =
       Context->buildImplicitRecord("__builtin_contract_violation_info_t");
   ViolationInfoT->startDefinition();
 
   QualType ConstStrLiteralTy =
       Context->getPointerType(Context->getConstType(Context->CharTy));
+  QualType ConstVoidPtrTy =
+      Context->getPointerType(Context->getConstType(Context->VoidTy));
   using Pt = std::pair<QualType, const char *>;
-  std::array<std::pair<QualType, const char *>, 7> FieldInfo = {
-      Pt{Context->UnsignedIntTy, "__version_"},
+  std::array<std::pair<QualType, const char *>, 8> FieldInfo = {
+      Pt{ConstVoidPtrTy, "__descriptor_"},
+      Pt{ConstVoidPtrTy, "__next_"},
 
-      // This prefix of  {file, function, line, colunm} is important, as it
-      // matches the layout of the source_location impl struct. This means we
-      // can use it to produce a valid source location object.
-      //
-      Pt{ConstStrLiteralTy, "__file_"}, Pt{ConstStrLiteralTy, "__function_"},
+      // The {file, function, line, column} prefix matches the layout of
+      // the source_location::__impl struct and __cxa_source_location.
+      // The descriptor's source_location field ID points here.
+      Pt{ConstStrLiteralTy, "__file_"},
+      Pt{ConstStrLiteralTy, "__function_"},
       Pt{Context->UnsignedIntTy, "__line_"},
       Pt{Context->UnsignedIntTy, "__column_"},
 
-      Pt{ConstStrLiteralTy, "__message_"},
-      Pt{Context->UnsignedIntTy, "__contract_kind_"}};
+      Pt{ConstStrLiteralTy, "__comment_"},
+      Pt{ConstStrLiteralTy, "__message_"}};
   const auto NumFields = FieldInfo.size();
 
   // Create fields
@@ -10496,8 +10509,25 @@ UnnamedGlobalConstantDecl *
 ASTContext::BuildViolationObject(const ContractStmt *CS,
                                  const FunctionDecl *CurDecl) {
   assert(CS);
-  SourceLocation Loc = CS->getBeginLoc();
+  // P3099: message() is null when no diagnostic message was supplied, so "no
+  // message" is distinguishable from an explicit empty message ("").
+  std::string MsgStorage;
+  std::optional<StringRef> Message;
+  if (CS->hasMessage() || CS->hasTransformedMessage() ||
+      CS->getAttrAs<ContractMessageAttr>() != nullptr) {
+    MsgStorage = CS->getUserMessage(*this);
+    Message = MsgStorage;
+  }
+  return BuildViolationObject(CS->getBeginLoc(), CS->getComment(*this), Message,
+                              CurDecl);
+}
 
+// P3100: build a violation object for a compiler-synthesized implicit contract
+// assertion (no ContractStmt), from a raw source location and comment.
+UnnamedGlobalConstantDecl *
+ASTContext::BuildViolationObject(SourceLocation Loc, StringRef Comment,
+                                 std::optional<StringRef> Message,
+                                 const FunctionDecl *CurDecl) {
   auto &Ctx = *this;
 
   PresumedLoc PLoc = Ctx.getSourceManager().getPresumedLoc(
@@ -10511,27 +10541,35 @@ ASTContext::BuildViolationObject(const ContractStmt *CS,
     return APValue(Res, CharUnits::Zero(), Path, /*OnePastTheEnd=*/false);
   };
 
+  auto MakeNullPtr = [&]() {
+    return APValue((const Expr *)nullptr, CharUnits::Zero(),
+                   ArrayRef<APValue::LValuePathEntry>(),
+                   /*OnePastTheEnd=*/false);
+  };
+
   const RecordDecl *ImplDecl =
       dyn_cast_or_null<RecordDecl>(getBuiltinContractViolationRecordDecl());
   assert(ImplDecl);
 
+  // Data block has 8 fields: descriptor, next, file, function, line, column,
+  // comment, message.
   APValue Value(APValue::UninitStruct(), 0, 8);
   for (const FieldDecl *F : ImplDecl->fields()) {
     StringRef Name = F->getName();
-    if (Name == "__version_") {
-      llvm::APSInt IntVal = Ctx.MakeIntValue(3, F->getType());
-      Value.getStructField(F->getFieldIndex()) = APValue(IntVal);
-    } else if (Name == "__message_") {
-      Value.getStructField(F->getFieldIndex()) =
-          MakeStringLiteral(CS->getMessage(Ctx));
+    if (Name == "__descriptor_") {
+      // Will be patched by codegen to point to the descriptor table.
+      // For now, emit a null pointer that codegen will replace.
+      Value.getStructField(F->getFieldIndex()) = MakeNullPtr();
+    } else if (Name == "__next_") {
+      // Null -- single-block chain.
+      Value.getStructField(F->getFieldIndex()) = MakeNullPtr();
     } else if (Name == "__file_") {
       SmallString<256> Path(PLoc.getFilename());
       clang::Preprocessor::processPathForFileMacro(Path, Ctx.getLangOpts(),
                                                    Ctx.getTargetInfo());
       Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(Path);
     } else if (Name == "__function_") {
-      // Note: this emits the PrettyFunction name -- different than what
-      // __builtin_FUNCTION() above returns!
+      // PrettyFunction name, matching GCC's cxx_printable_name.
       Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(
           CurDecl && !isa<TranslationUnitDecl>(CurDecl)
               ? StringRef(PredefinedExpr::ComputeName(
@@ -10543,22 +10581,13 @@ ASTContext::BuildViolationObject(const ContractStmt *CS,
     } else if (Name == "__column_") {
       llvm::APSInt IntVal = Ctx.MakeIntValue(PLoc.getColumn(), F->getType());
       Value.getStructField(F->getFieldIndex()) = APValue(IntVal);
-
-    } else if (Name == "__contract_kind_") {
-      unsigned ContractKindValue = [&]() {
-        switch (CS->getContractKind()) {
-        case ContractKind::Pre:
-          return 1;
-        case ContractKind::Post:
-          return 2;
-        case ContractKind::Assert:
-          return 3;
-        }
-        llvm_unreachable("unhandled ContractKind");
-      }();
-
-      llvm::APSInt IntVal = Ctx.MakeIntValue(ContractKindValue, F->getType());
-      Value.getStructField(F->getFieldIndex()) = APValue(IntVal);
+    } else if (Name == "__comment_") {
+      Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(Comment);
+    } else if (Name == "__message_") {
+      // P3099: message() is null when no diagnostic message was supplied, so
+      // "no message" is distinguishable from an explicit empty message ("").
+      Value.getStructField(F->getFieldIndex()) =
+          Message ? MakeStringLiteral(*Message) : MakeNullPtr();
     } else {
       assert(false &&
              "unexpected field in __builtin_contract_violation_info_t");

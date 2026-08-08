@@ -499,7 +499,10 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
     }
   }
 
-  EmitIfUsed(*this, GetSharedContractViolationEnforceBlock(false));
+  // One shared enforce block may exist per assertion kind (Pre/Post/Assert).
+  for (ContractKind Kind :
+       {ContractKind::Pre, ContractKind::Post, ContractKind::Assert})
+    EmitIfUsed(*this, GetSharedContractViolationEnforceBlock(Kind, false));
   EmitIfUsed(*this, GetSharedContractViolationTrapBlock(false));
   EmitIfUsed(*this, EHResumeBlock);
   EmitIfUsed(*this, TerminateLandingPad);
@@ -831,6 +834,76 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
         Fn->addFnAttr("no_sanitize_thread");
     }
   }
+
+  // P3100 Task 2.1 (CL2, assume): when -fcontracts-p3100 resolves the user-space
+  // address check to assume, AddressSanitizer must not instrument this function
+  // -- byte-identical to a build without -fsanitize=address for that check.
+  // Clear the address bit so the SanitizeAddress attribute below is not applied;
+  // the (missing) attribute streams through (Thin)LTO exactly like GCC's
+  // per-function no_sanitize("address"), so the ASan pass honors it under LTO
+  // and non-LTO alike.
+  if (getLangOpts().ContractsP3100 &&
+      SanOpts.has(SanitizerKind::Address) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Address) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Address, false);
+
+  // Same for the two ASan pointer-pair checks (pointer-compare,
+  // pointer-subtract): when one resolves to assume, its instrumentation
+  // (__sanitizer_ptr_cmp / __sanitizer_ptr_sub) must not be emitted for this
+  // function.
+  if (getLangOpts().ContractsP3100)
+    for (SanitizerMask Bit :
+         {SanitizerKind::PointerCompare, SanitizerKind::PointerSubtract})
+      if (SanOpts.has(Bit) &&
+          CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
+              ContractEvaluationSemantic::Assume)
+        SanOpts.set(Bit, false);
+
+  // Same for every routed UBSan runtime check: when one resolves to assume, its
+  // instrumentation must not be emitted for this function (byte-identical to a
+  // build without that -fsanitize= check).
+  if (getLangOpts().ContractsP3100) {
+    static const SanitizerMask RoutedUbsanBits[] = {
+        SanitizerKind::Vptr,          SanitizerKind::Function,
+        SanitizerKind::Alignment,     SanitizerKind::ObjectSize,
+        SanitizerKind::NonnullAttribute,
+        SanitizerKind::ReturnsNonnullAttribute,
+        SanitizerKind::PointerOverflow,
+        SanitizerKind::Null,          SanitizerKind::ShiftBase,
+        SanitizerKind::ShiftExponent, SanitizerKind::IntegerDivideByZero,
+        SanitizerKind::SignedIntegerOverflow,
+        SanitizerKind::Bool,          SanitizerKind::Enum,
+        SanitizerKind::FloatCastOverflow,
+        SanitizerKind::ArrayBounds,   SanitizerKind::Return,
+        SanitizerKind::Unreachable,   SanitizerKind::VLABound,
+        SanitizerKind::Builtin,       SanitizerKind::FloatDivideByZero,
+        SanitizerKind::UnsignedIntegerOverflow,
+        // implicit-conversion is a multi-bit group; list its members
+        // individually (SanitizerSet::has requires a single-bit mask).
+        SanitizerKind::ImplicitUnsignedIntegerTruncation,
+        SanitizerKind::ImplicitSignedIntegerTruncation,
+        SanitizerKind::ImplicitIntegerSignChange,
+        SanitizerKind::ImplicitBitfieldConversion,
+        SanitizerKind::LocalBounds,   SanitizerKind::ObjCCast};
+    for (SanitizerMask Bit : RoutedUbsanBits)
+      if (SanOpts.has(Bit) &&
+          CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
+              ContractEvaluationSemantic::Assume)
+        SanOpts.set(Bit, false);
+  }
+
+  // Same for ThreadSanitizer: thread:assume must not instrument this function.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Thread) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Thread) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Thread, false);
+
+  // Same for MemorySanitizer: memory:assume must not instrument this function.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Memory) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Memory) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Memory, false);
 
   if (ShouldSkipSanitizerInstrumentation()) {
     CurFn->addFnAttr(llvm::Attribute::DisableSanitizerInstrumentation);
@@ -1472,6 +1545,29 @@ QualType CodeGenFunction::BuildFunctionArgList(GlobalDecl GD,
   return ResTy;
 }
 
+namespace {
+// P3098: postcondition captures are ordinary automatic locals, so their
+// destructor cleanups are already on the EHScopeStack in lexical order by
+// the time the prologue capture loop finishes. Pushing this cleanup right
+// after them means it runs (LIFO) before those destructors on every normal
+// exit path -- explicit return, implicit fallthrough, or an early return
+// buried in the body -- without restructuring FinishFunction/
+// EmitFunctionEpilog, which only runs once the captures would already have
+// been destroyed. Being normal-only, it does not run during exceptional
+// unwinding (the body-throws path must destroy captures without evaluating
+// predicates).
+struct EmitPendingPostContracts final : EHScopeStack::Cleanup {
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurCodeDecl);
+    llvm::Value *RV = nullptr;
+    if (FD && CGF.ReturnValue.isValid() &&
+        !CodeGenFunction::hasAggregateEvaluationKind(FD->getReturnType()))
+      RV = CGF.Builder.CreateLoad(CGF.ReturnValue);
+    CGF.EmitPostContracts(RV);
+  }
+};
+} // end anonymous namespace
+
 void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
                                    const CGFunctionInfo &FnInfo) {
   assert(Fn && "generating code for null Function");
@@ -1570,9 +1666,38 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // Emit the standard function prologue.
   StartFunction(GD, ResTy, Fn, FnInfo, Args, Loc, BodyRange.getBegin());
 
-  // FIXME(EricWF): I don't think this should go here.
-  for (ContractStmt *S : FD->preconditions())
-    EmitStmt(S);
+  // Emit preconditions and postcondition capture initializations in
+  // lexical order (P3098: captures are initialized at function entry).
+  if (FD->hasContracts()) {
+    bool EmittedAnyCapture = false;
+    for (auto *CS : FD->getContracts()->contracts()) {
+      if (CS->getContractKind() == ContractKind::Pre) {
+        EmitStmt(CS);
+      } else if (CS->getContractKind() == ContractKind::Post &&
+                 CS->hasCaptures()) {
+        ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(
+            getContext(), CurFuncDecl ? CurFuncDecl->getDeclContext() : nullptr);
+        // 'assume' lowers to 'ignore' (no check emitted, see
+        // emitCheckForSemantic in CGContracts.cpp): the capture must not be
+        // constructed either, since the whole postcondition is gated as a
+        // unit.
+        if (Sem != ContractEvaluationSemantic::Ignore &&
+            Sem != ContractEvaluationSemantic::Assume) {
+          EmitPostconditionCaptureInit(CS, Sem);
+          EmittedAnyCapture = true;
+        }
+      }
+    }
+    // P3098: once any capture is live, postcondition evaluation must be
+    // ordered ahead of that capture's destructor cleanup (all predicates,
+    // then destroy in reverse) rather than left to run whenever
+    // EmitFunctionEpilog happens to be reached, which is already after the
+    // captures have been destroyed. See EmitPendingPostContracts above.
+    if (EmittedAnyCapture) {
+      EHStack.pushCleanup<EmitPendingPostContracts>(NormalCleanup);
+      PostContractsHandledByPrologueCleanup = true;
+    }
+  }
 
   // Save parameters for coroutine function.
   if (Body && isa_and_nonnull<CoroutineBodyStmt>(Body))
@@ -1639,7 +1764,24 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     EmitCall(FnInfo, GDStubCallee, ReturnValueSlot(), CallArgs, nullptr, false,
              Loc);
   } else if (Body) {
-    EmitFunctionBody(Body);
+    // P3100: for a function-try-block on a value-returning function, guard the
+    // end of the try body from *inside* the try's EH scope, so the
+    // function-try-block's own handlers can catch a throwing observe/enforce
+    // flow-off reaction ({stmt.return.flow.off}).  The generic EmitFunctionBody
+    // path would emit the reaction only after the try scope is popped (handled
+    // below, covering a handler that runs off its own end instead).
+    const auto *FnTry = dyn_cast<CXXTryStmt>(Body);
+    if (FnTry && getLangOpts().ContractsP3100 && getLangOpts().CPlusPlus &&
+        !FD->hasImplicitReturnZero() && !FD->getReturnType()->isVoidType() &&
+        !(CGM.getLangOpts().OpenMPIsTargetDevice && Target.getTriple().isGPU())) {
+      EnterCXXTryStmt(*FnTry);
+      EmitStmt(FnTry->getTryBlock());
+      if (!SawAsmBlock && Builder.GetInsertBlock())
+        EmitImplicitFlowOffReaction(FD);
+      ExitCXXTryStmt(*FnTry);
+    } else {
+      EmitFunctionBody(Body);
+    }
   } else
     llvm_unreachable("no definition for emitted function");
 
@@ -1651,6 +1793,13 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   //   function call is used by the caller, the behavior is undefined.
   if (getLangOpts().CPlusPlus && !FD->hasImplicitReturnZero() && !SawAsmBlock &&
       !FD->getReturnType()->isVoidType() && Builder.GetInsertBlock()) {
+    // P3100: if implicit contract assertions are enabled and this flow-off-end
+    // ({stmt.return.flow.off}) assertion resolves to a non-"assume" semantic,
+    // emit its reaction (terminate / handler / defined return) and skip the
+    // default missing-return handling below.
+    if (getLangOpts().ContractsP3100 && EmitImplicitFlowOffReaction(FD)) {
+      // Handled by the implicit contract assertion.
+    } else {
     bool ShouldEmitUnreachable =
         CGM.getCodeGenOpts().StrictReturn ||
         !CGM.MayDropFunctionReturn(FD->getASTContext(), FD->getReturnType());
@@ -1669,11 +1818,8 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       Builder.CreateUnreachable();
       Builder.ClearInsertionPoint();
     }
+    }
   }
-  // FIXME(EricWF): I don't think this should go here.
-  // Also we'll need to figure out how to reference the return value
-  // Post Contracts are emitted in ReturnValueCheck
-
   // Emit the standard function epilogue.
   FinishFunction(BodyRange.getEnd());
 

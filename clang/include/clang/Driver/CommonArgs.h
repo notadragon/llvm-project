@@ -176,6 +176,15 @@ bool isUseSeparateSections(const llvm::Triple &Triple);
 void addSeparateSectionFlags(const llvm::Triple &Triple,
                              const llvm::opt::ArgList &Args,
                              llvm::opt::ArgStringList &CmdArgs);
+
+/// Returns true if the C++ contracts feature (-fcontracts) is effectively
+/// enabled for this compilation: explicitly via -fcontracts, implicitly via
+/// C++26 mode, or implicitly via any per-paper C++ contracts sub-flag
+/// (-fcontracts-pNNNN, excluding the C-only -fcontracts-p4299).  An explicit
+/// -fno-contracts suppresses it.  This is the single source of truth for the
+/// contracts implication, shared by the driver's -cc1 forwarding and its link
+/// decision (which cannot observe the cc1-stage LangOpts implication).
+bool wantsCxxContracts(const llvm::opt::ArgList &Args);
 // Parse -mtls-dialect=. Return true if the target supports both general-dynamic
 // and TLSDESC, and TLSDESC is requested.
 bool isTLSDESCEnabled(const ToolChain &TC, const llvm::opt::ArgList &Args);

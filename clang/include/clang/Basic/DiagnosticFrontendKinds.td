@@ -561,4 +561,8 @@ def warn_dyndbg_unable_to_create_target : Warning<
 
 def err_dyndbg_no_instrumentation : Error<
     "'-fdynamic-debugging' unsupported with instrumentation (PGO/code coverage)">;
+def err_c_contract_handler_signature : Error<
+    "'handle_contract_violation' must have signature "
+    "'void(const contract_violation_t *)' to be used as a "
+    "contract-violation handler">;
 }

@@ -3298,6 +3298,9 @@ private:
   Decl *ParseUsingDirective(DeclaratorContext Context, SourceLocation UsingLoc,
                             SourceLocation &DeclEnd, ParsedAttributes &attrs);
 
+  Decl *ParseContractControlUsingDirective(SourceLocation UsingLoc,
+                                           SourceLocation &DeclEnd);
+
   struct UsingDeclarator {
     SourceLocation TypenameLoc;
     CXXScopeSpec SS;
@@ -9145,6 +9148,8 @@ private:
 
   StmtResult ParseFunctionContractSpecifierImpl(
       llvm::function_ref<QualType()> ReturnTypeResolver, ContractScopeOffset ScopeOffset, bool &IsInvalid);
+
+  bool ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures);
 
   void LateParseFunctionContractSpecifierSeq(CachedTokens &ContractToks);
   bool LateParseFunctionContractSpecifier(CachedTokens &ContractToks);

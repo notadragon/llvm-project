@@ -54,11 +54,25 @@ struct _BuiltinContractStruct<3> {
   unsigned contract_kind;
 };
 
+template <>
+struct _BuiltinContractStruct<4> {
+  enum { VERSION = 4 };
+  unsigned version;
+  const char* file;
+  const char* function;
+  unsigned lineno = 0;
+  unsigned column = 0;
+  const char* comment;
+  const char* message;
+  unsigned contract_kind;
+};
+
 union _BuiltinContractStructUnion {
   _BuiltinContractStruct<0> v0;
   _BuiltinContractStruct<1> v1;
   _BuiltinContractStruct<2> v2;
   _BuiltinContractStruct<3> v3;
+  _BuiltinContractStruct<4> v4;
 };
 
 
@@ -87,6 +101,15 @@ _ContractViolationImpl create_impl(void* data, evaluation_semantic* sem = nullpt
         .comment  = data_union->v3.comment,
         .location = std::source_location::__create_from_pointer(
             reinterpret_cast<const char*>(data) + __builtin_offsetof(_BuiltinContractStruct<3>, file))};
+  case 4:
+    return _ContractViolationImpl{
+        .kind     = static_cast<assertion_kind>(data_union->v4.contract_kind),
+        .semantic = sem ? *sem : evaluation_semantic::enforce,
+        .mode     = mode ? *mode : _DetectionMode::predicate_false,
+        .comment  = data_union->v4.comment,
+        .message  = data_union->v4.message,
+        .location = std::source_location::__create_from_pointer(
+            reinterpret_cast<const char*>(data) + __builtin_offsetof(_BuiltinContractStruct<4>, file))};
   default:
     return _ContractViolationImpl{
         .kind     = assertion_kind::assert,
@@ -102,7 +125,7 @@ _ContractViolationImpl create_impl(void* data, evaluation_semantic* sem = nullpt
 } // namespace __cxxabi
 
 extern "C" inline void
-__handle_contract_violation_v3(unsigned __semantic, unsigned __mode, void* dataptr) {
+__handle_contract_violation_v4(unsigned __semantic, unsigned __mode, void* dataptr) {
   using namespace std::contracts;
   evaluation_semantic sem = static_cast<evaluation_semantic>(__semantic);
   _DetectionMode mode = static_cast<_DetectionMode>(__mode);

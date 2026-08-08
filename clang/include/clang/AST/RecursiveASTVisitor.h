@@ -2307,6 +2307,8 @@ DEF_TRAVERSE_DECL(BindingDecl, {
   }
 })
 
+DEF_TRAVERSE_DECL(PostconditionCaptureDecl, { TRY_TO(TraverseVarHelper(D)); })
+
 DEF_TRAVERSE_DECL(ResultNameDecl, {})
 
 DEF_TRAVERSE_DECL(MSPropertyDecl, { TRY_TO(TraverseDeclaratorHelper(D)); })

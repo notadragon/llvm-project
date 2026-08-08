@@ -121,6 +121,7 @@ namespace clang {
     void VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D);
     void VisitTemplateDecl(TemplateDecl *D);
     void VisitConceptDecl(ConceptDecl *D);
+    void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
     void VisitResultNameDecl(ResultNameDecl *D);
     void VisitContractSpecifierDecl(ContractSpecifierDecl *D);
     void VisitImplicitConceptSpecializationDecl(
@@ -1660,6 +1661,7 @@ void ASTDeclWriter::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
   Record.AddDeclRef(D->getNominatedNamespace());
   Record.AddDeclRef(dyn_cast<Decl>(D->getCommonAncestor()));
+  Record.push_back(D->isContractControl());
   Code = serialization::DECL_USING_DIRECTIVE;
 }
 
@@ -1916,6 +1918,14 @@ void ASTDeclWriter::VisitConceptDecl(ConceptDecl *D) {
   VisitTemplateDecl(D);
   Record.AddStmt(D->getConstraintExpr());
   Code = serialization::DECL_CONCEPT;
+}
+
+void ASTDeclWriter::VisitPostconditionCaptureDecl(
+    PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  Record.push_back(D->isParameterCapture());
+  Record.push_back(D->isPackExpansion());
+  Code = serialization::DECL_POSTCONDITION_CAPTURE;
 }
 
 void ASTDeclWriter::VisitResultNameDecl(ResultNameDecl *D) {

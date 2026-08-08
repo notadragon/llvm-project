@@ -454,6 +454,7 @@ public:
   void VisitOMPDeclareMapperDecl(OMPDeclareMapperDecl *D);
   void VisitOMPRequiresDecl(OMPRequiresDecl *D);
   void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
+  void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
   void VisitResultNameDecl(ResultNameDecl *RND);
   void VisitContractSpecifierDecl(ContractSpecifierDecl *CSD);
 
@@ -893,6 +894,13 @@ void ASTDeclReader::VisitValueDecl(ValueDecl *VD) {
     DeferredTypeID = Record.getGlobalTypeID(Record.readInt());
   else
     VD->setType(Record.readType());
+}
+
+void ASTDeclReader::VisitPostconditionCaptureDecl(
+    PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  D->setIsParameterCapture(Record.readInt());
+  D->setIsPackExpansion(Record.readInt());
 }
 
 void ASTDeclReader::VisitResultNameDecl(ResultNameDecl *VD) {
@@ -2000,6 +2008,7 @@ void ASTDeclReader::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   D->QualifierLoc = Record.readNestedNameSpecifierLoc();
   D->NominatedNamespace = readDeclAs<NamedDecl>();
   D->CommonAncestor = readDeclAs<DeclContext>();
+  D->IsContractControl = Record.readInt();
 }
 
 void ASTDeclReader::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
@@ -4305,6 +4314,9 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
     break;
   case DECL_RESULT_NAME:
     D = ResultNameDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_POSTCONDITION_CAPTURE:
+    D = PostconditionCaptureDecl::CreateDeserialized(Context, ID);
     break;
   case DECL_CONTRACT_SPECIFIER:
     D = ContractSpecifierDecl::CreateDeserialized(Context, ID,

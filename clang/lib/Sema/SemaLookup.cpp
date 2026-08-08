@@ -125,6 +125,11 @@ namespace {
             if (SemaRef.isVisible(I))
               visit(I, InnermostFileDC);
         }
+        if (SemaRef.InAssertionControlExpression) {
+          for (auto *I : S->contract_control_using_directives())
+            if (SemaRef.isVisible(I))
+              visit(I, InnermostFileDC);
+        }
       }
     }
 
@@ -161,6 +166,9 @@ namespace {
       SmallVector<DeclContext*, 4> queue;
       while (true) {
         for (auto *UD : DC->using_directives()) {
+          if (UD->isContractControl() &&
+              !SemaRef.InAssertionControlExpression)
+            continue;
           DeclContext *NS = UD->getNominatedNamespace();
           if (SemaRef.isVisible(UD) && visited.insert(NS).second) {
             addUsingDirective(UD, EffectiveDC);
@@ -4241,6 +4249,9 @@ private:
       ShadowContextRAII Shadow(Visited);
       for (auto *I : Ctx->using_directives()) {
         if (!Result.getSema().isVisible(I))
+          continue;
+        if (I->isContractControl() &&
+            !Result.getSema().InAssertionControlExpression)
           continue;
         lookupInDeclContext(I->getNominatedNamespace(), Result,
                             QualifiedNameLookup, InBaseClass);

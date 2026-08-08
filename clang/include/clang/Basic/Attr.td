@@ -3787,8 +3787,8 @@ def ContractSemantic : StmtAttr {
   let Spellings = [CXX11<"clang", "contract_semantic">];
   let Args = [
     EnumArgument<"Semantic", "ContractEvaluationSemantic", /*is_string=*/true,
-        ["ignore", "observe", "enforce", "quick_enforce"],
-        ["Ignore", "Observe", "Enforce", "QuickEnforce"],
+        ["ignore", "observe", "enforce", "quick_enforce", "assume"],
+        ["Ignore", "Observe", "Enforce", "QuickEnforce", "Assume"],
         /*opt=*/0, /*fake=*/0, /*isExternalType=*/1, /*isCovered=*/1>,
     DefaultBoolArgument<"Override", 0, /*fake*/ 0>
   ];

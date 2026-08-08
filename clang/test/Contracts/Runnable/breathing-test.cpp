@@ -1,5 +1,7 @@
-// RUN: %clang -fcontracts -std=c++20 -fcontract-evaluation-semantic=observe %s -o %t
-// RUN:  %t 1>&2
+// RUN: %clang -fcontracts -std=c++20 -fcontract-evaluation-semantic=observe %libcxx_flags %s -o %t
+// RUN: %t
+// (Previously XFAIL for missing __cxa_contract_violation_*_observe_pf link
+// symbols; now resolved: -fcontracts auto-links libcontracts.)
 
 #include "contracts.h"
 #include "contracts-runtime.h"

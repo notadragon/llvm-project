@@ -7820,10 +7820,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_finline_max_stacksize_EQ);
 
+  // FIXME: Find a better way to determine whether we are in C++26.
+  bool HaveCxx26 =
+      Std &&
+      (Std->containsValue("c++2c") || Std->containsValue("gnu++2c") ||
+       Std->containsValue("c++26") || Std->containsValue("gnu++26") ||
+       Std->containsValue("c++latest") || Std->containsValue("gnu++latest"));
   // FIXME: Find a better way to determine whether we are in C++20.
   bool HaveCxx20 =
       Std &&
-      (Std->containsValue("c++2a") || Std->containsValue("gnu++2a") ||
+      (HaveCxx26 ||
+       Std->containsValue("c++2a") || Std->containsValue("gnu++2a") ||
        Std->containsValue("c++20") || Std->containsValue("gnu++20") ||
        Std->containsValue("c++2b") || Std->containsValue("gnu++2b") ||
        Std->containsValue("c++23") || Std->containsValue("gnu++23") ||
@@ -7964,30 +7971,76 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-faligned-allocation");
   }
 
-  if (Arg *A = Args.getLastArg(options::OPT_fcontracts, options::OPT_fno_contracts)) {
-    [&]() {
-      if (A->getOption().matches(options::OPT_fno_contracts)) {
-        CmdArgs.push_back("-fno-contracts");
-        return;
-      }
-      CmdArgs.push_back("-fcontracts");
-      if ((A = Args.getLastArg(options::OPT_fcontract_evaluation_semantic_EQ))) {
-        CmdArgs.push_back(Args.MakeArgString(
-            Twine("-fcontract-evaluation-semantic=") + A->getValue()));
-      }
-      std::vector<std::string> ContractGroups =
-          Args.getAllArgValues(options::OPT_fcontract_group_evaluation_semantic_EQ);
-      CmdArgs.push_back(Args.MakeArgString(Twine("-fcontract-group-evaluation-semantic=") +
-                                           llvm::join(ContractGroups, ",")));
+  // Contracts (C++26).  -fcontracts is enabled by the base flag, by C++26 mode,
+  // or by any per-paper C++ contracts sub-flag; an explicit -fno-contracts
+  // suppresses it.  tools::wantsCxxContracts is the single predicate shared
+  // with the link decision in Gnu.cpp so the two never disagree.
+  if (tools::wantsCxxContracts(Args)) {
+    CmdArgs.push_back("-fcontracts");
+    if (Arg *A =
+            Args.getLastArg(options::OPT_fcontract_evaluation_semantic_EQ))
+      CmdArgs.push_back(Args.MakeArgString(
+          Twine("-fcontract-evaluation-semantic=") + A->getValue()));
+    for (const Arg *A : Args.filtered(
+             options::OPT_fcontracts_group_evaluation_semantic_EQ,
+             options::OPT_fcontract_configuration_EQ,
+             options::OPT_fcontract_configuration_file_EQ)) {
+      A->claim();
+      A->render(Args, CmdArgs);
+    }
 
-      Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_exceptions,
-                         options::OPT_fno_contract_exceptions);
+    Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_exceptions,
+                       options::OPT_fno_contract_exceptions);
 
-      Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_constification,
-                         options::OPT_fno_contract_constification);
-      Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_lambda_capture_restrictions,
-                         options::OPT_fno_contract_lambda_capture_restrictions);
-    }();
+    Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_constification,
+                       options::OPT_fno_contract_constification);
+    Args.addOptOutFlag(CmdArgs,
+                       options::OPT_fcontract_lambda_capture_restrictions,
+                       options::OPT_fno_contract_lambda_capture_restrictions);
+
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3097,
+                      options::OPT_fno_contracts_p3097);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3098,
+                      options::OPT_fno_contracts_p3098);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3099,
+                      options::OPT_fno_contracts_p3099);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3290,
+                      options::OPT_fno_contracts_p3290);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3400,
+                      options::OPT_fno_contracts_p3400);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p4283,
+                      options::OPT_fno_contracts_p4283);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3850,
+                      options::OPT_fno_contracts_p3850);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p3100,
+                      options::OPT_fno_contracts_p3100);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p4298,
+                      options::OPT_fno_contracts_p4298);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_p4301,
+                      options::OPT_fno_contracts_p4301);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
+                      options::OPT_fno_contracts_allow_assume);
+  } else if (Args.hasArg(options::OPT_fno_contracts)) {
+    // Explicitly disabled (e.g. -std=c++26 -fno-contracts): tell -cc1.
+    CmdArgs.push_back("-fno-contracts");
+  }
+
+  // D4299: C contracts support
+  if (Arg *A = Args.getLastArg(options::OPT_fcontracts_p4299,
+                               options::OPT_fno_contracts_p4299);
+      A && A->getOption().matches(options::OPT_fcontracts_p4299)) {
+    CmdArgs.push_back("-fcontracts-p4299");
+    if ((A = Args.getLastArg(options::OPT_fcontract_evaluation_semantic_EQ))) {
+      CmdArgs.push_back(Args.MakeArgString(
+          Twine("-fcontract-evaluation-semantic=") + A->getValue()));
+    }
+    for (const Arg *A : Args.filtered(
+             options::OPT_fcontracts_group_evaluation_semantic_EQ,
+             options::OPT_fcontract_configuration_EQ,
+             options::OPT_fcontract_configuration_file_EQ)) {
+      A->claim();
+      A->render(Args, CmdArgs);
+    }
   }
 
   // The default new alignment can be specified using a dedicated option or via

@@ -481,4 +481,58 @@ def warn_try_not_valid_on_target : Warning<
   "target '%0' does not support exception handling;"
   " 'catch' block is ignored">,
   InGroup<OpenMPTargetException>;
+
+// P3595 contract configuration diagnostics.  These describe an external
+// configuration source (inline JSON or a JSON file), so they are reported
+// without a source location; the source description and entry index are
+// carried in the message.
+def err_contract_config_invalid_json : Error<
+  "invalid JSON in contract configuration from %0: %1">;
+def err_contract_config_not_array : Error<
+  "contract configuration from %0 must be a JSON array">;
+def err_contract_config_entry_not_object : Error<
+  "entry %0 in contract configuration from %1 must be a JSON object">;
+def err_contract_config_missing_output : Error<
+  "entry %0 in contract configuration from %1 is missing required "
+  "'output' field">;
+def err_contract_config_output_not_object : Error<
+  "'output' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_invalid_semantic : Error<
+  "invalid contract evaluation semantic '%0' in entry %1 of contract "
+  "configuration from %2">;
+def err_contract_config_output_needs_semantic_or_dynamic : Error<
+  "'output' in entry %0 of contract configuration from %1 must have a "
+  "'semantic' or a 'dynamic' field">;
+def err_contract_config_dynamic_not_object : Error<
+  "'dynamic' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_dynamic_missing_name : Error<
+  "'dynamic' in entry %0 of contract configuration from %1 is missing "
+  "required 'name' field">;
+def err_contract_config_dynamic_invalid_linkage : Error<
+  "invalid 'dynamic' linkage '%0' in entry %1 of contract configuration "
+  "from %2; expected 'C' or 'C++'">;
+def err_contract_config_dynamic_provideweak_needs_semantic : Error<
+  "'output' in entry %0 of contract configuration from %1 requests "
+  "'provideweak' for 'dynamic' but has no 'semantic' field to use as the "
+  "weak definition's default">;
+def err_contract_config_match_not_object : Error<
+  "'match' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_invalid_kind : Error<
+  "invalid contract kind '%0' in entry %1 of contract configuration "
+  "from %2">;
+def err_contract_config_caller_not_bool_or_object : Error<
+  "'caller' in entry %0 of contract configuration from %1 must be a "
+  "boolean or object">;
+def err_contract_config_cannot_open_file : Error<
+  "cannot open contract configuration file '%0': %1">;
+def warn_contract_config_unknown_key : Warning<
+  "unknown key '%0' in '%1' object in contract configuration from %2">,
+  InGroup<ContractConfiguration>;
+def warn_contract_config_caller_unimplemented : Warning<
+  "caller-side contract checking is configured but is not yet implemented "
+  "in this compiler; caller-side checks will not be emitted">,
+  InGroup<ContractConfiguration>;
 }

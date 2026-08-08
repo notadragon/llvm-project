@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.shift.neg.and.width"}, "output": {"semantic": "quick_enforce"}}
+]

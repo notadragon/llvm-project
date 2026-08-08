@@ -4388,6 +4388,8 @@ void CodeGenFunction::EmitFunctionEpilog(
 
   // Functions with no result always return void.
   if (!ReturnValue.isValid()) {
+    if (!PostContractsHandledByPrologueCleanup)
+      EmitPostContracts(nullptr);
     auto *I = Builder.CreateRetVoid();
     if (RetKeyInstructionsSourceAtom)
       addInstToSpecificSourceAtom(I, nullptr, RetKeyInstructionsSourceAtom);
@@ -4569,11 +4571,13 @@ void CodeGenFunction::EmitFunctionEpilog(
       if (ITy != nullptr && isa<RecordType>(RetTy.getCanonicalType()))
         RV = EmitCMSEClearRecord(RV, ITy, RetTy);
     }
-    EmitPostContracts(RV);
+    if (!PostContractsHandledByPrologueCleanup)
+      EmitPostContracts(RV);
     EmitReturnValueCheck(RV);
     Ret = Builder.CreateRet(RV);
   } else {
-    EmitPostContracts(nullptr);
+    if (!PostContractsHandledByPrologueCleanup)
+      EmitPostContracts(nullptr);
     Ret = Builder.CreateRetVoid();
   }
 
@@ -4600,10 +4604,9 @@ void CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   std::optional<OpaqueValueExpr> OVEStore;
   std::optional<OpaqueValueMapping> OVEBind;
   if (auto CRD = CSD->getCanonicalResultName(); CRD && RV) {
+    Builder.CreateStore(RV, ReturnValue);
     OVEStore.emplace(CRD->getLocation(), CRD->getType(), VK_LValue, OK_Ordinary,
                      nullptr);
-    // llvm::Value *SLocPtr = Builder.CreateLoad(ReturnLocation,
-    // "return.sloc.load");
     OVEBind.emplace(*this, &OVEStore.value(),
                     MakeAddrLValue(ReturnValue, CRD->getType()));
   }
@@ -4611,8 +4614,23 @@ void CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   disableDebugInfo();
   auto Reenabler = llvm::make_scope_exit([this]() { enableDebugInfo(); });
   for (auto *CA : FD->postconditions()) {
-    // FIXME(EricWF): We're disabling
+    // P3098: a postcondition whose capture construction threw under
+    // 'observe' must have its predicate skipped entirely, not evaluated
+    // against a partially/un-constructed capture.
+    llvm::Value *CaptureFailed =
+        CA->hasCaptures() ? LoadPostconditionCaptureFailed(CA) : nullptr;
+    if (!CaptureFailed) {
+      EmitStmt(CA);
+      continue;
+    }
+    llvm::BasicBlock *EvalBB = createBasicBlock("contract.post.eval");
+    llvm::BasicBlock *SkipBB = createBasicBlock("contract.post.skip");
+    Builder.CreateCondBr(CaptureFailed, SkipBB, EvalBB);
+    EmitBlock(EvalBB);
     EmitStmt(CA);
+    if (HaveInsertPoint())
+      Builder.CreateBr(SkipBB);
+    EmitBlock(SkipBB);
   }
   enableDebugInfo();
 }

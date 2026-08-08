@@ -16,6 +16,7 @@
 #include "CoroutineStmtBuilder.h"
 #include "TypeLocBuilder.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
@@ -1635,8 +1636,12 @@ public:
   //
   StmtResult RebuildContractStmt(ContractKind K, SourceLocation KeywordLoc,
                                  Expr *Cond, DeclStmt *ResultName,
-                                 ArrayRef<const Attr *> Attrs) {
-    return getSema().BuildContractStmt(K, KeywordLoc, Cond, ResultName, Attrs);
+                                 Expr *Message, Expr *Label,
+                                 DeclStmt *Captures,
+                                 ArrayRef<const Attr *> Attrs,
+                                 Expr *RequiresClause = nullptr) {
+    return getSema().BuildContractStmt(K, KeywordLoc, Cond, ResultName, Message,
+                                      Label, Captures, Attrs, RequiresClause);
   }
 
   DeclResult RebuildContractSpecifierDecl(ArrayRef<ContractStmt *> Stmts,
@@ -9235,6 +9240,122 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
       return StmtError();
   }
 
+  // Transform captures before the condition — the condition may
+  // reference capture variables via DeclRefExpr.
+  // Pack captures need explicit expansion since TransformDeclStmt
+  // doesn't handle pack expansion of VarDecls.
+  DeclStmt *Captures = nullptr;
+  if (S->hasCaptures()) {
+    bool HasPackCapture = false;
+    for (auto *D : S->getCapturesDeclStmt()->decls()) {
+      if (cast<PostconditionCaptureDecl>(D)->isPackExpansion()) {
+        HasPackCapture = true;
+        break;
+      }
+    }
+
+    if (!HasPackCapture) {
+      StmtResult CapturesRes =
+          getDerived().TransformStmt(S->getCapturesDeclStmt());
+      if (CapturesRes.isInvalid())
+        return StmtError();
+      Captures = cast<DeclStmt>(CapturesRes.get());
+    } else {
+      SmallVector<Decl *, 8> ExpandedCaptures;
+      bool Invalid = false;
+      for (auto *D : S->getCapturesDeclStmt()->decls()) {
+        auto *Cap = cast<PostconditionCaptureDecl>(D);
+        if (!Cap->isPackExpansion()) {
+          Decl *Transformed =
+              getDerived().TransformDefinition(Cap->getLocation(), Cap);
+          if (!Transformed) {
+            Invalid = true;
+            continue;
+          }
+          ExpandedCaptures.push_back(Transformed);
+          continue;
+        }
+
+        bool ShouldExpand = false;
+        bool RetainExpansion = false;
+        UnsignedOrNone NumExpansions = std::nullopt;
+        SmallVector<UnexpandedParameterPack, 2> Unexpanded;
+        if (Cap->hasInit())
+          getSema().collectUnexpandedParameterPacks(Cap->getInit(), Unexpanded);
+        if (Unexpanded.empty())
+          getSema().collectUnexpandedParameterPacks(Cap->getType(), Unexpanded);
+
+        if (Unexpanded.empty()) {
+          Decl *Transformed =
+              getDerived().TransformDefinition(Cap->getLocation(), Cap);
+          if (Transformed)
+            ExpandedCaptures.push_back(Transformed);
+          continue;
+        }
+
+        if (getDerived().TryExpandParameterPacks(
+                Cap->getLocation(), Cap->getLocation(), Unexpanded,
+                /*FailOnPackProducingTemplates=*/true, ShouldExpand,
+                RetainExpansion, NumExpansions)) {
+          Invalid = true;
+          continue;
+        }
+
+        if (ShouldExpand && NumExpansions) {
+          getSema().CurrentInstantiationScope
+              ->MakeInstantiatedLocalArgPack(Cap);
+
+          // Get the pattern type (strip PackExpansionType).
+          QualType PatternType = Cap->getType();
+          if (auto *PET = PatternType->getAs<PackExpansionType>())
+            PatternType = PET->getPattern();
+
+          for (unsigned I = 0; I != *NumExpansions; ++I) {
+            Sema::ArgPackSubstIndexRAII SubstIndex(getSema(), I);
+
+            QualType NewType = getDerived().TransformType(PatternType);
+            if (NewType.isNull()) {
+              Invalid = true;
+              continue;
+            }
+            TypeSourceInfo *NewTInfo = getSema().Context
+                .getTrivialTypeSourceInfo(NewType, Cap->getLocation());
+
+            auto *ExpandedCap = PostconditionCaptureDecl::Create(
+                getSema().Context, getSema().CurContext,
+                Cap->getBeginLoc(), Cap->getLocation(),
+                Cap->getIdentifier(), NewType, NewTInfo,
+                Cap->getStorageClass());
+            ExpandedCap->setIsParameterCapture(Cap->isParameterCapture());
+            ExpandedCap->setIsPackExpansion(false);
+
+            if (Cap->hasInit()) {
+              ExprResult NewInit =
+                  getDerived().TransformExpr(Cap->getInit());
+              if (!NewInit.isInvalid())
+                ExpandedCap->setInit(NewInit.get());
+            }
+
+            getSema().CurrentInstantiationScope
+                ->InstantiatedLocalPackArg(Cap, ExpandedCap);
+            ExpandedCaptures.push_back(ExpandedCap);
+          }
+        }
+      }
+
+      if (Invalid)
+        return StmtError();
+
+      if (!ExpandedCaptures.empty()) {
+        Captures = new (getSema().Context) DeclStmt(
+            DeclGroupRef::Create(getSema().Context, ExpandedCaptures.data(),
+                                 ExpandedCaptures.size()),
+            S->getCapturesDeclStmt()->getBeginLoc(),
+            S->getCapturesDeclStmt()->getEndLoc());
+      }
+    }
+  }
+
   Expr *Cond = S->getCond();
   Sema::ConditionResult CondRes = getDerived().TransformCondition(Cond->getExprLoc(), /*Var=*/nullptr, Cond, Sema::ConditionKind::Boolean);
   if (CondRes.isInvalid())
@@ -9242,9 +9363,55 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
 
   Cond = CondRes.get().second;
 
+  Expr *Message = nullptr;
+  if (S->hasMessage()) {
+    ExprResult MsgRes = getDerived().TransformExpr(S->getMessageExpr());
+    if (MsgRes.isInvalid())
+      return StmtError();
+    Message = MsgRes.get();
+  }
+
+  Expr *Label = nullptr;
+  if (S->hasLabel()) {
+    // The label is a compile-time facet: it is only constant-evaluated (its
+    // allowed_semantics / compute_* members are queried at compile time), never
+    // code-generated.  Transform it in a constant-evaluated context so that
+    // referencing the label object does not leave a deferred odr-use in the
+    // enclosing function's MaybeODRUseExprs -- which, at template instantiation,
+    // would trip the assert in ActOnFinishFunctionBody.
+    EnterExpressionEvaluationContext ConstCtx(
+        SemaRef, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+    ExprResult LabelRes = getDerived().TransformExpr(S->getLabelExpr());
+    if (LabelRes.isInvalid())
+      return StmtError();
+    Label = LabelRes.get();
+  }
+
+  Expr *RequiresClause = nullptr;
+  if (S->hasRequiresClause()) {
+    ExprResult RCRes = getDerived().TransformExpr(S->getRequiresClause());
+    if (RCRes.isInvalid())
+      return StmtError();
+    RequiresClause = RCRes.get();
+    // P4283: If the requires clause is non-dependent and not satisfied,
+    // discard the contract (return a NullStmt).
+    if (RequiresClause && !RequiresClause->isValueDependent()) {
+      bool Satisfied = true;
+      if (auto *CSE = dyn_cast<ConceptSpecializationExpr>(RequiresClause))
+        Satisfied = CSE->isSatisfied();
+      else
+        RequiresClause->EvaluateAsBooleanCondition(Satisfied,
+                                                    SemaRef.Context);
+      if (!Satisfied)
+        return new (SemaRef.Context)
+            NullStmt(S->getKeywordLoc());
+    }
+  }
+
   return getDerived().RebuildContractStmt(
       S->getContractKind(), S->getKeywordLoc(), Cond,
-      cast_or_null<DeclStmt>(NewResultName.get()), NewAttrs);
+      cast_or_null<DeclStmt>(NewResultName.get()), Message, Label, Captures,
+      NewAttrs, RequiresClause);
 }
 
 // Objective-C Statements.

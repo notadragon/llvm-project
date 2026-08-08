@@ -43,6 +43,9 @@
 #ifndef CONTRACTS_KEYWORD
 #define CONTRACTS_KEYWORD(X) KEYWORD(X,KEYCONTRACTS)
 #endif
+#ifndef CONTRACTS_P3400_KEYWORD
+#define CONTRACTS_P3400_KEYWORD(X) KEYWORD(X,KEYCONTRACTSP3400)
+#endif
 #ifndef TYPE_TRAIT
 #define TYPE_TRAIT(N,I,K) KEYWORD(I,K)
 #endif
@@ -443,6 +446,12 @@ CXX20_KEYWORD(requires              , 0)
 // C++ contracts keywords
 CONTRACTS_KEYWORD(contract_assert)
 ALIAS("__contract_assert"        , contract_assert      , KEYCXX11)
+CONTRACTS_P3400_KEYWORD(contract_control)
+
+// C contracts keywords (D4299)
+CONTRACTS_KEYWORD(_Pre)
+CONTRACTS_KEYWORD(_Post)
+CONTRACTS_KEYWORD(_ContractAssert)
 
 // Not a CXX20_KEYWORD because it is disabled by -fno-char8_t.
 KEYWORD(char8_t                     , CHAR8SUPPORT)
@@ -939,6 +948,8 @@ ANNOTATION(embed)
 #undef TYPE_TRAIT_2
 #undef TYPE_TRAIT_1
 #undef TYPE_TRAIT
+#undef CONTRACTS_P3400_KEYWORD
+#undef CONTRACTS_KEYWORD
 #undef MODULES_KEYWORD
 #undef CXX20_KEYWORD
 #undef CXX11_KEYWORD

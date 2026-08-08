@@ -1084,6 +1084,16 @@ Parser::ParseCastExpression(CastParseKind ParseKind, bool isAddressOfOperand,
   case tok::kw__Generic:   // primary-expression: generic-selection [C11 6.5.1]
     Res = ParseGenericSelectionExpression();
     break;
+  case tok::kw_contract_control: {
+    SourceLocation KWLoc = ConsumeToken();
+    BalancedDelimiterTracker T(*this, tok::l_paren);
+    if (T.expectAndConsume(diag::err_expected_lparen_after, "contract_control"))
+      return ExprError();
+    llvm::SaveAndRestore SetFlag(Actions.InAssertionControlExpression, true);
+    Res = ParseConstantExpression();
+    T.consumeClose();
+    break;
+  }
   case tok::kw___builtin_available:
     Res = ParseAvailabilityCheckExpr(Tok.getLocation());
     break;

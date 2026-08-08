@@ -818,14 +818,12 @@ void CodeGenFunction::EmitAttributedStmt(const AttributedStmt &S) {
       const ReturnStmt *R = cast<ReturnStmt>(Sub);
       musttail = cast<CallExpr>(R->getRetValue()->IgnoreParens());
     } break;
-    case attr::CXXAssume: {
-      const Expr *Assumption = cast<CXXAssumeAttr>(A)->getAssumption();
-      if (getLangOpts().CXXAssumptions && Builder.GetInsertBlock() &&
-          !Assumption->HasSideEffects(getContext())) {
-        llvm::Value *AssumptionVal = EmitCheckedArgForAssume(Assumption);
-        Builder.CreateAssumption(AssumptionVal);
-      }
-    } break;
+    case attr::CXXAssume:
+      // P3100: [[assume]] is a configurable implicit contract assertion; the
+      // helper resolves the semantic (status-quo llvm.assume, drop, or a runtime
+      // check for a side-effect-free predicate).
+      EmitCXXAssumeAttr(cast<CXXAssumeAttr>(A));
+      break;
     case attr::Atomic:
       AA = cast<AtomicAttr>(A);
       break;

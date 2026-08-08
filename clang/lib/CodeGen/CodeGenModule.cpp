@@ -1313,6 +1313,21 @@ void CodeGenModule::Release() {
     getSanitizerMetadata()->disableSanitizerForGlobal(GV);
     addCompilerUsedGlobal(GV);
   }
+  // P3100 Task 2.1 (CL2): emit the per-TU AddressSanitizer contract-routing
+  // descriptor while the front-end flags are still live, so it streams through
+  // LTO like any preserved global.  Emitted before emitLLVMUsed() so it can be
+  // added to llvm.used and survive whole-program elimination.
+  emitAsanContractSemanticDescriptor();
+  // P3100 Task 4.1: likewise the per-check UBSan runtime-routing descriptor
+  // table (vptr, ...).
+  emitUbsanContractSemanticDescriptor();
+  // Likewise the ThreadSanitizer routing descriptor (its own single wire byte,
+  // like ASan's; see compiler-rt/lib/tsan/rtl/tsan_rtl_report.cpp).
+  emitTsanContractSemanticDescriptor();
+  // Likewise the MemorySanitizer routing descriptor (Clang-only; see
+  // compiler-rt/lib/msan/msan.cpp).
+  emitMsanContractSemanticDescriptor();
+
   emitLLVMUsed();
   if (SanStats)
     SanStats->finish();
@@ -3824,6 +3839,311 @@ static void emitUsed(CodeGenModule &CGM, StringRef Name,
 void CodeGenModule::emitLLVMUsed() {
   emitUsed(*this, "llvm.used", LLVMUsed);
   emitUsed(*this, "llvm.compiler.used", LLVMCompilerUsed);
+}
+
+// P3100 ASan contract routing (Task 2.1 / CL2).
+//
+// Under -fcontracts-p3100 the resolved contract-evaluation semantic for the
+// user-space address check (SanitizerKind::Address) controls how a detected
+// AddressSanitizer error is handled at run time:
+//
+//   noexcept_observe -> the runtime reports via the contract-violation handler
+//                       and the program continues;
+//   noexcept_enforce -> the runtime reports via the handler and then terminates;
+//   quick_enforce    -> the runtime terminates WITHOUT calling the handler.
+//
+// assume is realized separately, per function, by clearing the SanitizeAddress
+// function attribute in StartFunction (see CodeGenFunction.cpp); plain throwing
+// enforce/observe and ignore are hard-errored during option processing (CL1),
+// so they never reach here.
+//
+// The AddressSanitizer instrumentation itself is semantic-INDEPENDENT: every
+// realization emits identical __asan_report_* calls, and the run-time behavior
+// is decided by the compiler-rt report path reading the descriptor emitted
+// here.  So we convey the resolved semantic to compiler-rt with a per-TU weak
+// byte __asan_contract_semantic whose wire encoding is decoupled from the
+// internal ContractEvaluationSemantic values (byte-identical to GCC):
+//
+//   0 = stock  (symbol absent / routing off -> runtime keeps stock behavior)
+//   1 = observe        (noexcept_observe: call handler, then continue)
+//   2 = enforce        (noexcept_enforce: call handler, then terminate)
+//   3 = quick_enforce  (terminate WITHOUT calling the handler)
+//
+// The descriptor is emitted here in the per-TU compile, where -fcontracts-p3100
+// and the resolved -fsanitize-semantic= flags are live.  It is a preserved
+// (used) weak global, so under (Thin)LTO it streams into the final image like a
+// user global -- the LTO and non-LTO paths are identical and no LTO-time flag
+// state is needed.
+//
+// -fsanitize-noncontract-callbacks is the global opt-out (Task 3.1): when set,
+// we emit no descriptor, so the runtime reads stock (0) and takes its stock
+// report path -- and, because the runtime guardrail (Task 3.2) keys off the
+// same descriptor, the guardrail disengages too.  The opt-out is orthogonal to
+// the instrument/allowed-set decisions: assume is still realized per function
+// via clearing the SanitizeAddress attribute (StartFunction), and the
+// -fsanitize-semantic= allowed-set validation (CL1) still applies during
+// option processing.  It affects only the runtime report routing and the
+// guardrail.
+void CodeGenModule::emitAsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+
+  enum : uint8_t {
+    ASanContractSemanticObserve = 1,
+    ASanContractSemanticEnforce = 2,
+    ASanContractSemanticQuick = 3,
+  };
+
+  // Emit one preserved weak wire byte NAME conveying the resolved routing
+  // semantic of the ASan check KIND, or emit nothing when the check is not
+  // enabled or resolves to a non-routed semantic (assume / off / doomed).  The
+  // ASan address check and the two pointer-pair checks each get their own byte
+  // so the address routing scope is independent of the pointer-pair checks (see
+  // compiler-rt/lib/asan/asan_report.cpp).
+  auto emitOne = [&](SanitizerMask Kind, StringRef Name) {
+    if (!LangOpts.Sanitize.has(Kind))
+      return;
+    uint8_t Wire;
+    switch (CodeGenOpts.getSanitizerSemantic(Kind)) {
+    case ContractEvaluationSemantic::NoexceptObserve:
+      // Call the handler, then continue.
+      Wire = ASanContractSemanticObserve;
+      break;
+    case ContractEvaluationSemantic::NoexceptEnforce:
+      // Call the handler, then terminate.
+      Wire = ASanContractSemanticEnforce;
+      break;
+    case ContractEvaluationSemantic::QuickEnforce:
+      // quick_enforce: terminate WITHOUT calling the handler.
+      Wire = ASanContractSemanticQuick;
+      break;
+    default:
+      // assume is realized via the per-function SanitizeAddress attribute;
+      // ignore and plain throwing enforce/observe are hard-errored (CL1).  Emit
+      // nothing so the runtime keeps stock behavior.
+      return;
+    }
+
+    auto *GV = new llvm::GlobalVariable(
+        getModule(), Int8Ty, /*isConstant=*/true,
+        llvm::GlobalValue::WeakAnyLinkage,
+        llvm::ConstantInt::get(Int8Ty, Wire), Name);
+    // The descriptor has no in-TU references -- only the sanitizer runtime reads
+    // it -- so force it used.  Otherwise whole-program analysis would eliminate
+    // it as unreferenced and routing would silently fall back to stock behavior,
+    // in particular under (Thin)LTO.
+    addUsedGlobal(GV);
+  };
+
+  emitOne(SanitizerKind::Address, "__asan_contract_semantic");
+  emitOne(SanitizerKind::PointerCompare,
+          "__asan_contract_semantic_pointer_compare");
+  emitOne(SanitizerKind::PointerSubtract,
+          "__asan_contract_semantic_pointer_subtract");
+}
+
+// ThreadSanitizer routing descriptor: a single whole-program check (data race)
+// with its own weak wire byte __tsan_contract_semantic, read by compiler-rt's
+// libtsan OutputReport.  Same wire encoding and emit-nothing-for-stock rule as
+// the ASan descriptor.
+void CodeGenModule::emitTsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+  if (!LangOpts.Sanitize.has(SanitizerKind::Thread))
+    return;
+
+  enum : uint8_t {
+    TSanContractSemanticObserve = 1,
+    TSanContractSemanticEnforce = 2,
+    TSanContractSemanticQuick = 3,
+  };
+  uint8_t Wire;
+  switch (CodeGenOpts.getSanitizerSemantic(SanitizerKind::Thread)) {
+  case ContractEvaluationSemantic::NoexceptObserve:
+    Wire = TSanContractSemanticObserve;
+    break;
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    Wire = TSanContractSemanticEnforce;
+    break;
+  case ContractEvaluationSemantic::QuickEnforce:
+    Wire = TSanContractSemanticQuick;
+    break;
+  default:
+    // assume is realized via the per-function SanitizeThread attribute; ignore
+    // and plain throwing enforce/observe are hard-errored.  Emit nothing.
+    return;
+  }
+
+  auto *GV = new llvm::GlobalVariable(
+      getModule(), Int8Ty, /*isConstant=*/true,
+      llvm::GlobalValue::WeakAnyLinkage, llvm::ConstantInt::get(Int8Ty, Wire),
+      "__tsan_contract_semantic");
+  addUsedGlobal(GV);
+}
+
+// MemorySanitizer routing descriptor (Clang-only): a single whole-program check
+// (use-of-uninitialized-value) with its own weak wire byte
+// __msan_contract_semantic, read by compiler-rt's __msan_warning* leg.  Same
+// wire encoding and emit-nothing-for-stock rule as the ASan descriptor.
+void CodeGenModule::emitMsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+  if (!LangOpts.Sanitize.has(SanitizerKind::Memory))
+    return;
+
+  enum : uint8_t {
+    MSanContractSemanticObserve = 1,
+    MSanContractSemanticEnforce = 2,
+    MSanContractSemanticQuick = 3,
+  };
+  uint8_t Wire;
+  switch (CodeGenOpts.getSanitizerSemantic(SanitizerKind::Memory)) {
+  case ContractEvaluationSemantic::NoexceptObserve:
+    Wire = MSanContractSemanticObserve;
+    break;
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    Wire = MSanContractSemanticEnforce;
+    break;
+  case ContractEvaluationSemantic::QuickEnforce:
+    Wire = MSanContractSemanticQuick;
+    break;
+  default:
+    return;
+  }
+
+  auto *GV = new llvm::GlobalVariable(
+      getModule(), Int8Ty, /*isConstant=*/true,
+      llvm::GlobalValue::WeakAnyLinkage, llvm::ConstantInt::get(Int8Ty, Wire),
+      "__msan_contract_semantic");
+  addUsedGlobal(GV);
+}
+
+// P3100 Task 4.1 (UBSan runtime routing): the per-check analog of the ASan
+// descriptor above.  Whereas ASan has a single whole-program check (one byte),
+// UBSan has many independently-configurable runtime checks, so the conveyance is
+// a weak ARRAY, __ubsan_contract_semantic[RUC_COUNT], one wire byte per routed
+// check.  compiler-rt's ScopedReport destructor folds its ErrorType to a routed
+// id and reads the corresponding byte (compiler-rt/lib/ubsan/ubsan_diag.cpp).
+// The routed-check id ordering here MUST stay in sync with the RUC_* enum in
+// ubsan_diag.cpp.  Same wire encoding and emit-nothing-for-stock rule as ASan.
+void CodeGenModule::emitUbsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+
+  // Keep in sync with ubsan_diag.cpp (RUC_* / RUC_COUNT).
+  enum {
+    RUC_VPTR = 0,
+    RUC_FUNCTION,
+    RUC_ALIGNMENT,
+    RUC_OBJECT_SIZE,
+    RUC_NONNULL_ATTRIBUTE,
+    RUC_RETURNS_NONNULL_ATTRIBUTE,
+    RUC_POINTER_OVERFLOW,
+    RUC_NULL,
+    RUC_SHIFT_BASE,
+    RUC_SHIFT_EXPONENT,
+    RUC_INTEGER_DIVIDE_BY_ZERO,
+    RUC_SIGNED_INTEGER_OVERFLOW,
+    RUC_BOOL,
+    RUC_ENUM,
+    RUC_FLOAT_CAST_OVERFLOW,
+    RUC_BOUNDS,
+    RUC_RETURN,
+    RUC_UNREACHABLE,
+    RUC_VLA_BOUND,
+    RUC_BUILTIN,
+    RUC_FLOAT_DIVIDE_BY_ZERO,
+    RUC_UNSIGNED_INTEGER_OVERFLOW,
+    RUC_IMPLICIT_CONVERSION,
+    RUC_LOCAL_BOUNDS,
+    RUC_OBJC_CAST,
+    RUC_COUNT
+  };
+  const std::pair<int, SanitizerMask> RoutedChecks[] = {
+      {RUC_VPTR, SanitizerKind::Vptr},
+      {RUC_FUNCTION, SanitizerKind::Function},
+      {RUC_ALIGNMENT, SanitizerKind::Alignment},
+      {RUC_OBJECT_SIZE, SanitizerKind::ObjectSize},
+      {RUC_NONNULL_ATTRIBUTE, SanitizerKind::NonnullAttribute},
+      {RUC_RETURNS_NONNULL_ATTRIBUTE, SanitizerKind::ReturnsNonnullAttribute},
+      {RUC_POINTER_OVERFLOW, SanitizerKind::PointerOverflow},
+      {RUC_NULL, SanitizerKind::Null},
+      {RUC_SHIFT_BASE, SanitizerKind::ShiftBase},
+      {RUC_SHIFT_EXPONENT, SanitizerKind::ShiftExponent},
+      {RUC_INTEGER_DIVIDE_BY_ZERO, SanitizerKind::IntegerDivideByZero},
+      {RUC_SIGNED_INTEGER_OVERFLOW, SanitizerKind::SignedIntegerOverflow},
+      {RUC_BOOL, SanitizerKind::Bool},
+      {RUC_ENUM, SanitizerKind::Enum},
+      {RUC_FLOAT_CAST_OVERFLOW, SanitizerKind::FloatCastOverflow},
+      {RUC_BOUNDS, SanitizerKind::ArrayBounds},
+      {RUC_RETURN, SanitizerKind::Return},
+      {RUC_UNREACHABLE, SanitizerKind::Unreachable},
+      {RUC_VLA_BOUND, SanitizerKind::VLABound},
+      {RUC_BUILTIN, SanitizerKind::Builtin},
+      {RUC_FLOAT_DIVIDE_BY_ZERO, SanitizerKind::FloatDivideByZero},
+      {RUC_UNSIGNED_INTEGER_OVERFLOW, SanitizerKind::UnsignedIntegerOverflow},
+      // The implicit-conversion group has several member bits; each maps to the
+      // single RUC_IMPLICIT_CONVERSION wire slot (SanitizerSet::has requires a
+      // single-bit mask, so the group cannot be used directly here).
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitUnsignedIntegerTruncation},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitSignedIntegerTruncation},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitIntegerSignChange},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitBitfieldConversion},
+      {RUC_LOCAL_BOUNDS, SanitizerKind::LocalBounds},
+      {RUC_OBJC_CAST, SanitizerKind::ObjCCast},
+  };
+
+  enum : uint8_t {
+    UBSanContractSemanticObserve = 1,
+    UBSanContractSemanticEnforce = 2,
+    UBSanContractSemanticQuick = 3,
+  };
+
+  uint8_t Wire[RUC_COUNT] = {};
+  bool AnyRouted = false;
+  for (const auto &RC : RoutedChecks) {
+    if (!LangOpts.Sanitize.has(RC.second))
+      continue;
+    uint8_t W;
+    switch (CodeGenOpts.getSanitizerSemantic(RC.second)) {
+    case ContractEvaluationSemantic::NoexceptObserve:
+      W = UBSanContractSemanticObserve;
+      break;
+    case ContractEvaluationSemantic::NoexceptEnforce:
+      W = UBSanContractSemanticEnforce;
+      break;
+    case ContractEvaluationSemantic::QuickEnforce:
+      W = UBSanContractSemanticQuick;
+      break;
+    default:
+      // assume (per-function SanOpts clear), ignore / plain throwing
+      // enforce/observe (hard-errored): leave stock.
+      continue;
+    }
+    Wire[RC.first] = W;
+    AnyRouted = true;
+  }
+
+  if (!AnyRouted)
+    return;
+
+  llvm::SmallVector<llvm::Constant *, RUC_COUNT> Elts;
+  for (uint8_t W : Wire)
+    Elts.push_back(llvm::ConstantInt::get(Int8Ty, W));
+  auto *ArrTy = llvm::ArrayType::get(Int8Ty, RUC_COUNT);
+  auto *Init = llvm::ConstantArray::get(ArrTy, Elts);
+  auto *GV = new llvm::GlobalVariable(getModule(), ArrTy, /*isConstant=*/true,
+                                      llvm::GlobalValue::WeakAnyLinkage, Init,
+                                      "__ubsan_contract_semantic");
+  addUsedGlobal(GV);
 }
 
 void CodeGenModule::AppendLinkerOptions(StringRef Opts) {
@@ -7151,6 +7471,52 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     AddGlobalDtor(Fn, GetPriority(DA), true);
   if (getLangOpts().OpenMP && D->hasAttr<OMPDeclareTargetDeclAttr>())
     getOpenMPRuntime().emitDeclareTargetFunction(D, GV);
+
+  // Emit __handle_contract_violation as a C-linkage alias for
+  // ::handle_contract_violation when defined at global scope.
+  if (getLangOpts().Contracts &&
+      D->getDeclName().isIdentifier() &&
+      D->getName() == "handle_contract_violation" &&
+      D->getDeclContext()->isTranslationUnit() &&
+      !D->isExternC()) {
+    llvm::GlobalAlias *Alias = llvm::GlobalAlias::create(
+        Fn->getValueType(), 0, llvm::GlobalValue::ExternalLinkage,
+        "__handle_contract_violation", Fn, &getModule());
+    (void)Alias;
+  }
+
+  // D4299: Emit __handle_contract_violation alias for C-defined
+  // handle_contract_violation(const contract_violation_t*).
+  if (getLangOpts().ContractsP4299 &&
+      D->getDeclName().isIdentifier() &&
+      D->getName() == "handle_contract_violation" &&
+      D->getDeclContext()->isTranslationUnit() &&
+      D->isExternC()) {
+    // Validate signature: void(const contract_violation_t*)
+    const auto *FD = dyn_cast<FunctionDecl>(D);
+    bool valid = false;
+    if (FD && FD->getReturnType()->isVoidType() &&
+        FD->getNumParams() == 1) {
+      QualType PT = FD->getParamDecl(0)->getType();
+      if (PT->isPointerType()) {
+        QualType Pointee = PT->getPointeeType();
+        if (Pointee.isConstQualified()) {
+          const RecordType *RT = Pointee->getAs<RecordType>();
+          if (RT && RT->getDecl()->getName() == "contract_violation_t")
+            valid = true;
+        }
+      }
+    }
+    if (valid) {
+      llvm::GlobalAlias *Alias = llvm::GlobalAlias::create(
+          Fn->getValueType(), 0, llvm::GlobalValue::ExternalLinkage,
+          "__handle_contract_violation", Fn, &getModule());
+      (void)Alias;
+    } else if (FD) {
+      getDiags().Report(FD->getLocation(),
+          diag::err_c_contract_handler_signature);
+    }
+  }
 }
 
 void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {

@@ -1,10 +1,10 @@
-// RUN: %clangxx -std=c++26 %s -fcontracts -o %t -fcontract-evaluation-semantic=observe
+// RUN: %clangxx -std=c++26 %s -fcontracts %libcxx_flags -o %t -fcontract-evaluation-semantic=observe
 // RUN: %t
-// RUN: %clangxx -std=c++26 %s -fcontracts -o %t -fcontract-evaluation-semantic=enforce
+// RUN: %clangxx -std=c++26 %s -fcontracts %libcxx_flags -o %t -fcontract-evaluation-semantic=enforce
 // RUN: %t
 
 #include "my_assert.h"
-#include "contracts-runtime.h"
+#include <contracts>
 
 const int *fz = nullptr;
 constexpr int f(int x) pre([x=x](int y) { static int z(0);  z = x; fz = &z; return y > x; }(1000)) {

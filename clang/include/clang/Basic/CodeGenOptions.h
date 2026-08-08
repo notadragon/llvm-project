@@ -14,6 +14,7 @@
 #define LLVM_CLANG_BASIC_CODEGENOPTIONS_H
 
 #include "clang/Basic/CFProtectionOptions.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/PointerAuthOptions.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/XRayInstr.h"
@@ -481,6 +482,35 @@ public:
 
   /// Set of sanitizer checks that trap rather than diagnose.
   SanitizerSet SanitizeTrap;
+
+  /// P3100: the resolved contract evaluation semantic per sanitizer check,
+  /// fully resolved by the driver and passed via -fsanitize-semantic=.  Each
+  /// entry's mask is a single sanitizer bit.  This is the representation CL2
+  /// (ASan routing / descriptor emission in CodeGen) consumes; query it with
+  /// getSanitizerSemantic().
+  std::vector<std::pair<SanitizerMask, ContractEvaluationSemantic>>
+      SanitizeSemantics;
+
+  /// Debug testing seam: print each enabled check's resolved semantic
+  /// (-fsanitize-semantic-print).
+  bool SanitizeSemanticPrint = false;
+
+  /// P3100 Task 3.1: the global opt-out (-fsanitize-noncontract-callbacks).
+  /// When set, CodeGen does not emit the ASan contract-routing descriptor
+  /// (__asan_contract_semantic), so the runtime keeps its stock reporting and
+  /// callback behavior; the runtime guardrail (Task 3.2), which keys off the
+  /// same descriptor, is disengaged too.
+  bool SanitizeNoncontractCallbacks = false;
+
+  /// P3100: the resolved contract evaluation semantic for the single-bit
+  /// sanitizer check Bit, or Enforce if none was recorded (a check with no
+  /// entry was not enabled / not routed and has no routed semantic to consume).
+  ContractEvaluationSemantic getSanitizerSemantic(SanitizerMask Bit) const {
+    for (const auto &Entry : SanitizeSemantics)
+      if (Entry.first & Bit)
+        return Entry.second;
+    return ContractEvaluationSemantic::Enforce;
+  }
 
   /// Set of sanitizer checks that can merge handlers (smaller code size at
   /// the expense of debuggability).

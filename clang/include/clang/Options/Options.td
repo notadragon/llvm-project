@@ -1826,16 +1826,23 @@ defm contracts : BoolFOption<"contracts",
 
 def fcontract_evaluation_semantic_EQ : Joined<["-"], "fcontract-evaluation-semantic=">,
   HelpText<"Specify contract evaluation semantic. The default value is 'enforce'.">,
-  Values<"ignore,enforce,observe,quick_enforce">,
+  Values<"ignore,enforce,observe,quick_enforce,assume,noexcept_enforce,noexcept_observe">,
   Visibility<[ClangOption, CC1Option]>,
   NormalizedValuesScope<"LangOptions::ContractEvaluationSemantic">,
-  NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce"]>,
+  NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce", "Assume", "NoexceptEnforce", "NoexceptObserve"]>,
   MarshallingInfoEnum<LangOpts<"ContractOpts.DefaultSemantic">, "Enforce">;
 
-def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
+def fcontracts_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontracts-group-evaluation-semantic=">,
   Visibility<[ClangOption, CC1Option]>,
-  HelpText<"Clang extension. Enable or disable contracts by group. The argument is a comma-separated "
-           "sequence of one or more group names, each prefixed by '+' or '-'.">;
+  HelpText<"Set the evaluation semantic for contracts in a specific group. "
+           "Format: group:semantic (e.g., safety:observe).">;
+
+def fcontract_configuration_EQ : Joined<["-"], "fcontract-configuration=">,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Provide inline JSON contract configuration">;
+def fcontract_configuration_file_EQ : Joined<["-"], "fcontract-configuration-file=">,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Load contract configuration from a JSON file">;
 
 defm contract_exceptions : BoolFOption<"contract-exceptions",
   LangOpts<"ContractExceptions">, DefaultTrue,
@@ -1857,6 +1864,79 @@ defm contract_lambda_capture_restrictions : BoolFOption<"contract-lambda-capture
           "Enable restrictions on lambda captures caused exclusively by contracts">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option],
     "Disable restrictions on lambda captures caused exclusively by contracts">>;
+
+defm contracts_p3099 : BoolFOption<"contracts-p3099",
+  LangOpts<"ContractsP3099">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3099 syntactic contract diagnostic messages">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3290 : BoolFOption<"contracts-p3290",
+  LangOpts<"ContractsP3290">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3290 contract violation library API and assert integration">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3097 : BoolFOption<"contracts-p3097",
+  LangOpts<"ContractsP3097">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3097 virtual function contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3098 : BoolFOption<"contracts-p3098",
+  LangOpts<"ContractsP3098">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3098 postcondition captures">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3400 : BoolFOption<"contracts-p3400",
+  LangOpts<"ContractsP3400">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3400 assertion-control labels">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p4283 : BoolFOption<"contracts-p4283",
+  LangOpts<"ContractsP4283">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4283 requires clauses on contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3850 : BoolFOption<"contracts-p3850",
+  LangOpts<"ContractsP3850">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3850 contract extensions (implies -fcontracts-p3097, -fcontracts-p3098, -fcontracts-p3099, -fcontracts-p3100, -fcontracts-p3290, -fcontracts-p3400, -fcontracts-p4283, -fcontracts-p4298, -fcontracts-p4301)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p3100 : BoolFOption<"contracts-p3100",
+  LangOpts<"ContractsP3100">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3100 implicit contract assertions and the assume evaluation semantic">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p4298 : BoolFOption<"contracts-p4298",
+  LangOpts<"ContractsP4298">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4298 noexcept_enforce and noexcept_observe evaluation semantics">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p4301 : BoolFOption<"contracts-p4301",
+  LangOpts<"ContractsP4301">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable D4301 contract_violation::report() ASan/UBSan diagnostic accessor">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_allow_assume : BoolFOption<"contracts-allow-assume",
+  LangOpts<"ContractOpts.AllowAssume">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Allow the assume contract evaluation semantic to be used; a resolved "
+          "assume is otherwise treated as ignore">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_p4299 : BoolFOption<"contracts-p4299",
+  LangOpts<"ContractsP4299">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable C contracts support (D4299)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
@@ -2899,6 +2979,43 @@ def fno_sanitize_recover : Flag<["-"], "fno-sanitize-recover">,
                            Visibility<[ClangOption, CLOption]>,
                            Group<f_clang_Group>,
                            Alias<fno_sanitize_recover_EQ>, AliasArgs<["all"]>;
+// P3100: contract-evaluation semantic per sanitizer check.  <check> uses the
+// same taxonomy as -fsanitize=/-fsanitize-recover= (groups such as "undefined"
+// and "all" expand to their members); <semantic> is a contract evaluation
+// semantic name (e.g. observe, noexcept_enforce, quick_enforce).  Parsed and
+// validated in the driver (SanitizerArgs); the driver re-renders the resolved
+// per-check semantics to cc1 for CodeGen (CL2) to consume.  RejectNegative:
+// there is no -fno- form (a check can never be silently skipped).
+def fsanitize_semantic_EQ : CommaJoined<["-"], "fsanitize-semantic=">,
+                            Group<f_clang_Group>,
+                            Visibility<[ClangOption, CC1Option]>,
+                            HelpText<"Set the contract evaluation semantic for "
+                                     "a sanitizer check "
+                                     "(<check>:<semantic>[,...])">;
+// Debug-only testing seam: print the resolved (explicit-or-derived) contract
+// evaluation semantic for every enabled sanitizer check to stderr as
+// "<check>: <semantic>" lines.  Mirrors GCC's -fsanitize-semantic-print; not a
+// documented user-facing flag.
+def fsanitize_semantic_print : Flag<["-"], "fsanitize-semantic-print">,
+                               Group<f_clang_Group>,
+                               Visibility<[ClangOption, CC1Option]>,
+                               HelpText<"Print the resolved contract evaluation "
+                                        "semantic for each enabled sanitizer "
+                                        "check (debug seam)">;
+// P3100 Task 3.1: global opt-out.  When set, the compiler does not emit the
+// ASan contract-routing descriptor (__asan_contract_semantic, CL2), so the
+// runtime reads stock (0) and takes its stock report path; the runtime
+// guardrail (Task 3.2), which keys off the same descriptor, is disengaged
+// too.  Orthogonal to assume (still realized per-function by clearing the
+// SanitizeAddress attribute) and to the -fsanitize-semantic= allowed-set
+// validation (CL1), which still applies during option processing; it only
+// affects runtime report routing and the guardrail.
+def fsanitize_noncontract_callbacks
+    : Flag<["-"], "fsanitize-noncontract-callbacks">,
+      Group<f_clang_Group>,
+      Visibility<[ClangOption, CC1Option]>,
+      HelpText<"Use the sanitizer's stock reporting/callbacks instead of "
+               "P3100 contract routing">;
 def fsanitize_trap_EQ : CommaJoined<["-"], "fsanitize-trap=">, Group<f_clang_Group>,
                         HelpText<"Enable trapping for specified sanitizers">;
 def fno_sanitize_trap_EQ : CommaJoined<["-"], "fno-sanitize-trap=">, Group<f_clang_Group>,

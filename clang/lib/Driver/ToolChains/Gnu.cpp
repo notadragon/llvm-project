@@ -512,6 +512,21 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         WantPthread = true;
 
       addLLVMOffloadingRuntime(C, CmdArgs, ToolChain, Args);
+      // Contracts: a translation unit that enables contracts references
+      // libcontracts (the pure-C ABI core: __cxa_contract_violation*,
+      // __c_contract_check_*, stdc_*).  These are direct references from the
+      // user's objects, so libcontracts must be on the link line explicitly
+      // (an indirect DT_NEEDED via libc++ does not satisfy them under the
+      // default --no-copy-dt-needed-entries).  C++ contracts are detected with
+      // the shared tools::wantsCxxContracts predicate (base -fcontracts, C++26
+      // mode, or any C++ sub-flag -- the same predicate that drives -cc1
+      // forwarding); the C-only -fcontracts-p4299 independently needs
+      // libcontracts too.  Placed before the runtime libs and -lc so
+      // libcontracts' own libc references resolve.
+      if (wantsCxxContracts(Args) ||
+          Args.hasArg(options::OPT_fcontracts_p4299))
+        CmdArgs.push_back("-lcontracts");
+
       AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
 
       // LLVM support for atomics on 32-bit SPARC V8+ is incomplete, so

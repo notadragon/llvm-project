@@ -1,13 +1,16 @@
+// -*- C++ -*-
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
 
-
+// Include the C library's <assert.h> first so its definition of `assert` is in
+// place before the P3290 integration (below) redefines it.
 #include_next <assert.h>
 
-#if ! __is_identifier(contract_assert) && defined(_LIBCPP_CONTRACT_CASSERT)
-#undef assert
-
-#ifdef NDEBUG
-#define assert(...) ({ contract_assert [[clang::contract_semantic("ignore")]] (__VA_ARGS__); static_cast<void>(0); })
-#else
-#define assert(...) ({ contract_assert [[clang::contract_semantic("enforce")]]  (__VA_ARGS__); static_cast<void>(0); })
-#endif
-#endif
+// P3290 assert integration and its feature-test macro, shared with <cassert>.
+// This header has no include guard so `assert` is redefined per current NDEBUG.
+#include <__cassert/assert_contract.h>

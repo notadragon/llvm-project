@@ -1130,7 +1130,9 @@ class ContractStmt final
   friend class SemaContractHelper;
 
   unsigned numTrailingObjects(OverloadToken<Stmt *>) const {
-    return ContractAssertBits.HasResultName + 1;
+    return ContractAssertBits.HasResultName + 1 +
+           ContractAssertBits.HasMessage + ContractAssertBits.HasLabel +
+           ContractAssertBits.HasCaptures + ContractAssertBits.HasRequiresClause;
   }
 
   Stmt **getStmtPtr() { return getTrailingObjects<Stmt *>(); }
@@ -1142,6 +1144,36 @@ class ContractStmt final
   const Attr **getAttrPtr() { return getTrailingObjects<const Attr *>(); }
 
   SourceLocation KeywordLoc;
+
+  StringRef TransformedComment;
+  StringRef TransformedMessage;
+
+  // Lazily-resolved evaluation semantics.  0 = not yet resolved;
+  // 1-4 = ContractEvaluationSemantic enum value (cached).
+  mutable uint8_t CachedRuntimeSemantic_ = 0;
+  mutable uint8_t CachedCESemantic_ = 0;
+  mutable uint8_t CachedCallerSemantic_ = 0;
+
+  // P3595 dynamic (link-/run-time) evaluation-semantic selection.
+  //
+  // When a labeled contract's runtime resolution matches a config entry with an
+  // "output.dynamic" descriptor, Sema (applyLabelFacets) precomputes a per-
+  // return-value transform table here so codegen can build the dispatch switch
+  // without any Sema machinery of its own.  DynName_ empty means "not dynamic";
+  // codegen reads these via the accessors below.
+  //
+  // DynName_ points at ASTContext-allocated storage (via ASTContext::backupStr),
+  // like TransformedComment/TransformedMessage above.  It holds the selector
+  // function's name (possibly a qualified C++ name, or a verbatim C symbol).
+  StringRef DynName_;
+  uint8_t DynLinkage_ = 0;        // 0 = "C++", 1 = "C"
+  bool DynProvideWeak_ = false;
+  bool DynIsDynamic_ = false;     // true once a dynamic descriptor was resolved
+  // T(R) for R in Ignore..QuickEnforce (1..4), stored at index R-1.  Each entry
+  // is a ContractEvaluationSemantic value (1..5) or the sentinel 0 when the
+  // transform of R is disallowed (codegen maps 0 to a runtime enforced
+  // violation).
+  uint8_t DynTable_[4] = {0, 0, 0, 0};
 
   ArrayRef<Stmt *> getSubStmts() const {
     return llvm::ArrayRef(getTrailingObjects<Stmt *>(),
@@ -1160,7 +1192,33 @@ class ContractStmt final
 
   void setCondition(Expr *E) {
     assert(E && "no condition");
-    getSubStmts().back() = E;
+    getSubStmts()[ContractAssertBits.HasResultName] = E;
+  }
+
+  void setMessage(Expr *E) {
+    assert(ContractAssertBits.HasMessage && "no message slot");
+    getSubStmts()[ContractAssertBits.HasResultName + 1] = E;
+  }
+
+  void setLabel(Expr *E) {
+    assert(ContractAssertBits.HasLabel && "no label slot");
+    getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                  ContractAssertBits.HasMessage] = E;
+  }
+
+  void setCaptures(DeclStmt *D) {
+    assert(ContractAssertBits.HasCaptures && "no captures slot");
+    getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                  ContractAssertBits.HasMessage +
+                  ContractAssertBits.HasLabel] = D;
+  }
+
+  void setRequiresClause(Expr *E) {
+    assert(ContractAssertBits.HasRequiresClause && "no requires clause slot");
+    getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                  ContractAssertBits.HasMessage +
+                  ContractAssertBits.HasLabel +
+                  ContractAssertBits.HasCaptures] = E;
   }
 
   void copyAttrs(ArrayRef<const Attr *> Attrs) {
@@ -1170,23 +1228,47 @@ class ContractStmt final
   }
 
   ContractStmt(ContractKind CK, SourceLocation KeywordLoc, Expr *Condition,
-               DeclStmt *RN, ArrayRef<const Attr *> Attrs = {})
+               DeclStmt *RN, Expr *Message = nullptr,
+               Expr *Label = nullptr,
+               DeclStmt *Captures = nullptr,
+               ArrayRef<const Attr *> Attrs = {})
       : Stmt(ContractStmtClass), KeywordLoc(KeywordLoc) {
     ContractAssertBits.ContractKind = static_cast<unsigned>(CK);
     ContractAssertBits.HasResultName = RN != nullptr;
+    ContractAssertBits.HasMessage = Message != nullptr;
+    ContractAssertBits.HasLabel = Label != nullptr;
+    ContractAssertBits.HasCaptures = Captures != nullptr;
+    ContractAssertBits.HasRequiresClause = false;
+    ContractAssertBits.AllowedMask = AllContractSemanticsMaskWithExtensions;
+    ContractAssertBits.HasLocalHandler = false;
+    ContractAssertBits.HasQuery = false;
     ContractAssertBits.NumAttrs = Attrs.size();
     if (RN)
       setResultName(RN);
     setCondition(Condition);
+    if (Message)
+      setMessage(Message);
+    if (Label)
+      setLabel(Label);
+    if (Captures)
+      setCaptures(Captures);
     if (!Attrs.empty())
       copyAttrs(Attrs);
   }
 
   ContractStmt(EmptyShell Empty, ContractKind Kind, bool HasResultName,
+               bool HasMessage, bool HasLabel, bool HasCaptures,
                unsigned NumAttrs = 0)
       : Stmt(ContractStmtClass, Empty) {
     ContractAssertBits.ContractKind = static_cast<unsigned>(Kind);
     ContractAssertBits.HasResultName = HasResultName;
+    ContractAssertBits.HasMessage = HasMessage;
+    ContractAssertBits.HasLabel = HasLabel;
+    ContractAssertBits.HasCaptures = HasCaptures;
+    ContractAssertBits.HasRequiresClause = false;
+    ContractAssertBits.AllowedMask = AllContractSemanticsMaskWithExtensions;
+    ContractAssertBits.HasLocalHandler = false;
+    ContractAssertBits.HasQuery = false;
     ContractAssertBits.NumAttrs = NumAttrs;
     if (NumAttrs != 0)
       std::fill_n(getAttrPtr(), NumAttrs, nullptr);
@@ -1196,10 +1278,17 @@ public:
   static ContractStmt *Create(const ASTContext &C, ContractKind Kind,
                               SourceLocation KeywordLoc, Expr *Condition,
                               DeclStmt *ResultNameDecl,
-                              ArrayRef<const Attr *> Attrs = {});
+                              Expr *Message = nullptr,
+                              Expr *Label = nullptr,
+                              DeclStmt *Captures = nullptr,
+                              ArrayRef<const Attr *> Attrs = {},
+                              Expr *RequiresClause = nullptr);
 
   static ContractStmt *CreateEmpty(const ASTContext &C, ContractKind Kind,
-                                   bool HasResultName, unsigned NumAttrs);
+                                   bool HasResultName, bool HasMessage,
+                                   bool HasLabel, bool HasCaptures,
+                                   bool HasRequiresClause,
+                                   unsigned NumAttrs);
 
   bool hasResultName() const { return ContractAssertBits.HasResultName; }
 
@@ -1210,9 +1299,171 @@ public:
 
   ResultNameDecl *getResultName() const;
 
-  Expr *getCond() { return static_cast<Expr *>(getSubStmts().back()); }
+  Expr *getCond() {
+    return static_cast<Expr *>(
+        getSubStmts()[ContractAssertBits.HasResultName]);
+  }
   const Expr *getCond() const {
     return const_cast<ContractStmt *>(this)->getCond();
+  }
+
+  bool hasMessage() const { return ContractAssertBits.HasMessage; }
+
+  Expr *getMessageExpr() {
+    if (!hasMessage())
+      return nullptr;
+    return static_cast<Expr *>(
+        getSubStmts()[ContractAssertBits.HasResultName + 1]);
+  }
+  const Expr *getMessageExpr() const {
+    return const_cast<ContractStmt *>(this)->getMessageExpr();
+  }
+
+  bool hasLabel() const { return ContractAssertBits.HasLabel; }
+
+  Expr *getLabelExpr() {
+    if (!hasLabel())
+      return nullptr;
+    return static_cast<Expr *>(
+        getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                      ContractAssertBits.HasMessage]);
+  }
+  const Expr *getLabelExpr() const {
+    return const_cast<ContractStmt *>(this)->getLabelExpr();
+  }
+
+  bool hasCaptures() const { return ContractAssertBits.HasCaptures; }
+
+  DeclStmt *getCapturesDeclStmt() {
+    if (!hasCaptures())
+      return nullptr;
+    return static_cast<DeclStmt *>(
+        getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                      ContractAssertBits.HasMessage +
+                      ContractAssertBits.HasLabel]);
+  }
+  const DeclStmt *getCapturesDeclStmt() const {
+    return const_cast<ContractStmt *>(this)->getCapturesDeclStmt();
+  }
+
+  bool hasRequiresClause() const { return ContractAssertBits.HasRequiresClause; }
+
+  Expr *getRequiresClause() {
+    if (!hasRequiresClause())
+      return nullptr;
+    return static_cast<Expr *>(
+        getSubStmts()[ContractAssertBits.HasResultName + 1 +
+                      ContractAssertBits.HasMessage +
+                      ContractAssertBits.HasLabel +
+                      ContractAssertBits.HasCaptures]);
+  }
+  const Expr *getRequiresClause() const {
+    return const_cast<ContractStmt *>(this)->getRequiresClause();
+  }
+
+  unsigned getAllowedMask() const {
+    return ContractAssertBits.AllowedMask;
+  }
+  void setAllowedMask(unsigned Mask) {
+    // Stores the flag-independent label restriction (may include the assume
+    // bit and the D4298 noexcept_enforce/noexcept_observe bits); the
+    // -fcontracts-allow-assume / -fcontracts-p4298 gates are applied at
+    // query time.
+    ContractAssertBits.AllowedMask = Mask & AllContractSemanticsMaskWithExtensions;
+  }
+
+  bool hasTransformedSemantic() const {
+    return CachedRuntimeSemantic_ != 0;
+  }
+  ContractEvaluationSemantic getTransformedSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedRuntimeSemantic_);
+  }
+  void setTransformedSemantic(ContractEvaluationSemantic S) {
+    CachedRuntimeSemantic_ = static_cast<uint8_t>(S);
+  }
+
+  bool hasCESemantic() const {
+    return CachedCESemantic_ != 0;
+  }
+  ContractEvaluationSemantic getCESemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedCESemantic_);
+  }
+  void setCESemantic(ContractEvaluationSemantic S) {
+    CachedCESemantic_ = static_cast<uint8_t>(S);
+  }
+
+  bool hasLocalHandler() const { return ContractAssertBits.HasLocalHandler; }
+  void setHasLocalHandler(bool V = true) {
+    ContractAssertBits.HasLocalHandler = V;
+  }
+
+  bool hasQuery() const { return ContractAssertBits.HasQuery; }
+  void setHasQuery(bool V = true) {
+    ContractAssertBits.HasQuery = V;
+  }
+
+  bool hasTransformedComment() const { return !TransformedComment.empty(); }
+  void setTransformedComment(StringRef S) { TransformedComment = S; }
+  StringRef getTransformedComment() const { return TransformedComment; }
+
+  bool hasTransformedMessage() const { return !TransformedMessage.empty(); }
+  void setTransformedMessage(StringRef S) { TransformedMessage = S; }
+  StringRef getTransformedMessage() const { return TransformedMessage; }
+
+  bool hasCallerSemantic() const {
+    return CachedCallerSemantic_ != 0;
+  }
+  ContractEvaluationSemantic getCallerSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedCallerSemantic_);
+  }
+  void setCallerSemantic(ContractEvaluationSemantic S) {
+    CachedCallerSemantic_ = static_cast<uint8_t>(S);
+  }
+
+  // P3595 dynamic (link-/run-time) evaluation-semantic selection.
+  //
+  // True when this contract's runtime semantic is chosen dynamically by calling
+  // a named selector function (see the "output.dynamic" config descriptor).
+  // Populated by Sema (applyLabelFacets); codegen consults it to decide whether
+  // to emit the dispatch switch instead of a single-semantic check body.
+  bool isDynamic() const { return DynIsDynamic_; }
+
+  // The selector function's name.  May be a qualified C++ name (when
+  // getDynLinkage() == 0) or a verbatim C symbol (when == 1).  Empty unless
+  // isDynamic().
+  StringRef getDynName() const { return DynName_; }
+
+  // Selector linkage: 0 = "C++" (name is mangled / qualified), 1 = "C" (name is
+  // the verbatim symbol).
+  int getDynLinkage() const { return DynLinkage_; }
+
+  // Whether the compiler should emit a weak definition of the selector that
+  // returns the compile-time default semantic (design "provideweak").
+  bool getDynProvideWeak() const { return DynProvideWeak_; }
+
+  // T(rawSem) for rawSem in Ignore..QuickEnforce (1..4): the effective
+  // evaluation semantic to dispatch to when the selector returns rawSem, or the
+  // sentinel (ContractEvaluationSemantic)0 when the transform is disallowed
+  // (codegen turns 0 into a runtime enforced violation).  rawSem outside 1..4
+  // also yields the sentinel.
+  ContractEvaluationSemantic getDynTransform(unsigned rawSem) const {
+    if (rawSem < 1 || rawSem > 4)
+      return static_cast<ContractEvaluationSemantic>(0);
+    return static_cast<ContractEvaluationSemantic>(DynTable_[rawSem - 1]);
+  }
+
+  // Record the full dynamic descriptor + precomputed transform table.  Called
+  // by Sema once the runtime resolution reports a dynamic match.  Table entries
+  // are ContractEvaluationSemantic values (1..5) or 0 for the disallowed
+  // sentinel, indexed by rawSem-1 for rawSem in 1..4.
+  void setDynamicInfo(StringRef Name, int Linkage, bool ProvideWeak,
+                      const uint8_t Table[4]) {
+    DynName_ = Name;
+    DynLinkage_ = static_cast<uint8_t>(Linkage);
+    DynProvideWeak_ = ProvideWeak;
+    DynIsDynamic_ = true;
+    for (unsigned I = 0; I < 4; ++I)
+      DynTable_[I] = Table[I];
   }
 
 public:
@@ -1223,11 +1474,18 @@ public:
   // Convert the contract kind (pre, post, or contract_assert) to a string
   static StringRef ContractKindAsString(ContractKind Kind);
 
-  /// Return the source text associated with this contract.
+  /// Return the source text of the predicate expression.
   std::string getSourceText(const ASTContext &Ctx) const;
 
-  /// Return the message for use in building the contract violation
-  /// diagnostic. It may be different than the source text.
+  /// Return the predicate source text (for contract_violation::comment()).
+  std::string getComment(const ASTContext &Ctx) const;
+
+  /// Return the user-provided diagnostic message text, or empty string
+  /// if none. Checks syntactic message first, then ContractMessageAttr.
+  std::string getUserMessage(const ASTContext &Ctx) const;
+
+  /// Return the message for the violation info struct.
+  /// Returns user message if present, otherwise the source text.
   std::string getMessage(const ASTContext &Ctx) const;
 
   /// Return the type of the contract.
@@ -1246,6 +1504,20 @@ public:
   /// as well as any attributes on the specific contract itself.
   ContractEvaluationSemantic getSemantic(const ASTContext &Ctx) const;
 
+  /// Lazily resolve and cache the runtime callee-side semantic.
+  ContractEvaluationSemantic
+  ensureRuntimeSemantic(const ASTContext &Ctx,
+                        const DeclContext *FnCtx) const;
+
+  /// Lazily resolve and cache the constexpr callee-side semantic.
+  ContractEvaluationSemantic
+  ensureCESemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
+
+  /// Lazily resolve and cache the caller-side semantic.
+  ContractEvaluationSemantic
+  ensureCallerSemantic(const ASTContext &Ctx,
+                       const DeclContext *FnCtx) const;
+
   StringRef getSemanticString(const ASTContext &Ctx) const {
     return ContractStmt::SemanticAsString(getSemantic(Ctx));
   }
@@ -1260,7 +1532,7 @@ public:
   SourceLocation getKeywordLoc() const { return KeywordLoc; }
   SourceLocation getBeginLoc() const LLVM_READONLY { return KeywordLoc; }
   SourceLocation getExpressionLoc() const LLVM_READONLY {
-    return getSubStmts().back()->getBeginLoc();
+    return getCond()->getBeginLoc();
   }
   SourceLocation getEndLoc() const LLVM_READONLY {
     assert(!KeywordLoc.isInvalid() &&

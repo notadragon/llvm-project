@@ -529,6 +529,10 @@ private:
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
 
+  /// Cache of virtual contract wrapper functions (P3097).
+  llvm::DenseMap<const CXXMethodDecl *, llvm::Function *>
+      VirtualContractWrappers;
+
   /// Map used to get unique type descriptor constants for sanitizers.
   llvm::DenseMap<QualType, llvm::Constant *> TypeDescriptorMap;
 
@@ -1110,6 +1114,12 @@ public:
                                     bool DontDefer = false,
                                     ForDefinition_t IsForDefinition
                                       = NotForDefinition);
+
+  /// Get or emit a virtual contract wrapper function for the given virtual
+  /// method declaration with contracts (P3097). The wrapper evaluates
+  /// interface preconditions, dispatches through the vtable, then evaluates
+  /// interface postconditions.
+  llvm::Function *getOrEmitVirtualContractWrapper(const CXXMethodDecl *MD);
 
   // Return the function body address of the given function.
   llvm::Constant *GetFunctionStart(const ValueDecl *Decl);
@@ -2128,6 +2138,26 @@ private:
 
   /// Emit the llvm.used and llvm.compiler.used metadata.
   void emitLLVMUsed();
+
+  /// P3100 Task 2.1 (CL2): emit the per-TU AddressSanitizer contract-routing
+  /// descriptor (__asan_contract_semantic) when -fcontracts-p3100 routes the
+  /// address check to the contract-violation handler.
+  void emitAsanContractSemanticDescriptor();
+
+  /// P3100 Task 4.1 (CL2): emit the per-TU UBSan runtime-routing descriptor
+  /// table (__ubsan_contract_semantic[], one wire byte per routed check, e.g.
+  /// vptr) when -fcontracts-p3100 routes a UBSan runtime check to the handler.
+  void emitUbsanContractSemanticDescriptor();
+
+  /// Emit the per-TU ThreadSanitizer routing descriptor
+  /// (__tsan_contract_semantic, its own wire byte) when -fcontracts-p3100
+  /// routes the thread (data-race) check to the contract-violation handler.
+  void emitTsanContractSemanticDescriptor();
+
+  /// Emit the per-TU MemorySanitizer routing descriptor
+  /// (__msan_contract_semantic, its own wire byte) when -fcontracts-p3100
+  /// routes the memory (uninitialized-value) check to the handler.
+  void emitMsanContractSemanticDescriptor();
 
   /// For C++20 Itanium ABI, emit the initializers for the module.
   void EmitModuleInitializers(clang::Module *Primary);

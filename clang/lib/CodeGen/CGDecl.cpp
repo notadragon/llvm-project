@@ -176,7 +176,8 @@ void CodeGenFunction::EmitDecl(const Decl &D, bool EvaluateConditionDecl) {
       DI->EmitUsingDirective(cast<UsingDirectiveDecl>(D));
     return;
   case Decl::Var:
-  case Decl::Decomposition: {
+  case Decl::Decomposition:
+  case Decl::PostconditionCapture: {
     const VarDecl &VD = cast<VarDecl>(D);
     assert(VD.isLocalVarDecl() &&
            "Should not see file-scope variables inside a function!");

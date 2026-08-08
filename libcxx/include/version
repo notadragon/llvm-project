@@ -663,6 +663,24 @@ __cpp_lib_void_t                                        201411L <type_traits>
 # endif
 # undef  __cpp_lib_variant
 # define __cpp_lib_variant                              202306L
+# ifdef __cpp_contracts
+#   define __cpp_lib_contracts                           202502L
+# endif
+# ifdef __cpp_contracts_message
+#   define __cpp_lib_contracts_message                   202606L
+# endif
+# ifdef __cpp_contracts_report
+#   define __cpp_lib_contracts_report                    202607L
+# endif
+# ifdef __clang_contracts_p3290
+#   define __cpp_lib_contracts_api                       202606L
+# endif
+# ifdef __clang_contracts_p3290
+#   define __cpp_lib_assert_can_use_contracts            202606L
+# endif
+# ifdef __cpp_contracts_labels
+#   define __cpp_lib_contracts_labels                    202606L
+# endif
 #endif
 
 #if _LIBCPP_STD_VER >= 29

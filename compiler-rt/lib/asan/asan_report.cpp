@@ -23,9 +23,12 @@
 #include "asan_thread.h"
 #include "lsan/lsan_common.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_file.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
+#include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
+#include "sanitizer_common/sanitizer_posix.h"
 #include "sanitizer_common/sanitizer_report_decorator.h"
 #include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
@@ -42,6 +45,109 @@ static ErrorMessageBuffer *error_message_buffer = nullptr;
 static Mutex error_message_buf_mutex;
 static const unsigned kAsanBuggyPcPoolSize = 25;
 static __sanitizer::atomic_uintptr_t AsanBuggyPcPool[kAsanBuggyPcPoolSize];
+
+// -------------------- P3100 contract-routing ------------------- {{{1
+//
+// Task 2.1 (CL2): the compiler emits a per-TU weak byte __asan_contract_semantic
+// when -fcontracts-p3100 routes the address check to the contract-violation
+// handler.  Wire encoding: 0 = stock (routing off / symbol absent),
+// 1 = observe (report + call handler + continue),
+// 2 = enforce (report + call handler + terminate),
+// 3 = quick_enforce (report + terminate WITHOUT calling the handler).  We
+// declare it weak so a non-p3100 program (no such symbol) reads as 0 = stock
+// and the runtime keeps its existing behavior untouched.
+//
+// Task 4.1: the handler is invoked below from inside this file's implicitly-
+// noexcept ScopedInErrorReport destructor, so a throwing handler can never
+// propagate -- it would hit "exception escaping a noexcept function" and
+// std::terminate() several frames below any user catch/RAII.  That is why the
+// compiler only ever routes the NON-throwing semantics here: observe/enforce
+// on the wire are really the D4298 noexcept_observe/noexcept_enforce paths
+// (gated on -fcontracts-p4298), and quick_enforce terminates without ever
+// entering the handler.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __asan_contract_semantic;
+
+// Option 2 (pointer-pair checks): the two ASan checks that report an invalid
+// pointer pair -- pointer-compare ([expr.rel]) and pointer-subtract
+// (expr.add.sub.diff.pointers) -- flow through the SAME ScopedInErrorReport
+// path as ordinary address errors, but are governed by their OWN wire bytes so
+// the address routing scope stays exactly as-is.  Absent symbol reads as stock.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char
+    __asan_contract_semantic_pointer_compare;
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char
+    __asan_contract_semantic_pointer_subtract;
+
+enum {
+  kAsanContractStock = 0,
+  kAsanContractObserve = 1,
+  kAsanContractEnforce = 2,
+  kAsanContractQuick = 3,
+};
+
+// Which routed check a report belongs to -- selects which wire byte governs it.
+// kAsanCheckAddress covers every ordinary ASan error (the address byte); the
+// pointer-pair reports select their own byte.  All existing report sites use the
+// default, so their routing is unchanged.
+enum AsanContractCheck {
+  kAsanCheckAddress = 0,
+  kAsanCheckPointerCompare,
+  kAsanCheckPointerSubtract,
+};
+
+// Return the conveyed semantic for CHECK (0 = stock when its weak descriptor is
+// absent).
+static unsigned char AsanContractSemantic(
+    AsanContractCheck check = kAsanCheckAddress) {
+  switch (check) {
+    case kAsanCheckPointerCompare:
+      if (&__asan_contract_semantic_pointer_compare == nullptr)
+        return kAsanContractStock;
+      return __asan_contract_semantic_pointer_compare;
+    case kAsanCheckPointerSubtract:
+      if (&__asan_contract_semantic_pointer_subtract == nullptr)
+        return kAsanContractStock;
+      return __asan_contract_semantic_pointer_subtract;
+    case kAsanCheckAddress:
+      break;
+  }
+  if (&__asan_contract_semantic == nullptr)
+    return kAsanContractStock;
+  return __asan_contract_semantic;
+}
+
+// The lazy report populator ABI struct (mirror of __cxa_contract_report_populator
+// in libcontracts/contracts-abi.h and libc++ __contracts/abi.h).  We redeclare
+// it here rather than including the C++ runtime header so this file stays
+// free-standing; the layout must match { const char* (*)(const void*),
+// const void* }.
+struct AsanContractReportPopulator {
+  const char *(*populate)(const void *ctx);
+  const void *ctx;
+};
+
+// Task 2.2 / RF5: the contract-violation report leg, provided by the C++ runtime
+// (libc++).  Declared weak: if the C++ contracts runtime is not linked the
+// symbol is absent, and we must fall back to stock behavior rather than call a
+// null pointer.  Builds an implicit contract_violation and invokes the handler;
+// always returns (termination for enforce is performed here by us).  The final
+// argument is an optional lazy report populator (CXA_FIELD_REPORT): the handler
+// calls contract_violation::report(), which invokes populate(ctx) on demand.
+extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
+    const char *comment, const char *file, unsigned line,
+    unsigned char semantic, const AsanContractReportPopulator *report);
+
+// RF5: lazy populator context.  Caches the rendered report so repeat report()
+// calls within one handler invocation are cheap.  Lives on the dtor stack frame
+// (still alive for the whole handler call), and references the still-live
+// current error via ScopedInErrorReport::CurrentError().
+struct AsanContractReportCtx {
+  const char *rendered;  // nullptr until first populate(); then producer-owned.
+};
+
+// Renders the current ASan error into a NUL-terminated, producer-owned buffer
+// WITHOUT writing to stderr / the report fd (RF1 mechanism).  Returns the cached
+// pointer on repeat calls.  Only ever runs when the handler calls report().
+static const char *asan_contract_report_populate(const void *ctx);
 
 void AppendToErrorMessageBuffer(const char *buffer) {
   Lock l(&error_message_buf_mutex);
@@ -125,8 +231,11 @@ bool ParseFrameDescription(const char *frame_descr,
 // immediately after printing error report.
 class ScopedInErrorReport {
  public:
-  explicit ScopedInErrorReport(bool fatal = false)
-      : halt_on_error_(fatal || flags()->halt_on_error) {
+  explicit ScopedInErrorReport(bool fatal = false,
+                               AsanContractCheck contract_check =
+                                   kAsanCheckAddress)
+      : halt_on_error_(fatal || flags()->halt_on_error),
+        contract_check_(contract_check) {
     // Deadlock Prevention Between ASan and LSan
     //
     // Background:
@@ -159,16 +268,103 @@ class ScopedInErrorReport {
     // We can lock them only here to avoid self-deadlock in case of
     // recursive reports.
     asanThreadRegistry().Lock();
-    Printf(
-        "=================================================================\n");
+    // RF5: on the contract-routed path (observe/enforce/quick) the handler owns
+    // all output -- the sanitizer must emit NOTHING before it.  This "=====\n"
+    // banner is the first Printf of any report, so suppress it when routing is
+    // active.  Stock behavior (routing off) is byte-for-byte unchanged.
+    if (AsanContractSemantic(contract_check_) == kAsanContractStock)
+      Printf(
+          "=================================================================\n");
   }
 
   ~ScopedInErrorReport() {
-    if (halt_on_error_ && !__sanitizer_acquire_crash_state()) {
+    // P3100 Task 2.2 / Task 4.1 / RF5: decide whether this report is
+    // contract-routed and, if so, whether the handler is invoked.
+    // observe/enforce (wire 1/2) call the handler and require the C++ runtime's
+    // report entry point to be linked.  quick_enforce (wire 3) terminates
+    // WITHOUT calling the handler, so it is active independently of whether that
+    // entry point is present.  When routing is off, every branch below is
+    // byte-for-byte stock behavior.
+    const unsigned char kContractRoute = AsanContractSemantic(contract_check_);
+    const bool contract_handler_linked =
+        (&__cxa_contract_violation_sanitizer != nullptr);
+    const bool contract_route_handler =
+        (kContractRoute == kAsanContractObserve ||
+         kContractRoute == kAsanContractEnforce) &&
+        contract_handler_linked;
+    const bool contract_route_quick =
+        (kContractRoute == kAsanContractQuick);
+    const bool contract_routed = (kContractRoute != kAsanContractStock);
+
+    // P3100 Bug #3: on the contract-routed path the configured semantic ALONE
+    // decides behavior -- it must not depend on ASAN_OPTIONS.  So skip the
+    // halt_on_error_ / __sanitizer_acquire_crash_state() gate here when routing
+    // is active: consuming the process-wide crash-state latch would make a
+    // later genuine report early-return without resetting current_error_ (and
+    // without invoking the routed handler), and halt_on_error_ itself is
+    // flags()->halt_on_error-driven.  The routed branches below terminate or
+    // continue purely per the semantic; the stock path (routing off) keeps this
+    // gate byte-for-byte.  abort_on_error / halt_on_error_ in the tail are only
+    // reached on the stock path (the routed branches return/Die first).
+    if (!contract_routed && halt_on_error_
+        && !__sanitizer_acquire_crash_state()) {
       asanThreadRegistry().Unlock();
       return;
     }
     ASAN_ON_ERROR();
+    // Capture a description of the error before printing (the error object may
+    // be reset below on the continue path).
+    const char *contract_comment =
+        current_error_.IsValid()
+            ? current_error_.Base.scariness.GetDescription()
+            : "address-sanitizer-error";
+    // Name the specific UB for the pointer-pair checks so the handler's comment
+    // identifies which check fired ([expr.rel] vs expr.add.sub.diff.pointers)
+    // rather than the generic scariness description.
+    if (contract_check_ == kAsanCheckPointerCompare)
+      contract_comment = "pointer-compare";
+    else if (contract_check_ == kAsanCheckPointerSubtract)
+      contract_comment = "pointer-subtract";
+
+    // RF5: on the contract-routed path (observe/enforce/quick) the handler owns
+    // ALL output.  Emit NOTHING here -- no current_error_.Print(), no
+    // DescribeThread, no stats, no LogFullErrorReport, no stock
+    // error_report_callback.  Instead, for the handler routes, register a lazy
+    // report populator so the handler's contract_violation::report() renders the
+    // full ASan text on demand (and only if it calls report()).  quick_enforce
+    // terminates silently with no populator.  Every non-routed path below is
+    // byte-for-byte stock behavior.
+    if (contract_route_quick) {
+      // quick_enforce = terminate silently, no handler, no report, no output.
+      asanThreadRegistry().Unlock();
+      Die();
+    }
+    if (contract_route_handler) {
+      // The populator ctx lives on this (still-alive) frame; the error object
+      // stays valid until we reset/Die below, so the populator can render it
+      // during the handler call.  Keep asanThreadRegistry() LOCKED across the
+      // handler: the RF1 render (ErrorDescription::Print / DescribeThread)
+      // CheckLocked()s the registry, so the populator must run with it held.
+      // The enclosing ScopedErrorReportLock already serializes all reporting,
+      // so no new deadlock surface is introduced.
+      AsanContractReportCtx report_ctx = {/*rendered=*/nullptr};
+      AsanContractReportPopulator report_populator = {
+          &asan_contract_report_populate, &report_ctx};
+      __cxa_contract_violation_sanitizer(contract_comment, /*file=*/"",
+                                         /*line=*/0, kContractRoute,
+                                         &report_populator);
+      asanThreadRegistry().Unlock();
+      if (kContractRoute == kAsanContractObserve) {
+        // noexcept_observe = continue: reset the error object and return
+        // without terminating, regardless of halt_on_error_.
+        internal_memset(&current_error_, 0, sizeof(current_error_));
+        return;
+      }
+      // noexcept_enforce = terminate.  No "ABORTING" line: the handler owns all
+      // output on the routed path.
+      Die();
+    }
+
     if (current_error_.IsValid()) current_error_.Print();
 
     // Make sure the current thread is announced.
@@ -238,9 +434,91 @@ class ScopedInErrorReport {
   // with the debugger and point it to an error description.
   static ErrorDescription current_error_;
   bool halt_on_error_;
+  // Which routed check governs this report (selects the wire byte).  Defaults to
+  // the address byte, so ordinary ASan reports are unchanged.
+  AsanContractCheck contract_check_;
 };
 
 ErrorDescription ScopedInErrorReport::current_error_(LINKER_INITIALIZED);
+
+// RF5 lazy report populator (RF1 buffer-only render mechanism).  Renders the
+// current ASan error into the file-local error_message_buffer with sink 1 (the
+// report fd) temporarily redirected to /dev/null, so NOTHING reaches stderr;
+// then copies the accumulated text out NUL-terminated into producer-owned
+// storage.  Runs only when the contract handler calls report(); the result is
+// cached in the ctx so repeat calls within one handler invocation are cheap.
+//
+// This is invoked with asanThreadRegistry() held (see the routed-handler path in
+// the dtor), which ErrorDescription::Print()/DescribeThread require.
+static const char *asan_contract_report_populate(const void *ctx_v) {
+  AsanContractReportCtx *ctx =
+      const_cast<AsanContractReportCtx *>(
+          static_cast<const AsanContractReportCtx *>(ctx_v));
+  if (!ctx)
+    return nullptr;
+  if (ctx->rendered)
+    return ctx->rendered;
+
+  if (!ScopedInErrorReport::CurrentError().IsValid()) {
+    ctx->rendered = "";
+    return ctx->rendered;
+  }
+
+  // Redirect the report fd (sink 1) to /dev/null around Print() so the fully
+  // rendered report only accumulates into error_message_buffer (sink 2).
+  fd_t devnull = OpenFile("/dev/null", WrOnly);
+  fd_t saved_fd;
+  uptr saved_fd_pid;
+  {
+    SpinMutexLock l(report_file.mu);
+    saved_fd = report_file.fd;
+    saved_fd_pid = report_file.fd_pid;
+    if (devnull != kInvalidFd) {
+      report_file.fd = devnull;
+      // Match fd_pid to our pid so ReopenIfNecessary() won't clobber the swap.
+      report_file.fd_pid = internal_getpid();
+    }
+  }
+
+  // Clear the buffer, render (sink 1 -> /dev/null, sink 2 -> buffer), then copy.
+  const char *result = "";
+  {
+    Lock bl(&error_message_buf_mutex);
+    if (error_message_buffer)
+      error_message_buffer->clear();
+  }
+  ScopedInErrorReport::CurrentError().Print();
+
+  // Restore the report fd immediately after rendering.
+  {
+    SpinMutexLock l(report_file.mu);
+    report_file.fd = saved_fd;
+    report_file.fd_pid = saved_fd_pid;
+  }
+  if (devnull != kInvalidFd)
+    internal_close(devnull);
+
+  // Copy the accumulated text out NUL-terminated into producer-owned storage.
+  // A single static buffer suffices: all error reporting is serialized by the
+  // enclosing ScopedErrorReportLock, so only one populator runs at a time, and
+  // the rendered string must stay valid only for the current handler call.
+  static char rendered_report[kErrorMessageBufferSize];
+  {
+    Lock bl(&error_message_buf_mutex);
+    if (error_message_buffer && error_message_buffer->size()) {
+      uptr n = error_message_buffer->size();
+      if (n >= sizeof(rendered_report))
+        n = sizeof(rendered_report) - 1;
+      internal_memcpy(rendered_report, error_message_buffer->data(), n);
+      rendered_report[n] = '\0';
+      error_message_buffer->clear();
+      result = rendered_report;
+    }
+  }
+
+  ctx->rendered = result;
+  return ctx->rendered;
+}
 
 void ReportDeadlySignal(const SignalContext &sig) {
   ScopedInErrorReport in_report(/*fatal*/ true);
@@ -413,8 +691,9 @@ void ReportODRViolation(const __asan_global *g1, u32 stack_id1,
 
 // ----------------------- CheckForInvalidPointerPair ----------- {{{1
 static NOINLINE void ReportInvalidPointerPair(uptr pc, uptr bp, uptr sp,
-                                              uptr a1, uptr a2) {
-  ScopedInErrorReport in_report;
+                                              uptr a1, uptr a2,
+                                              AsanContractCheck contract_check) {
+  ScopedInErrorReport in_report(/*fatal=*/false, contract_check);
   ErrorInvalidPointerPair error(GetCurrentTidOrInvalid(), pc, bp, sp, a1, a2);
   in_report.ReportError(error);
 }
@@ -463,7 +742,8 @@ static bool IsInvalidPointerPair(uptr a1, uptr a2) {
   return false;
 }
 
-static inline void CheckForInvalidPointerPair(void *p1, void *p2) {
+static inline void CheckForInvalidPointerPair(void *p1, void *p2,
+                                              AsanContractCheck contract_check) {
   switch (flags()->detect_invalid_pointer_pairs) {
     case 0:
       return;
@@ -478,7 +758,7 @@ static inline void CheckForInvalidPointerPair(void *p1, void *p2) {
 
   if (IsInvalidPointerPair(a1, a2)) {
     GET_CALLER_PC_BP_SP;
-    ReportInvalidPointerPair(pc, bp, sp, a1, a2);
+    ReportInvalidPointerPair(pc, bp, sp, a1, a2, contract_check);
   }
 }
 // ----------------------- Mac-specific reports ----------------- {{{1
@@ -498,7 +778,14 @@ void ReportMacMzReallocUnknown(uptr addr, uptr zone_ptr, const char *zone_name,
 // -------------- SuppressErrorReport -------------- {{{1
 // Avoid error reports duplicating for ASan recover mode.
 static bool SuppressErrorReport(uptr pc) {
-  if (!common_flags()->suppress_equal_pcs) return false;
+  // P3100 Bug #3: on the contract-routed path, per-PC dedup is applied
+  // DETERMINISTICALLY (report once per site; subsequent same-PC violations
+  // continue silently, per "continue as if the check were not present"),
+  // regardless of the suppress_equal_pcs flag -- so behavior depends only on
+  // the configured semantic, not ASAN_OPTIONS.  Off the routed path the flag is
+  // honored exactly as before.
+  const bool routed = (AsanContractSemantic() != kAsanContractStock);
+  if (!routed && !common_flags()->suppress_equal_pcs) return false;
   for (unsigned i = 0; i < kAsanBuggyPcPoolSize; i++) {
     uptr cmp = atomic_load_relaxed(&AsanBuggyPcPool[i]);
     if (cmp == 0 && atomic_compare_exchange_strong(&AsanBuggyPcPool[i], &cmp,
@@ -506,6 +793,10 @@ static bool SuppressErrorReport(uptr pc) {
       return false;
     if (cmp == pc) return true;
   }
+  // Pool exhausted.  On the routed continuing path we must never terminate
+  // here (observe has to continue); suppress instead.  Off the routed path
+  // keep the historical Die().
+  if (routed) return true;
   Die();
 }
 
@@ -546,6 +837,22 @@ void __asan_report_error(uptr pc, uptr bp, uptr sp, uptr addr, int is_write,
 }
 
 void NOINLINE __asan_set_error_report_callback(void (*callback)(const char*)) {
+  // P3100 Task 3.2: runtime guardrail.  When contract routing is active the
+  // detected-error report is dispatched through the C++ contract-violation
+  // handler, not this stock callback; silently registering it would let the
+  // program mix stock ASan callbacks with contract routing.  Refuse with a
+  // fatal error naming the opt-out.  When routing is off (opt-out set via
+  // -fsanitize-noncontract-callbacks, or a non-p3100 program), the descriptor
+  // is absent, AsanContractSemantic() reads stock, and behavior is unchanged.
+  const unsigned char route = AsanContractSemantic();
+  if (route == kAsanContractObserve || route == kAsanContractEnforce ||
+      route == kAsanContractQuick) {
+    Report(
+        "ERROR: AddressSanitizer: stock error-report callbacks are disabled "
+        "under contract routing (-fcontracts-p3100); rebuild with "
+        "-fsanitize-noncontract-callbacks to use them\n");
+    Die();
+  }
   Lock l(&error_message_buf_mutex);
   error_report_callback = callback;
 }
@@ -751,11 +1058,11 @@ const char *__asan_get_report_description() {
 extern "C" {
 SANITIZER_INTERFACE_ATTRIBUTE
 void __sanitizer_ptr_sub(void *a, void *b) {
-  CheckForInvalidPointerPair(a, b);
+  CheckForInvalidPointerPair(a, b, kAsanCheckPointerSubtract);
 }
 SANITIZER_INTERFACE_ATTRIBUTE
 void __sanitizer_ptr_cmp(void *a, void *b) {
-  CheckForInvalidPointerPair(a, b);
+  CheckForInvalidPointerPair(a, b, kAsanCheckPointerCompare);
 }
 } // extern "C"
 

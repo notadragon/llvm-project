@@ -1342,6 +1342,13 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
                                                   : MultiTemplateParamsArg(),
                                               &SkipBody, BodyKind);
 
+  // D4299: replay late-parsed C contract specifiers.
+  if (!D.LateParsedContracts.empty() && getLangOpts().ContractsP4299) {
+    if (auto *FD = dyn_cast_or_null<FunctionDecl>(Res))
+      ParseLexedFunctionContracts(D.LateParsedContracts, FD, CES_AllScopes);
+    D.LateParsedContracts.clear();
+  }
+
   if (SkipBody.ShouldSkip) {
     // Do NOT enter SkipFunctionBody if we already consumed the tokens.
     if (BodyKind == Sema::FnBodyKind::Other)

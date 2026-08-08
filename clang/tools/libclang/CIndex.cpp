@@ -7324,6 +7324,7 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
   case Decl::OpenACCDeclare:
   case Decl::OpenACCRoutine:
   case Decl::CXXExpansionStmt:
+  case Decl::PostconditionCapture:
   case Decl::ResultName:
   case Decl::ContractSpecifier:
     return C;

@@ -1,7 +1,7 @@
-// RUN: %clangxx  -std=c++26 %s -fcontracts -o %t -fcontract-evaluation-semantic=observe -g
+// RUN: %clangxx -std=c++26 %s -fcontracts %libcxx_flags -o %t -fcontract-evaluation-semantic=observe -g
 // RUN: %t
 
-#include "contracts-runtime.h"
+#include <contracts>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif

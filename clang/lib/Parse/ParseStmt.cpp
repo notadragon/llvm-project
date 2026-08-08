@@ -158,6 +158,13 @@ Retry:
         getCurScope(), SemaCodeCompletion::PCC_Statement);
     return StmtError();
 
+  case tok::kw__ContractAssert:
+    ProhibitAttributes(CXX11Attrs);
+    ProhibitAttributes(GNUAttrs);
+    Res = ParseContractAssertStatement();
+    SemiError = "_ContractAssert";
+    break;
+
   case tok::identifier:
   ParseIdentifier: {
     Token Next = NextToken();

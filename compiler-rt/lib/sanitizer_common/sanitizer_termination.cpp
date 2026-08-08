@@ -91,9 +91,34 @@ void NORETURN CheckFailed(const char *file, int line, const char *cond,
 
 using namespace __sanitizer;
 
+// P3100 Task 3.2: runtime guardrail for the shared death-callback setter.
+//
+// __sanitizer_set_death_callback lives in sanitizer_common (shared by every
+// sanitizer), but contract routing is currently ASan-specific.  We read the
+// ASan routing state through a weak reference to the descriptor the ASan
+// runtime declares (__asan_contract_semantic, wire 1 = observe, 2 = enforce;
+// absent / 0 = stock).  The weak reference introduces no dependency on ASan:
+// when ASan is not linked -- or routing is off, whether via the
+// -fsanitize-noncontract-callbacks opt-out or a non-p3100 program -- the
+// symbol is absent (or 0) and this guard is a no-op, so stock behavior is
+// byte-for-byte unchanged.  When routing IS active, installing a death
+// callback would let the program interpose on the terminate path that
+// contract enforcement drives, so we refuse with a fatal error naming the
+// opt-out.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __asan_contract_semantic;
+
 extern "C" {
 SANITIZER_INTERFACE_ATTRIBUTE
 void __sanitizer_set_death_callback(void (*callback)(void)) {
+  const unsigned char route =
+      (&__asan_contract_semantic == nullptr) ? 0 : __asan_contract_semantic;
+  if (route == 1 || route == 2) {
+    Report(
+        "ERROR: AddressSanitizer: stock death callbacks are disabled under "
+        "contract routing (-fcontracts-p3100); rebuild with "
+        "-fsanitize-noncontract-callbacks to use them\n");
+    Die();
+  }
   SetUserDieCallback(callback);
 }
 }  // extern "C"

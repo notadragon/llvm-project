@@ -10205,6 +10205,68 @@ void Sema::addImplicitCallingConvAbiTag(FunctionDecl *FD) {
     FD->addAttr(Existing[I]);
 }
 
+static void CheckHandleContractViolation(Sema &S, FunctionDecl *FD) {
+  if (!S.getLangOpts().Contracts)
+    return;
+  if (!FD->getDeclName().isIdentifier() ||
+      FD->getName() != "handle_contract_violation")
+    return;
+  if (!FD->getDeclContext()->getRedeclContext()->isTranslationUnit())
+    return;
+
+  SourceLocation Loc = FD->getLocation();
+
+  if (FD->isInlineSpecified())
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "'::handle_contract_violation' shall not be declared 'inline'";
+
+  if (FD->isExternC())
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "'::handle_contract_violation' shall have C++ language linkage";
+
+  if (FD->isInExportDeclContext())
+    ; // fine
+
+  if (FD->getOwningModule() && FD->getOwningModule()->isNamedModule())
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "'::handle_contract_violation' shall be attached to the global module";
+
+  QualType RetTy = FD->getReturnType();
+  if (!RetTy->isVoidType())
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "'::handle_contract_violation' shall return 'void'";
+
+  if (FD->getNumParams() != 1) {
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "'::handle_contract_violation' shall have a single parameter of "
+           "type 'const std::contracts::contract_violation&'";
+    return;
+  }
+
+  QualType ParmTy = FD->getParamDecl(0)->getType();
+  if (!ParmTy->isLValueReferenceType()) {
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "parameter of '::handle_contract_violation' shall be an lvalue "
+           "reference to 'const std::contracts::contract_violation'";
+    return;
+  }
+
+  QualType RefTy = ParmTy->getPointeeType();
+  if (!RefTy.isConstQualified()) {
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "parameter of '::handle_contract_violation' shall be a reference "
+           "to 'const std::contracts::contract_violation'";
+    return;
+  }
+
+  const RecordType *RT = RefTy->getAs<RecordType>();
+  if (!RT || RT->getDecl()->getQualifiedNameAsString() !=
+                 "std::contracts::contract_violation")
+    S.Diag(Loc, diag::err_ericwf_generic)
+        << "parameter of '::handle_contract_violation' shall be of type "
+           "'const std::contracts::contract_violation&'";
+}
+
 NamedDecl*
 Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                               TypeSourceInfo *TInfo, LookupResult &Previous,
@@ -11030,6 +11092,9 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     // Perform semantic checking on the function declaration.
     if (!NewFD->isInvalidDecl() && NewFD->isMain())
       CheckMain(NewFD, D.getDeclSpec());
+
+    if (!NewFD->isInvalidDecl())
+      CheckHandleContractViolation(*this, NewFD);
 
     if (!NewFD->isInvalidDecl() && NewFD->isMSVCRTEntryPoint())
       CheckMSVCRTEntryPoint(NewFD);

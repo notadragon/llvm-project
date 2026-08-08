@@ -494,13 +494,43 @@ void ASTStmtWriter::VisitContractStmt(ContractStmt *S) {
   CurrentPackingBits.addBits(S->ContractAssertBits.ContractKind,
                              /*BitsWidth=*/2);
   CurrentPackingBits.addBit(S->ContractAssertBits.HasResultName);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasMessage);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasLabel);
+  CurrentPackingBits.addBits(S->ContractAssertBits.AllowedMask,
+                             /*BitsWidth=*/8);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasLocalHandler);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasQuery);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasCaptures);
+  CurrentPackingBits.addBit(S->ContractAssertBits.HasRequiresClause);
   Record.push_back(S->getAttrs().size());
 
   Record.AddSourceLocation(S->getKeywordLoc());
   Record.AddStmt(S->getCond());
   if (S->hasResultName())
     Record.AddStmt(S->getResultNameDeclStmt());
+  if (S->hasMessage())
+    Record.AddStmt(S->getMessageExpr());
+  if (S->hasLabel())
+    Record.AddStmt(S->getLabelExpr());
+  if (S->hasCaptures())
+    Record.AddStmt(S->getCapturesDeclStmt());
+  if (S->hasRequiresClause())
+    Record.AddStmt(S->getRequiresClause());
   Record.AddAttributes(S->getAttrs());
+  Record.AddString(S->getTransformedComment());
+  Record.AddString(S->getTransformedMessage());
+
+  // P3595 dynamic selection: the resolved descriptor + precomputed transform
+  // table are computed in Sema (applyLabelFacets) and cannot be recomputed
+  // lazily on the reader side (codegen has no Sema), so serialize them.
+  Record.push_back(S->isDynamic());
+  if (S->isDynamic()) {
+    Record.AddString(S->getDynName());
+    Record.push_back(S->getDynLinkage());
+    Record.push_back(S->getDynProvideWeak());
+    for (unsigned R = 1; R <= 4; ++R)
+      Record.push_back(static_cast<unsigned>(S->getDynTransform(R)));
+  }
 
   Code = serialization::STMT_CXX_CONTRACT;
 }

@@ -2,6 +2,7 @@
 #include "clang/Parse/Parser.h"
 
 #include "clang/AST/ASTContext.h"
+#include "clang/Lex/LiteralSupport.h"
 #include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/CharInfo.h"
@@ -21,6 +22,11 @@ using namespace clang;
 
 std::optional<ContractKind>
 Parser::getContractKeyword(const Token &Token) const {
+  // C contracts (D4299): keyword tokens
+  if (Token.is(tok::kw__Pre)) return ContractKind::Pre;
+  if (Token.is(tok::kw__Post)) return ContractKind::Post;
+  if (Token.is(tok::kw__ContractAssert)) return ContractKind::Assert;
+
   // We offer the reserved keywords as identifiers in C++11 mode.
   if (!getLangOpts().CPlusPlus11 ||
       (Token.isNot(tok::identifier) && !Token.is(tok::kw_contract_assert)))
@@ -67,6 +73,8 @@ static const char *getContractKeywordStr(ContractKind CK) {
     return "post";
   case ContractKind::Assert:
     return "contract_assert";
+  case ContractKind::Implicit:
+    return "implicit";
   }
   llvm_unreachable("unhandled case");
 }
@@ -80,17 +88,105 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
   Token StartTok = Tok;
   SourceRange ContractRange = SourceRange(ConsumeToken());
 
+  // P3400: If there's a '<', cache the label expression tokens before '('.
+  if (getLangOpts().ContractsP3400 && Tok.is(tok::less)) {
+    Toks.push_back(StartTok);
+    Toks.push_back(Tok);
+    ConsumeToken(); // '<'
+    // Cache everything up to and including the matching '>'.
+    // Use ConsumeAndStoreUntil with a depth counter for nested <>.
+    unsigned Depth = 1;
+    while (Depth > 0) {
+      if (Tok.is(tok::less))
+        ++Depth;
+      else if (Tok.is(tok::greater))
+        --Depth;
+      else if (Tok.is(tok::greatergreater) && Depth >= 2) {
+        Depth -= 2;
+        // Split >> into > > for caching.
+        Token GT;
+        GT.startToken();
+        GT.setKind(tok::greater);
+        GT.setLocation(Tok.getLocation());
+        Toks.push_back(GT);
+        GT.setLocation(Tok.getLocation().getLocWithOffset(1));
+        Toks.push_back(GT);
+        ConsumeToken();
+        continue;
+      } else if (Tok.is(tok::eof) || Tok.is(tok::semi)) {
+        Diag(Tok, diag::err_expected) << tok::greater;
+        return false;
+      }
+      Toks.push_back(Tok);
+      ConsumeToken();
+    }
+    // Cache attribute tokens [[...]] after label.
+    while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+      ConsumeAndStoreUntil(tok::r_square, Toks,
+                           /*StopAtSemi=*/true,
+                           /*ConsumeFinalToken=*/true);
+      if (Tok.is(tok::r_square)) {
+        Toks.push_back(Tok);
+        ConsumeBracket();
+      }
+    }
+
+    // Cache capture tokens [...] if present.
+    if (Tok.is(tok::l_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+      ConsumeAndStoreUntil(tok::r_square, Toks,
+                           /*StopAtSemi=*/true,
+                           /*ConsumeFinalToken=*/true);
+    }
+
+    // Now expect '('.
+    if (!Tok.is(tok::l_paren)) {
+      Diag(Tok, diag::err_expected_lparen_after) << CKStr;
+      return false;
+    }
+    Toks.push_back(Tok);
+    ContractRange.setEnd(ConsumeParen());
+    ConsumeAndStoreUntil(tok::r_paren, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+    ContractRange.setEnd(Toks.back().getLocation());
+    return true;
+  }
+
+  // Cache any [[attribute]] tokens before captures/paren.
+  Toks.push_back(StartTok);             // contract keyword
+
+  // Cache attribute tokens [[...]].
+  while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
+    Toks.push_back(Tok);
+    ConsumeBracket();
+    ConsumeAndStoreUntil(tok::r_square, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+    if (Tok.is(tok::r_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+    }
+  }
+
+  // Cache capture tokens [...] if present.
+  if (Tok.is(tok::l_square)) {
+    Toks.push_back(Tok);
+    ConsumeBracket();
+    ConsumeAndStoreUntil(tok::r_square, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+  }
+
   // Check for a '('.
   if (!Tok.is(tok::l_paren)) {
-    // If this is a bare 'noexcept', we're done.
-
     Diag(Tok, diag::err_expected_lparen_after) << CKStr;
     return false;
   }
 
-  // Cache the tokens for the exception-specification.
-
-  Toks.push_back(StartTok);             // 'throw' or 'noexcept'
   Toks.push_back(Tok);                  // '('
   ContractRange.setEnd(ConsumeParen()); // '('
 
@@ -108,8 +204,9 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
 ///     conditional-expression ')' ';'
 ///
 StmtResult Parser::ParseContractAssertStatement() {
-  assert((Tok.is(tok::kw_contract_assert)) &&
-         "Not a contract asssert statement");
+  assert((Tok.is(tok::kw_contract_assert) ||
+          Tok.is(tok::kw__ContractAssert)) &&
+         "Not a contract assert statement");
   bool IsInvalidTmp = false;
   return ParseFunctionContractSpecifierImpl({}, CSO_FunctionContext, IsInvalidTmp);
 }
@@ -210,8 +307,64 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   SourceLocation KeywordLoc = Tok.getLocation();
   ConsumeToken();
 
+  ExprResult LabelExpr;
+  if (getLangOpts().ContractsP3400 && Tok.is(tok::less)) {
+    ConsumeToken();
+    llvm::SaveAndRestore OldGreater(GreaterThanIsOperator, false);
+    llvm::SaveAndRestore SetFlag(Actions.InAssertionControlExpression, true);
+    LabelExpr = ParseConstantExpression();
+    if (ExpectAndConsume(tok::greater))
+      return StmtError();
+  }
+
+  // Parse optional requires clause (P4283): pre <label> requires(C) ...
+  // The constraint is a parenthesized expression: requires(constraint-expr).
+  ExprResult RequiresClauseExpr;
+  if (Tok.is(tok::kw_requires)) {
+    if (!getLangOpts().ContractsP4283) {
+      Diag(Tok.getLocation(),
+           diag::err_contract_requires_clause_require_flag);
+      ConsumeToken(); // consume 'requires'
+      if (Tok.is(tok::l_paren)) {
+        ConsumeParen();
+        SkipUntil(tok::r_paren, StopAtSemi);
+      }
+    } else {
+      ConsumeToken(); // consume 'requires'
+      if (Tok.isNot(tok::l_paren)) {
+        Diag(Tok, diag::err_expected_lparen_after) << "requires";
+        return StmtError();
+      }
+      BalancedDelimiterTracker ReqT(*this, tok::l_paren);
+      ReqT.consumeOpen();
+      RequiresClauseExpr = ParseConstraintLogicalOrExpression(
+          /*IsTrailingRequiresClause=*/false);
+      if (RequiresClauseExpr.isInvalid()) {
+        ReqT.skipToEnd();
+        return StmtError();
+      }
+      ReqT.consumeClose();
+    }
+  }
+
   ParsedAttributes CXX11Attrs(AttrFactory);
   MaybeParseCXX11Attributes(CXX11Attrs);
+
+  SmallVector<Decl *, 4> CaptureDecls;
+  DeclStmt *CapturesDeclStmt = nullptr;
+  if (Tok.is(tok::l_square)) {
+    if (CK != ContractKind::Post) {
+      Diag(Tok.getLocation(), diag::err_postcondition_captures_on_non_post)
+          << CKStr;
+      SkipUntil(tok::l_paren, StopBeforeMatch);
+    } else if (!getLangOpts().ContractsP3098) {
+      Diag(Tok.getLocation(), diag::err_postcondition_captures_require_flag);
+      SkipUntil(tok::l_paren, StopBeforeMatch);
+    } else {
+      if (ParsePostconditionCaptures(CaptureDecls))
+        return StmtError();
+    }
+  }
 
   if (Tok.isNot(tok::l_paren)) {
     Diag(Tok, diag::err_expected_lparen_after) << CKStr;
@@ -233,6 +386,16 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   ParseScope ContractScope(this, Scope::DeclScope | Scope::ContractAssertScope);
   EnterExpressionEvaluationContext EC(
       Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+
+  if (!CaptureDecls.empty()) {
+    Actions.ActOnFinishPostconditionCaptures(getCurScope(), CaptureDecls);
+    SmallVector<Decl *, 4> CaptureVec(CaptureDecls);
+    CapturesDeclStmt = new (Actions.Context)
+        DeclStmt(DeclGroupRef::Create(Actions.Context, CaptureVec.data(),
+                                      CaptureVec.size()),
+                 CaptureDecls.front()->getLocation(),
+                 CaptureDecls.back()->getLocation());
+  }
 
   ResultNameDecl *RND = nullptr;
   // FIXME(EricWF): We allow parsing the result name declarator in `pre` so we
@@ -266,6 +429,41 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
       return CondResult;
     return Actions.ActOnContractAssertCondition(CondResult.get());
   }();
+
+  ExprResult MessageExpr;
+  if (getLangOpts().ContractsP3099 && Tok.is(tok::comma)) {
+    ConsumeToken();
+
+    bool ParseAsExpression = false;
+    if (getLangOpts().CPlusPlus11) {
+      for (unsigned I = 0;; ++I) {
+        const Token &T = GetLookAheadToken(I);
+        if (T.is(tok::r_paren))
+          break;
+        if (!tokenIsLikeStringLiteral(T, getLangOpts()) || T.hasUDSuffix()) {
+          ParseAsExpression = true;
+          break;
+        }
+      }
+    }
+
+    if (ParseAsExpression) {
+      // A non-literal (user-generated) diagnostic message is a constant
+      // expression and must be parsed in a ConstantEvaluated context, just as
+      // static_assert does (ParseStaticAssertDeclaration).  The enclosing
+      // contract-specifier context is PotentiallyEvaluated, so enter the
+      // constant-evaluated context here.
+      EnterExpressionEvaluationContext ConstantEvaluated(
+          Actions, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+      MessageExpr = ParseConstantExpressionInExprEvalContext();
+    } else if (tokenIsLikeStringLiteral(Tok, getLangOpts()))
+      MessageExpr = ParseUnevaluatedStringLiteralExpression();
+    else {
+      Diag(Tok, diag::err_expected_string_literal)
+          << /*Source='static_assert'*/ 1;
+    }
+  }
+
   SourceLocation EndLoc = Tok.getLocation();
 
   T.consumeClose();
@@ -277,11 +475,120 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
     SetInvalidOnExit.release();
   }
 
-  StmtResult Res =
-      Actions.ActOnContractAssert(CK, KeywordLoc, Cond.get(), RND, CXX11Attrs);
+  StmtResult Res = Actions.ActOnContractAssert(CK, KeywordLoc, Cond.get(), RND,
+                                               CXX11Attrs,
+                                               MessageExpr.get(),
+                                               LabelExpr.get(),
+                                               CapturesDeclStmt,
+                                               RequiresClauseExpr.get());
   if (Res.isInvalid())
     IsInvalid = true;
   return Res;
+}
+
+bool Parser::ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures) {
+  assert(Tok.is(tok::l_square) && "Expected '['");
+  ConsumeBracket();
+
+  if (Tok.is(tok::r_square)) {
+    ConsumeBracket();
+    return false;
+  }
+
+  while (true) {
+    SourceLocation Loc = Tok.getLocation();
+    bool IsPackExpansion = false;
+
+    // Reject = (default by-copy)
+    if (Tok.is(tok::equal)) {
+      Diag(Loc, diag::err_postcondition_capture_default);
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return false;
+    }
+
+    // Reject & as default or capture-by-reference
+    if (Tok.is(tok::amp)) {
+      if (NextToken().is(tok::r_square) || NextToken().is(tok::comma)) {
+        Diag(Loc, diag::err_postcondition_capture_default);
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return false;
+      }
+      Diag(Loc, diag::err_postcondition_capture_by_reference);
+      ConsumeToken(); // skip & and try to recover
+    }
+
+    // Reject this / *this
+    if (Tok.is(tok::kw_this)) {
+      Diag(Loc, diag::err_postcondition_capture_this);
+      ConsumeToken();
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+    if (Tok.is(tok::star) && NextToken().is(tok::kw_this)) {
+      Diag(Loc, diag::err_postcondition_capture_this);
+      ConsumeToken(); // *
+      ConsumeToken(); // this
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+
+    // Check for ... prefix (pack init-capture: [...x = args])
+    if (Tok.is(tok::ellipsis)) {
+      IsPackExpansion = true;
+      ConsumeToken();
+    }
+
+    if (Tok.isNot(tok::identifier)) {
+      Diag(Tok, diag::err_expected) << tok::identifier;
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return true;
+    }
+
+    IdentifierInfo *Id = Tok.getIdentifierInfo();
+    SourceLocation IdLoc = ConsumeToken();
+
+    // Check for pack expansion suffix: [args...]
+    if (!IsPackExpansion && Tok.is(tok::ellipsis)) {
+      IsPackExpansion = true;
+      ConsumeToken();
+    }
+
+    ExprResult Init;
+    if (Tok.is(tok::equal)) {
+      ConsumeToken();
+      Init = ParseAssignmentExpression();
+      if (Init.isInvalid()) {
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return true;
+      }
+    }
+
+    Decl *Capture = Actions.ActOnPostconditionCapture(
+        getCurScope(), IdLoc, Id, Init.get(), IsPackExpansion);
+    if (Capture)
+      Captures.push_back(Capture);
+
+    if (Tok.is(tok::comma)) {
+      ConsumeToken();
+      continue;
+    }
+    break;
+  }
+
+  if (ExpectAndConsume(tok::r_square))
+    return true;
+
+  return false;
 }
 
 bool Parser::ParseLexedFunctionContracts(

@@ -228,6 +228,11 @@ class ScopedReport {
   ReportOptions Opts;
   Location SummaryLoc;
   ErrorType Type;
+  // P3100: the conveyed contract-routing semantic for this report's check
+  // (0 = stock / not routed).  Computed in the constructor from the per-TU weak
+  // table __ubsan_contract_semantic[]; consumed by the destructor to route the
+  // report into the contract-violation handler.  See ubsan_diag.cpp.
+  unsigned char contract_wire_;
 
 public:
   ScopedReport(ReportOptions Opts, Location SummaryLoc, ErrorType Type);

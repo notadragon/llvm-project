@@ -5946,14 +5946,16 @@ static bool CheckLocalVariableDeclaration(EvalInfo &Info, const VarDecl *VD) {
   return true;
 }
 
-static bool EvaluateContract(const ContractStmt *S, EvalInfo &Info) {
+static bool EvaluateContract(const ContractStmt *S, EvalInfo &Info,
+                             const FunctionDecl *Callee) {
   using CES = ContractEvaluationSemantic;
   auto &Ctx = Info.Ctx;
 
   if (!Info.EvaluateContracts)
     return true;
 
-  CES Sem = S->getSemantic(Ctx);
+  CES Sem = S->ensureCESemantic(Ctx,
+      Callee ? Callee->getDeclContext() : nullptr);
   if (Sem == CES::Ignore)
     return true;
 
@@ -5962,10 +5964,22 @@ static bool EvaluateContract(const ContractStmt *S, EvalInfo &Info) {
   if (!EvaluateCond(Info,nullptr, E, Result))
     return false;
   if (!Result) {
-    Info.CCEDiag(E, Sem == CES::Observe ? diag::warn_constexpr_contract_failure
-                                        : diag::err_constexpr_contract_failure)
-        << E->getSourceRange();
-    return Sem == CES::Observe;
+    std::string UserMsg = S->getUserMessage(Ctx);
+    bool HasMsg = !UserMsg.empty();
+    // D4298: noexcept_observe is non-terminating in constant evaluation, just
+    // like plain observe (a warning; the expression stays constant).
+    // noexcept_enforce needs no case here -- like plain enforce it falls
+    // through to the hard-error branch below.  During constant evaluation
+    // there is no throw/terminate distinction, so noexcept_* and their plain
+    // counterparts behave identically.
+    if (Sem == CES::Observe || Sem == CES::NoexceptObserve) {
+      Info.report(E->getExprLoc(), diag::warn_constexpr_contract_failure)
+          << HasMsg << UserMsg << E->getSourceRange();
+      return true;
+    }
+    Info.CCEDiag(E, diag::err_constexpr_contract_failure)
+        << HasMsg << UserMsg << E->getSourceRange();
+    return false;
   }
   return true;
 }
@@ -6221,7 +6235,9 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
     return Scope.destroy() ? ESR_Succeeded : ESR_Failed;
   }
   case Stmt::ContractStmtClass: {
-    if (EvaluateContract(cast<ContractStmt>(S), Info))
+    const FunctionDecl *FD = Info.CurrentCall
+        ? Info.CurrentCall->Callee : nullptr;
+    if (EvaluateContract(cast<ContractStmt>(S), Info, FD))
       return ESR_Succeeded;
     return ESR_Failed;
   }
@@ -7217,8 +7233,48 @@ static bool EvaluatePreContracts(EvalInfo &Info, const FunctionDecl *Callee,
   if (!Contracts)
     return true;
   for (auto *S : Contracts->preconditions()) {
-    if (!EvaluateContract(S, Frame->Info)) {
+    if (!EvaluateContract(S, Frame->Info, Callee)) {
       return false;
+    }
+  }
+  return true;
+}
+
+// P3098: bind each postcondition capture in the call frame at entry (before
+// the body runs), so EvaluateContract can read it later when evaluating that
+// postcondition's predicate -- mirroring how a capture is bound in the
+// codegen prologue (CodeGenFunction::GenerateCode). Uses ScopeKind::Call
+// (not the ScopeKind::Block that ordinary body locals get via
+// EvaluateVarDecl) so the value survives the body's own block scopes
+// closing, through to EvaluatePostContracts. ScopeKind::Call cleanups are
+// only actually processed by an explicit CallScopeRAII -- HandleFunctionCall
+// pushes one around this call and EvaluatePostContracts, and destroys it
+// itself before returning, since (unlike a constructor call, which uses
+// CallScopeRAII already) an ordinary function call has no such scope and the
+// callee's CallStackFrame -- and the storage backing this capture -- is
+// gone the instant HandleFunctionCall returns.
+static bool EvaluatePostconditionCaptures(EvalInfo &Info,
+                                          const FunctionDecl *Callee) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return true;
+  for (auto *CS : Contracts->postconditions()) {
+    if (!CS->hasCaptures())
+      continue;
+    if (CS->ensureCESemantic(Info.Ctx, Callee->getDeclContext()) ==
+        ContractEvaluationSemantic::Ignore)
+      continue;
+    for (Decl *D : CS->getCapturesDeclStmt()->decls()) {
+      auto *Cap = cast<PostconditionCaptureDecl>(D);
+      LValue Result;
+      APValue &Val = Info.CurrentCall->createTemporary(Cap, Cap->getType(),
+                                                        ScopeKind::Call,
+                                                        Result);
+      const Expr *InitE = Cap->getInit();
+      if (!InitE || !EvaluateInPlace(Val, Info, Result, InitE)) {
+        Val = APValue();
+        return false;
+      }
     }
   }
   return true;
@@ -7262,7 +7318,7 @@ static bool EvaluatePostContracts(EvalInfo &Info, const FunctionDecl *Callee,
   ((void)LastValue);
 
   for (auto *S : Contracts->postconditions()) {
-    if (!EvaluateContract(S, Info))
+    if (!EvaluateContract(S, Info, Callee))
       return false;
   }
   // If we used a different result slot, the return value needs to be copied
@@ -7334,17 +7390,28 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   if (!EvaluatePreContracts(Info, Callee, &Frame))
     return false;
 
+  // P3098: postcondition captures must be destroyed (their ScopeKind::Call
+  // cleanup run) before this function returns -- unlike a constructor call,
+  // an ordinary call has no other CallScopeRAII, and the storage backing a
+  // capture lives in this Frame, which is gone the instant this function
+  // returns. See EvaluatePostconditionCaptures.
+  CallScopeRAII CaptureScope(Info);
+  if (!EvaluatePostconditionCaptures(Info, Callee))
+    return false;
+
   StmtResult Ret = {Result, ResultSlot};
   EvalStmtResult ESR = EvaluateStmt(Ret, Info, Body);
 
+  bool ContractsOK = false;
   if (ESR == ESR_Succeeded) {
     if (Callee->getReturnType()->isVoidType())
-      return EvaluatePostContracts(Info, Callee, Result, ResultSlot);
-    Info.FFDiag(Callee->getEndLoc(), diag::note_constexpr_no_return);
+      ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
+    else
+      Info.FFDiag(Callee->getEndLoc(), diag::note_constexpr_no_return);
+  } else if (ESR == ESR_Returned) {
+    ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
   }
-  if (ESR == ESR_Returned)
-    return EvaluatePostContracts(Info, Callee, Result, ResultSlot);
-  return false;
+  return ContractsOK && CaptureScope.destroy();
 }
 
 static bool HandleConstructorCall(const Expr *E, const LValue &This,

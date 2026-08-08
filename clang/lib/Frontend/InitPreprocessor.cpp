@@ -766,6 +766,27 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   Builder.defineMacro("__cpp_variadic_friend", "202403L");
   Builder.defineMacro("__cpp_trivial_relocatability", "202502L");
 
+  if (LangOpts.Contracts && LangOpts.ContractsP3097)
+    Builder.defineMacro("__cpp_contracts", "202606L");
+  else if (LangOpts.Contracts)
+    Builder.defineMacro("__cpp_contracts", "202502L");
+  if (LangOpts.ContractsP3099)
+    Builder.defineMacro("__cpp_contracts_message", "202606L");
+  if (LangOpts.ContractsP3098)
+    Builder.defineMacro("__cpp_contracts_postcondition_captures", "202606L");
+  if (LangOpts.ContractsP3290)
+    Builder.defineMacro("__clang_contracts_p3290", "202606L");
+  if (LangOpts.ContractsP3400)
+    Builder.defineMacro("__cpp_contracts_labels", "202606L");
+  if (LangOpts.ContractsP4283)
+    Builder.defineMacro("__cpp_contracts_requires", "202606L");
+  if (LangOpts.ContractsP3100)
+    Builder.defineMacro("__clang_contracts_p3100", "202606L");
+  if (LangOpts.ContractsP4298)
+    Builder.defineMacro("__cpp_contracts_nonthrowing_semantics", "202607L");
+  if (LangOpts.ContractsP4301)
+    Builder.defineMacro("__cpp_contracts_report", "202607L");
+
   if (LangOpts.Char8)
     Builder.defineMacro("__cpp_char8_t", "202207L");
   Builder.defineMacro("__cpp_impl_destroying_delete", "201806L");

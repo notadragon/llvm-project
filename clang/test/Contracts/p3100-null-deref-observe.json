@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.unary.dereference.nullptr"}, "output": {"semantic": "observe"}}
+]

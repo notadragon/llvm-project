@@ -906,6 +906,7 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case Var:
     case ImplicitParam:
     case ParmVar:
+    case PostconditionCapture:
     case ObjCMethod:
     case ObjCProperty:
     case MSProperty:

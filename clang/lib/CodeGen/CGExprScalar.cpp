@@ -380,6 +380,15 @@ public:
   /// boolean (i1) truth value.  This is equivalent to "Val != 0".
   Value *EmitConversionToBool(Value *Src, QualType DstTy);
 
+  /// Build the boolean predicate that is true when converting the
+  /// floating-point value \p Src to the integer \p DstType is *in range* --
+  /// i.e. the truncated-toward-zero value is representable.  Returns nullptr if
+  /// \p DstTy is not an integer type.  Shared by the UBSan float-cast check and
+  /// the P3100 implicit-contract-assertion guard.
+  llvm::Value *EmitFloatCastInRangePredicate(Value *Src, QualType OrigSrcType,
+                                             QualType SrcType, QualType DstType,
+                                             llvm::Type *DstTy);
+
   /// Emit a check that a conversion from a floating-point type does not
   /// overflow.
   void EmitFloatConversionCheck(Value *OrigSrc, QualType OrigSrcType,
@@ -839,6 +848,14 @@ public:
       const bool hasSan =
           isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                    : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+      // P3100: an implicit ub:expr.expr.eval.signed.integer contract assertion
+      // takes precedence over the overflow-behavior/sanitizer handling.
+      if (isSigned && CGF.getLangOpts().ContractsP3100 &&
+          !CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow))
+        return CGF.EmitImplicitSignedOverflowOp(
+            Ops.Ty, Ops.E->getExprLoc(), "ub:expr.expr.eval.signed.integer",
+            "signed integer overflow",
+            CodeGenFunction::ImplicitOverflowOp::Mul, Ops.LHS, Ops.RHS);
       switch (getOverflowBehaviorConsideringType(CGF, Ops.Ty)) {
       case LangOptions::OB_Wrap:
         return Builder.CreateMul(Ops.LHS, Ops.RHS, "mul");
@@ -1059,20 +1076,15 @@ Value *ScalarExprEmitter::EmitConversionToBool(Value *Src, QualType SrcType) {
   return EmitPointerToBoolConversion(Src, SrcType);
 }
 
-void ScalarExprEmitter::EmitFloatConversionCheck(
-    Value *OrigSrc, QualType OrigSrcType, Value *Src, QualType SrcType,
-    QualType DstType, llvm::Type *DstTy, SourceLocation Loc) {
-  assert(SrcType->isFloatingType() && "not a conversion from floating point");
+llvm::Value *ScalarExprEmitter::EmitFloatCastInRangePredicate(
+    Value *Src, QualType OrigSrcType, QualType SrcType, QualType DstType,
+    llvm::Type *DstTy) {
   if (!isa<llvm::IntegerType>(DstTy))
-    return;
+    return nullptr;
 
-  auto CheckOrdinal = SanitizerKind::SO_FloatCastOverflow;
-  auto CheckHandler = SanitizerHandler::FloatCastOverflow;
-  SanitizerDebugLocation SanScope(&CGF, {CheckOrdinal}, CheckHandler);
   using llvm::APFloat;
   using llvm::APSInt;
 
-  llvm::Value *Check = nullptr;
   const llvm::fltSemantics &SrcSema =
     CGF.getContext().getFloatTypeSemantics(OrigSrcType);
 
@@ -1120,7 +1132,22 @@ void ScalarExprEmitter::EmitFloatConversionCheck(
     Builder.CreateFCmpOGT(Src, llvm::ConstantFP::get(VMContext, MinSrc));
   llvm::Value *LE =
     Builder.CreateFCmpOLT(Src, llvm::ConstantFP::get(VMContext, MaxSrc));
-  Check = Builder.CreateAnd(GE, LE);
+  return Builder.CreateAnd(GE, LE);
+}
+
+void ScalarExprEmitter::EmitFloatConversionCheck(
+    Value *OrigSrc, QualType OrigSrcType, Value *Src, QualType SrcType,
+    QualType DstType, llvm::Type *DstTy, SourceLocation Loc) {
+  assert(SrcType->isFloatingType() && "not a conversion from floating point");
+  if (!isa<llvm::IntegerType>(DstTy))
+    return;
+
+  auto CheckOrdinal = SanitizerKind::SO_FloatCastOverflow;
+  auto CheckHandler = SanitizerHandler::FloatCastOverflow;
+  SanitizerDebugLocation SanScope(&CGF, {CheckOrdinal}, CheckHandler);
+
+  llvm::Value *Check =
+      EmitFloatCastInRangePredicate(Src, OrigSrcType, SrcType, DstType, DstTy);
 
   llvm::Constant *StaticArgs[] = {CGF.EmitCheckSourceLocation(Loc),
                                   CGF.EmitCheckTypeDescriptor(OrigSrcType),
@@ -1807,6 +1834,25 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
       OrigSrcType->isFloatingType())
     EmitFloatConversionCheck(OrigSrc, OrigSrcType, Src, SrcType, DstType, DstTy,
                              Loc);
+
+  // P3100: guard a floating-point -> integer conversion whose truncated value
+  // may not be representable in the destination integer type ({conv.fpint}).
+  // The guard replaces the conversion, so the trapping fptosi/fptoui executes
+  // only on the in-range path; ignore/observe substitute a defined 0.  Scope
+  // matches GCC's: plain integer destinations only (not bool or enum).
+  if (CGF.getLangOpts().ContractsP3100 && OrigSrcType->isFloatingType() &&
+      isa<llvm::IntegerType>(DstTy) && !DstType->isBooleanType() &&
+      !DstType->isEnumeralType()) {
+    if (llvm::Value *InRange = EmitFloatCastInRangePredicate(
+            Src, OrigSrcType, SrcType, DstType, DstTy)) {
+      llvm::Value *IsViol = Builder.CreateNot(InRange, "fpint.oor");
+      return CGF.EmitImplicitIntOpGuard(
+          DstType, IsViol, Loc, "ub:conv.fpint.float.not.represented",
+          "floating-point to integer conversion out of range",
+          [&] { return EmitScalarCast(Src, SrcType, DstType, SrcTy, DstTy,
+                                      Opts); });
+    }
+  }
 
   // Cast to half from float if half isn't a native type. When __fp16 isn't
   // native, arithmetic is evaluated as float.
@@ -3286,6 +3332,17 @@ llvm::Value *ScalarExprEmitter::EmitIncDecConsiderOverflowBehavior(
       isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
 
+  // P3100: an implicit ub:expr.expr.eval.signed.integer assertion also covers
+  // ++/-- on a signed operand (expressed as an add of +/-1); instrumenting the
+  // induction variable is what makes the codegen difference visible in loops.
+  if (CGF.getLangOpts().ContractsP3100 &&
+      !CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow) &&
+      E->getType()->isSignedIntegerOrEnumerationType() && E->canOverflow())
+    return CGF.EmitImplicitSignedOverflowOp(
+        E->getType(), E->getExprLoc(), "ub:expr.expr.eval.signed.integer",
+        "signed integer overflow",
+        CodeGenFunction::ImplicitOverflowOp::Add, InVal, Amount);
+
   switch (getOverflowBehaviorConsideringType(CGF, Ty)) {
   case LangOptions::OB_Wrap:
     return Builder.CreateAdd(InVal, Amount, Name);
@@ -4368,10 +4425,42 @@ Value *ScalarExprEmitter::EmitDiv(const BinOpInfo &Ops) {
   }
   else if (Ops.isFixedPointOp())
     return EmitFixedPointBinOp(Ops);
-  else if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateUDiv(Ops.LHS, Ops.RHS, "div");
-  else
+
+  auto emitRawIntDiv = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateUDiv(Ops.LHS, Ops.RHS, "div");
     return Builder.CreateSDiv(Ops.LHS, Ops.RHS, "div");
+  };
+  // P3100: guard integer division by zero, and signed division overflow
+  // (INT_MIN / -1).  The divide-by-zero guard is outermost so it is tested
+  // first; the overflow guard wraps the raw division.
+  bool P3100 = CGF.getLangOpts().ContractsP3100 && Ops.Ty->isIntegerType();
+  bool DoZero = P3100 && Ops.mayHaveIntegerDivisionByZero();
+  bool DoOvf = P3100 && Ops.Ty->hasSignedIntegerRepresentation() &&
+               Ops.mayHaveIntegerOverflow();
+  auto withOverflow = [&]() -> llvm::Value * {
+    if (!DoOvf)
+      return emitRawIntDiv();
+    llvm::Type *ITy = Ops.LHS->getType();
+    llvm::Value *IsMin = Builder.CreateICmpEQ(
+        Ops.LHS, llvm::ConstantInt::get(
+                     ITy, llvm::APInt::getSignedMinValue(
+                              ITy->getScalarSizeInBits())));
+    llvm::Value *IsNegOne =
+        Builder.CreateICmpEQ(Ops.RHS, llvm::ConstantInt::getSigned(ITy, -1));
+    llvm::Value *IsOvf = Builder.CreateAnd(IsMin, IsNegOne, "div.ovf");
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsOvf, Ops.E->getExprLoc(),
+                                      "ub:expr.mul.representable.type.result",
+                                      "signed division overflow", emitRawIntDiv);
+  };
+  if (DoZero) {
+    llvm::Value *IsZero = Builder.CreateICmpEQ(
+        Ops.RHS, llvm::Constant::getNullValue(Ops.RHS->getType()), "div.zero");
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsZero, Ops.E->getExprLoc(),
+                                      "ub:expr.mul.div.by.zero.int",
+                                      "integer division by zero", withOverflow);
+  }
+  return withOverflow();
 }
 
 Value *ScalarExprEmitter::EmitRem(const BinOpInfo &Ops) {
@@ -4388,13 +4477,42 @@ Value *ScalarExprEmitter::EmitRem(const BinOpInfo &Ops) {
     EmitUndefinedBehaviorIntegerDivAndRemCheck(Ops, Zero, false);
   }
 
-  if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateURem(Ops.LHS, Ops.RHS, "rem");
-
-  if (CGF.getLangOpts().HLSL && Ops.Ty->hasFloatingRepresentation())
-    return Builder.CreateFRem(Ops.LHS, Ops.RHS, "rem");
-
-  return Builder.CreateSRem(Ops.LHS, Ops.RHS, "rem");
+  auto emitRawRem = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateURem(Ops.LHS, Ops.RHS, "rem");
+    if (CGF.getLangOpts().HLSL && Ops.Ty->hasFloatingRepresentation())
+      return Builder.CreateFRem(Ops.LHS, Ops.RHS, "rem");
+    return Builder.CreateSRem(Ops.LHS, Ops.RHS, "rem");
+  };
+  // P3100: guard remainder by zero, and signed remainder overflow
+  // (INT_MIN % -1).  Divide-by-zero guard is outermost (tested first).
+  bool P3100 = CGF.getLangOpts().ContractsP3100 && Ops.Ty->isIntegerType();
+  bool DoZero = P3100 && Ops.mayHaveIntegerDivisionByZero();
+  bool DoOvf = P3100 && Ops.Ty->hasSignedIntegerRepresentation() &&
+               Ops.mayHaveIntegerOverflow();
+  auto withOverflow = [&]() -> llvm::Value * {
+    if (!DoOvf)
+      return emitRawRem();
+    llvm::Type *ITy = Ops.LHS->getType();
+    llvm::Value *IsMin = Builder.CreateICmpEQ(
+        Ops.LHS, llvm::ConstantInt::get(
+                     ITy, llvm::APInt::getSignedMinValue(
+                              ITy->getScalarSizeInBits())));
+    llvm::Value *IsNegOne =
+        Builder.CreateICmpEQ(Ops.RHS, llvm::ConstantInt::getSigned(ITy, -1));
+    llvm::Value *IsOvf = Builder.CreateAnd(IsMin, IsNegOne, "rem.ovf");
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsOvf, Ops.E->getExprLoc(),
+                                      "ub:expr.mul.representable.type.result",
+                                      "signed division overflow", emitRawRem);
+  };
+  if (DoZero) {
+    llvm::Value *IsZero = Builder.CreateICmpEQ(
+        Ops.RHS, llvm::Constant::getNullValue(Ops.RHS->getType()), "rem.zero");
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsZero, Ops.E->getExprLoc(),
+                                      "ub:expr.mul.div.by.zero.int",
+                                      "integer remainder by zero", withOverflow);
+  }
+  return withOverflow();
 }
 
 Value *ScalarExprEmitter::EmitOverflowCheckedBinOp(const BinOpInfo &Ops) {
@@ -4796,6 +4914,14 @@ Value *ScalarExprEmitter::EmitAdd(const BinOpInfo &op) {
     const bool hasSan =
         isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                  : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+    // P3100: an implicit ub:expr.expr.eval.signed.integer contract assertion
+    // takes precedence over the overflow-behavior/sanitizer handling.
+    if (isSigned && CGF.getLangOpts().ContractsP3100 &&
+        !CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow))
+      return CGF.EmitImplicitSignedOverflowOp(
+          op.Ty, op.E->getExprLoc(), "ub:expr.expr.eval.signed.integer",
+          "signed integer overflow",
+          CodeGenFunction::ImplicitOverflowOp::Add, op.LHS, op.RHS);
     switch (getOverflowBehaviorConsideringType(CGF, op.Ty)) {
     case LangOptions::OB_Wrap:
       return Builder.CreateAdd(op.LHS, op.RHS, "add");
@@ -4956,6 +5082,14 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
       const bool hasSan =
           isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                    : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+      // P3100: implicit ub:expr.expr.eval.signed.integer assertion (also covers
+      // unary minus, which is emitted as 0 - x through EmitSub).
+      if (isSigned && CGF.getLangOpts().ContractsP3100 &&
+          !CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow))
+        return CGF.EmitImplicitSignedOverflowOp(
+            op.Ty, op.E->getExprLoc(), "ub:expr.expr.eval.signed.integer",
+            "signed integer overflow",
+            CodeGenFunction::ImplicitOverflowOp::Sub, op.LHS, op.RHS);
       switch (getOverflowBehaviorConsideringType(CGF, op.Ty)) {
       case LangOptions::OB_Wrap:
         return Builder.CreateSub(op.LHS, op.RHS, "sub");
@@ -5181,7 +5315,22 @@ Value *ScalarExprEmitter::EmitShl(const BinOpInfo &Ops) {
     EmitBinOpCheck(Checks, Ops);
   }
 
-  return Builder.CreateShl(Ops.LHS, RHS, "shl");
+  auto emitRawShl = [&]() -> llvm::Value * {
+    return Builder.CreateShl(Ops.LHS, RHS, "shl");
+  };
+  // P3100: guard a shift whose amount is negative or >= the promoted left
+  // operand's width ({expr.shift.neg.and.width}).
+  if (CGF.getLangOpts().ContractsP3100 && !CGF.getLangOpts().OpenCL &&
+      !CGF.getLangOpts().HLSL && isa<llvm::IntegerType>(Ops.LHS->getType())) {
+    bool RHSIsSigned = Ops.rhsHasSignedIntegerRepresentation();
+    llvm::Value *WidthMinusOne =
+        GetMaximumShiftAmount(Ops.LHS, Ops.RHS, RHSIsSigned);
+    llvm::Value *IsViol = Builder.CreateICmpUGT(Ops.RHS, WidthMinusOne);
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsViol, Ops.E->getExprLoc(),
+                                      "ub:expr.shift.neg.and.width",
+                                      "shift count out of range", emitRawShl);
+  }
+  return emitRawShl();
 }
 
 Value *ScalarExprEmitter::EmitShr(const BinOpInfo &Ops) {
@@ -5208,9 +5357,24 @@ Value *ScalarExprEmitter::EmitShr(const BinOpInfo &Ops) {
     EmitBinOpCheck(std::make_pair(Valid, SanitizerKind::SO_ShiftExponent), Ops);
   }
 
-  if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateLShr(Ops.LHS, RHS, "shr");
-  return Builder.CreateAShr(Ops.LHS, RHS, "shr");
+  auto emitRawShr = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateLShr(Ops.LHS, RHS, "shr");
+    return Builder.CreateAShr(Ops.LHS, RHS, "shr");
+  };
+  // P3100: guard a shift whose amount is negative or >= the promoted left
+  // operand's width ({expr.shift.neg.and.width}).
+  if (CGF.getLangOpts().ContractsP3100 && !CGF.getLangOpts().OpenCL &&
+      !CGF.getLangOpts().HLSL && isa<llvm::IntegerType>(Ops.LHS->getType())) {
+    bool RHSIsSigned = Ops.rhsHasSignedIntegerRepresentation();
+    llvm::Value *WidthMinusOne =
+        GetMaximumShiftAmount(Ops.LHS, Ops.RHS, RHSIsSigned);
+    llvm::Value *IsViol = Builder.CreateICmpUGT(Ops.RHS, WidthMinusOne);
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsViol, Ops.E->getExprLoc(),
+                                      "ub:expr.shift.neg.and.width",
+                                      "shift count out of range", emitRawShr);
+  }
+  return emitRawShr();
 }
 
 enum IntrinsicType { VCMPEQ, VCMPGT };

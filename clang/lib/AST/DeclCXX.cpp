@@ -3955,6 +3955,21 @@ const StreamingDiagnostic &clang::operator<<(const StreamingDiagnostic &DB,
   return DB << getAccessName(AS);
 }
 
+PostconditionCaptureDecl *PostconditionCaptureDecl::Create(
+    ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+    SourceLocation IdLoc, const IdentifierInfo *Id, QualType T,
+    TypeSourceInfo *TInfo, StorageClass SC) {
+  return new (C, DC)
+      PostconditionCaptureDecl(C, DC, StartLoc, IdLoc, Id, T, TInfo, SC);
+}
+
+PostconditionCaptureDecl *
+PostconditionCaptureDecl::CreateDeserialized(ASTContext &C, GlobalDeclID ID) {
+  return new (C, ID) PostconditionCaptureDecl(
+      C, nullptr, SourceLocation(), SourceLocation(), nullptr, QualType(),
+      nullptr, SC_None);
+}
+
 ResultNameDecl *ResultNameDecl::Create(ASTContext &C, DeclContext *DC,
                                        SourceLocation IdLoc, IdentifierInfo *Id,
                                        QualType T,
@@ -3979,6 +3994,13 @@ bool ContractSpecifierDecl::IsPreconditionPred(const ContractStmt *CS) {
 }
 
 void ContractSpecifierDecl::anchor() {}
+
+bool ContractSpecifierDecl::hasCaptures() const {
+  for (auto *CS : contracts())
+    if (CS->hasCaptures())
+      return true;
+  return false;
+}
 
 bool ContractSpecifierDecl::hasCanonicalResultName() const {
   return getCanonicalResultName() != nullptr;
@@ -4061,6 +4083,12 @@ void ContractSpecifierDecl::setOwningFunction(DeclContext *FD) {
   setDeclContext(FD);
   for (auto *RND : result_names())
     RND->setDeclContext(FD);
+  for (auto *CS : contracts()) {
+    if (CS->hasCaptures()) {
+      for (auto *D : CS->getCapturesDeclStmt()->decls())
+        cast<PostconditionCaptureDecl>(D)->setDeclContext(FD);
+    }
+  }
 }
 
 bool ContractSpecifierDecl::hasInventedPlaceholdersTypes() const {

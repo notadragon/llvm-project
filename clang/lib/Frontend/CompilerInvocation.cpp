@@ -15,6 +15,7 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticDriver.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/ContractConfig.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/LLVM.h"
@@ -1410,6 +1411,34 @@ static SmallVector<StringRef, 4> serializeSanitizerKinds(SanitizerSet S) {
   return Values;
 }
 
+/// P3100: parse the driver-resolved -fsanitize-semantic=<check>:<semantic>
+/// pairs into a per-bit store on CodeGenOptions.  The driver has already
+/// validated names and the allowed set, so any malformed entry here is
+/// internal and reported with err_drv_invalid_value.
+static void parseSanitizerSemantics(
+    const std::vector<std::string> &Values, DiagnosticsEngine &Diags,
+    std::vector<std::pair<SanitizerMask, ContractEvaluationSemantic>> &Out) {
+  for (const auto &Value : Values) {
+    StringRef Pair(Value);
+    auto Colon = Pair.find(':');
+    if (Colon == StringRef::npos) {
+      Diags.Report(diag::err_drv_invalid_value)
+          << "-fsanitize-semantic=" << Value;
+      continue;
+    }
+    SanitizerMask K =
+        parseSanitizerValue(Pair.substr(0, Colon), /*AllowGroups=*/false);
+    ContractEvaluationSemantic Sem;
+    if (K == SanitizerMask() ||
+        !contractSemanticFromName(Pair.substr(Colon + 1), Sem)) {
+      Diags.Report(diag::err_drv_invalid_value)
+          << "-fsanitize-semantic=" << Value;
+      continue;
+    }
+    Out.emplace_back(K, Sem);
+  }
+}
+
 static SanitizerMaskCutoffs
 parseSanitizerWeightedKinds(StringRef FlagName,
                             const std::vector<std::string> &Sanitizers,
@@ -1794,6 +1823,21 @@ void CompilerInvocationBase::GenerateCodeGenArgs(const CodeGenOptions &Opts,
 
   for (StringRef Sanitizer : serializeSanitizerKinds(Opts.SanitizeTrap))
     GenerateArg(Consumer, OPT_fsanitize_trap_EQ, Sanitizer);
+
+  // P3100: round-trip the driver-resolved per-check semantics.
+  for (const auto &Entry : Opts.SanitizeSemantics) {
+    SanitizerSet Set;
+    Set.Mask |= Entry.first;
+    for (StringRef Sanitizer : serializeSanitizerKinds(Set))
+      GenerateArg(Consumer, OPT_fsanitize_semantic_EQ,
+                  (Sanitizer + ":" + contractSemanticName(Entry.second)).str());
+  }
+  if (Opts.SanitizeSemanticPrint)
+    GenerateArg(Consumer, OPT_fsanitize_semantic_print);
+
+  // P3100 Task 3.1: round-trip the global opt-out.
+  if (Opts.SanitizeNoncontractCallbacks)
+    GenerateArg(Consumer, OPT_fsanitize_noncontract_callbacks);
 
   for (StringRef Sanitizer :
        serializeSanitizerKinds(Opts.SanitizeMergeHandlers))
@@ -2295,6 +2339,25 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
   parseSanitizerKinds("-fsanitize-trap=",
                       Args.getAllArgValues(OPT_fsanitize_trap_EQ), Diags,
                       Opts.SanitizeTrap);
+  // P3100: driver-resolved per-check contract evaluation semantics.
+  parseSanitizerSemantics(Args.getAllArgValues(OPT_fsanitize_semantic_EQ),
+                          Diags, Opts.SanitizeSemantics);
+  Opts.SanitizeSemanticPrint = Args.hasArg(OPT_fsanitize_semantic_print);
+  // P3100 Task 3.1: the global opt-out; gates descriptor emission in CodeGen
+  // (CodeGenModule::emitAsanContractSemanticDescriptor).
+  Opts.SanitizeNoncontractCallbacks =
+      Args.hasArg(OPT_fsanitize_noncontract_callbacks);
+  if (Opts.SanitizeSemanticPrint) {
+    // Debug seam: print each recorded check's resolved semantic to stderr as
+    // "<check>: <semantic>" lines (mirrors GCC's -fsanitize-semantic-print).
+    for (const auto &Entry : Opts.SanitizeSemantics) {
+      SanitizerSet Set;
+      Set.Mask |= Entry.first;
+      for (StringRef Name : serializeSanitizerKinds(Set))
+        llvm::errs() << Name << ": " << contractSemanticName(Entry.second)
+                     << "\n";
+    }
+  }
   parseSanitizerKinds("-fsanitize-merge=",
                       Args.getAllArgValues(OPT_fsanitize_merge_handlers_EQ),
                       Diags, Opts.SanitizeMergeHandlers);
@@ -3771,9 +3834,20 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
                   Sanitizer);
 
 
-    for (StringRef ContractGroup :
-         Opts.ContractOpts.serializeContractGroupArgs())
-      GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ, ContractGroup);
+    for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
+      switch (Src.Kind) {
+      case ContractConfigSourceKind::GroupSemantic:
+        GenerateArg(Consumer, OPT_fcontracts_group_evaluation_semantic_EQ,
+                    Src.Arg);
+        break;
+      case ContractConfigSourceKind::JSONInline:
+        GenerateArg(Consumer, OPT_fcontract_configuration_EQ, Src.Arg);
+        break;
+      case ContractConfigSourceKind::JSONFile:
+        GenerateArg(Consumer, OPT_fcontract_configuration_file_EQ, Src.Arg);
+        break;
+      }
+    }
     return;
   }
 
@@ -4025,9 +4099,20 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
   if (!Opts.RandstructSeed.empty())
     GenerateArg(Consumer, OPT_frandomize_layout_seed_EQ, Opts.RandstructSeed);
 
-  for (StringRef ContractGroup :
-       Opts.ContractOpts.serializeContractGroupArgs())
-    GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ, ContractGroup);
+  for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
+    switch (Src.Kind) {
+    case ContractConfigSourceKind::GroupSemantic:
+      GenerateArg(Consumer, OPT_fcontracts_group_evaluation_semantic_EQ,
+                  Src.Arg);
+      break;
+    case ContractConfigSourceKind::JSONInline:
+      GenerateArg(Consumer, OPT_fcontract_configuration_EQ, Src.Arg);
+      break;
+    case ContractConfigSourceKind::JSONFile:
+      GenerateArg(Consumer, OPT_fcontract_configuration_file_EQ, Src.Arg);
+      break;
+    }
+  }
 
   if (Opts.AllocTokenMax)
     GenerateArg(Consumer, OPT_falloc_token_max_EQ,
@@ -4749,10 +4834,60 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
         << (int)CGD << GroupName << InvalidChar;
   };
 
-  std::vector<std::string> ContractGroupValues =
-      Args.getAllArgValues(options::OPT_fcontract_group_evaluation_semantic_EQ);
-  Opts.ContractOpts.parseContractGroups(ContractGroupValues,
-                                           EmitContractDiag);
+  for (const Arg *A : Args.filtered(
+           options::OPT_fcontracts_group_evaluation_semantic_EQ,
+           options::OPT_fcontract_configuration_EQ,
+           options::OPT_fcontract_configuration_file_EQ)) {
+    switch (A->getOption().getID()) {
+    case options::OPT_fcontracts_group_evaluation_semantic_EQ:
+      for (unsigned I = 0, N = A->getNumValues(); I < N; ++I) {
+        Opts.ContractOpts.addUnparsedContractGroup(A->getValue(I),
+                                                   EmitContractDiag);
+        Opts.ContractOpts.addConfigSource(
+            ContractConfigSourceKind::GroupSemantic, A->getValue(I));
+      }
+      break;
+    case options::OPT_fcontract_configuration_EQ:
+      Opts.ContractOpts.addConfigSource(
+          ContractConfigSourceKind::JSONInline, A->getValue());
+      break;
+    case options::OPT_fcontract_configuration_file_EQ:
+      Opts.ContractOpts.addConfigSource(
+          ContractConfigSourceKind::JSONFile, A->getValue());
+      break;
+    }
+  }
+
+  // -fcontracts-p3850 implies the individual paper flags.
+  if (Opts.ContractsP3850) {
+    Opts.ContractsP3097 = true;
+    Opts.ContractsP3098 = true;
+    Opts.ContractsP3099 = true;
+    Opts.ContractsP3100 = true;
+    Opts.ContractsP3290 = true;
+    Opts.ContractsP3400 = true;
+    Opts.ContractsP4283 = true;
+    Opts.ContractsP4298 = true;
+    Opts.ContractsP4301 = true;
+  }
+  // Any per-paper C++ contracts sub-flag implies the base -fcontracts feature.
+  // The driver forwards -fcontracts alongside a sub-flag (tools::
+  // wantsCxxContracts), but a direct -cc1 invocation may pass only a sub-flag;
+  // this keeps LangOpts self-consistent.  The C-only ContractsP4299 stays
+  // independent and never enables C++ contracts.
+  if (Opts.ContractsP3097 || Opts.ContractsP3098 || Opts.ContractsP3099 ||
+      Opts.ContractsP3100 || Opts.ContractsP3290 || Opts.ContractsP3400 ||
+      Opts.ContractsP3850 || Opts.ContractsP4283 || Opts.ContractsP4298 ||
+      Opts.ContractsP4301)
+    Opts.Contracts = true;
+
+  // Eagerly parse and validate the contract configuration (for either the
+  // C++ or the C/D4299 contracts extension) so its diagnostics are
+  // reported here, once, with a DiagnosticsEngine -- rather than lazily during
+  // resolution, which has no engine and would otherwise be the first to
+  // initialize for the C extension.
+  if (Opts.Contracts || Opts.ContractsP4299)
+    Opts.ContractOpts.initConfig(&Diags);
 
   return Diags.getNumErrors() == NumErrorsBefore;
 }

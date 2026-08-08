@@ -629,9 +629,17 @@ static Cl::Kinds ClassifyBinaryOp(ASTContext &Ctx, const BinaryOperator *E) {
 
   // C++ [expr.ass]p1: All [...] return an lvalue referring to the left operand.
   // Except we override this for writes to ObjC properties.
+  // This must be checked before the dependent-type early return because
+  // assignment operators always produce lvalues regardless of type dependence.
   if (E->isAssignmentOp())
     return (E->getLHS()->getObjectKind() == OK_ObjCProperty
               ? Cl::CL_PRValue : Cl::CL_LValue);
+
+  // For binary operators which are unknown due to type dependence, the
+  // convention is to classify them as a prvalue. This does not matter much, but
+  // it needs to agree with how they are created.
+  if (E->getType() == Ctx.DependentTy)
+    return Cl::CL_PRValue;
 
   // C++ [expr.comma]p1: the result is of the same value category as its right
   //   operand, [...].

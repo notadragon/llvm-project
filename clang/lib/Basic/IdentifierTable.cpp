@@ -141,7 +141,10 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
   case KEYCOROUTINES:
     return LangOpts.Coroutines ? KS_Enabled : KS_Unknown;
   case KEYCONTRACTS:
-    return LangOpts.Contracts ? KS_Enabled : KS_Unknown;
+    return (LangOpts.Contracts || LangOpts.ContractsP4299)
+               ? KS_Enabled : KS_Unknown;
+  case KEYCONTRACTSP3400:
+    return LangOpts.ContractsP3400 ? KS_Enabled : KS_Unknown;
   case KEYMODULES:
     return KS_Unknown;
   case KEYOPENCLCXX:
@@ -175,7 +178,7 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
 }
 
 KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
-                                      unsigned Flags) {
+                                      uint64_t Flags) {
   // KEYALL means always enabled, so special case this one.
   if (Flags == KEYALL) return KS_Enabled;
   // These are tests that need to 'always win', as they are special in that they
@@ -189,7 +192,7 @@ KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
   KeywordStatus CurStatus = KS_Unknown;
 
   while (Flags != 0) {
-    unsigned CurFlag = Flags & ~(Flags - 1);
+    uint64_t CurFlag = Flags & ~(Flags - 1);
     Flags = Flags & ~CurFlag;
     CurStatus = std::max(
         CurStatus,
@@ -201,7 +204,7 @@ KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
   return CurStatus;
 }
 
-static bool IsKeywordInCpp(unsigned Flags) {
+static bool IsKeywordInCpp(uint64_t Flags) {
   return (Flags & (KEYCXX | KEYCXX11 | KEYCXX20 | BOOLSUPPORT | WCHARSUPPORT |
                    CHAR8SUPPORT)) != 0;
 }
@@ -217,7 +220,7 @@ static void MarkIdentifierAsKeywordInCpp(IdentifierTable &Table,
 /// identifiers because they are language keywords.  This causes the lexer to
 /// automatically map matching identifiers to specialized token codes.
 static void AddKeyword(StringRef Keyword,
-                       tok::TokenKind TokenCode, unsigned Flags,
+                       tok::TokenKind TokenCode, uint64_t Flags,
                        const LangOptions &LangOpts, IdentifierTable &Table) {
   KeywordStatus AddResult = getKeywordStatus(LangOpts, Flags);
 

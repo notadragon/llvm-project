@@ -1120,7 +1120,8 @@ module std {
   }
 
   module cassert {
-    textual header "cassert" // NDEBUG requires textual inclusion
+    textual header "cassert"                      // NDEBUG requires textual inclusion
+    textual header "__cassert/assert_contract.h"  // NDEBUG requires textual inclusion
   }
 
   module ccomplex {

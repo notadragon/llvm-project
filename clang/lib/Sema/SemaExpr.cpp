@@ -21,6 +21,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DynamicRecursiveASTVisitor.h"
@@ -3529,6 +3530,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
   case Decl::Decomposition:
   case Decl::Binding:
   case Decl::OMPCapturedExpr:
+  case Decl::PostconditionCapture:
     // In C, "extern void blah;" is valid and is an r-value.
     if (!getLangOpts().CPlusPlus && !type.hasQualifiers() &&
         type->isVoidType()) {
@@ -14229,7 +14231,7 @@ static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
   if (!Var->isInitCapture())
     DC = Prev;
 
-  if (PassedThroughContract)
+  if (PassedThroughContract && !isa<PostconditionCaptureDecl>(Var))
     return NCCK_Contract;
 
   return (isa<BlockDecl>(DC) ? NCCK_Block : NCCK_Lambda);
@@ -19191,6 +19193,15 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       !IsRecursiveCall &&
       (OdrUse == OdrUseContext::Used ||
        (NeededForConstantEvaluation && !Func->isPureVirtual()));
+
+  // P3097: when a virtual function is odr-used, ensure its interface contracts
+  // are instantiated -- the contract wrapper around the vtable dispatch needs a
+  // non-dependent contract specifier even if the function's own definition is
+  // never instantiated (e.g. an inline virtual member of a class template that
+  // is only called polymorphically).
+  if (OdrUse == OdrUseContext::Used)
+    if (auto *MD = dyn_cast<CXXMethodDecl>(Func))
+      InstantiateVirtualFunctionContractsOnUse(Loc, MD);
 
   // C++14 [temp.expl.spec]p6:
   //   If a template [...] is explicitly specialized then that specialization

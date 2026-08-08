@@ -1555,6 +1555,9 @@ enum DeclCode {
   /// A ResultNameDecl record
   DECL_RESULT_NAME,
 
+  /// A PostconditionCaptureDecl record
+  DECL_POSTCONDITION_CAPTURE,
+
   /// A contract specifier sequence on a function
   DECL_CONTRACT_SPECIFIER,
 

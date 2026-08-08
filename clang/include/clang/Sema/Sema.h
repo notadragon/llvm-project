@@ -3253,7 +3253,16 @@ public:
 public:
   StmtResult ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
                                  Expr *Cond, ResultNameDecl *ResultNameDecl,
-                                 ParsedAttributes &Attrs);
+                                 ParsedAttributes &Attrs,
+                                 Expr *MessageExpr = nullptr,
+                                 Expr *LabelExpr = nullptr,
+                                 DeclStmt *Captures = nullptr,
+                                 Expr *RequiresClause = nullptr);
+
+  Decl *ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
+                                  IdentifierInfo *Id, Expr *Init,
+                                  bool IsPackExpansion);
+  void ActOnFinishPostconditionCaptures(Scope *S, ArrayRef<Decl *> Captures);
 
   ResultNameDecl *ActOnResultNameDeclarator(ContractKind CK, Scope *S,
                                             QualType T, SourceLocation IDLoc,
@@ -3263,7 +3272,15 @@ public:
 
   StmtResult BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
                                Expr *Cond, DeclStmt *ResultName,
-                               ArrayRef<const Attr *> Attrs);
+                               Expr *Message, Expr *Label,
+                               DeclStmt *Captures,
+                               ArrayRef<const Attr *> Attrs,
+                               Expr *RequiresClause = nullptr);
+
+  // Populate a ContractStmt's label-facet and P3595 dynamic-selection state.
+  // Shared by the primary-parse and template-instantiation paths; must only be
+  // called in a non-dependent context.
+  void populateContractSemanticState(ContractStmt *CS);
 
   ContractSpecifierDecl *
   BuildContractSpecifierDecl(ArrayRef<ContractStmt *> Contracts,
@@ -3306,6 +3323,16 @@ public:
       SourceLocation PointOfInstantiation, FunctionDecl *Instantiation,
       const FunctionDecl *Pattern,
       const MultiLevelTemplateArgumentList &TemplateArgs);
+
+  /// P3097: A virtual function's interface contracts are checked by a contract
+  /// wrapper around the vtable dispatch, so they must exist as an instantiated
+  /// (non-dependent) contract specifier even when the function's own definition
+  /// is never instantiated (e.g. an inline virtual member of a class template
+  /// that is only ever called polymorphically).  When such a function is
+  /// odr-used, instantiate just its contract specifier (not its body) if it is
+  /// still carrying the dependent pattern copy.  Idempotent.
+  void InstantiateVirtualFunctionContractsOnUse(
+      SourceLocation PointOfInstantiation, CXXMethodDecl *Function);
 
   std::optional<unsigned>
   getFunctionScopeIndexForDeclaration(const ValueDecl *VD);
@@ -5470,6 +5497,13 @@ public:
 
   void PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir);
 
+  Decl *ActOnContractControlUsingDirective(Scope *CurScope,
+                                           SourceLocation UsingLoc,
+                                           SourceLocation NamespcLoc,
+                                           CXXScopeSpec &SS,
+                                           SourceLocation IdentLoc,
+                                           IdentifierInfo *NamespcName);
+
   Decl *ActOnNamespaceAliasDef(Scope *CurScope, SourceLocation NamespaceLoc,
                                SourceLocation AliasLoc, IdentifierInfo *Alias,
                                CXXScopeSpec &SS, SourceLocation IdentLoc,
@@ -7103,6 +7137,8 @@ public:
 
   SmallVector<ContractScopeRecord, 4> ContractScopeStack;
   llvm::DenseMap<const DeclContext*, unsigned> ContractScopeIndexMap;
+
+  bool InAssertionControlExpression = false;
 
   const ContractScopeRecord *getFirstEnclosingContractScopeForContext(const DeclContext *DC) const;
   const ContractScopeRecord *getLastEnclosingContractScopeForContext(const DeclContext *DC) const;

@@ -1006,6 +1006,30 @@ void tools::addSeparateSectionFlags(const llvm::Triple &Triple,
     CmdArgs.push_back("-fdata-sections");
 }
 
+bool tools::wantsCxxContracts(const ArgList &Args) {
+  // An explicit -fno-contracts (as the last of the -f(no-)contracts pair)
+  // suppresses contracts regardless of any implying flag.
+  if (Arg *A = Args.getLastArg(options::OPT_fcontracts,
+                               options::OPT_fno_contracts);
+      A && A->getOption().matches(options::OPT_fno_contracts))
+    return false;
+  if (Args.hasArg(options::OPT_fcontracts))
+    return true;
+  // C++26 mode enables contracts.
+  StringRef Std = Args.getLastArgValue(options::OPT_std_EQ);
+  if (Std == "c++26" || Std == "gnu++26" || Std == "c++2c" ||
+      Std == "gnu++2c" || Std == "c++latest" || Std == "gnu++latest")
+    return true;
+  // Any per-paper C++ contracts sub-flag implies -fcontracts.  The C-only
+  // -fcontracts-p4299 is deliberately excluded.
+  return Args.hasArg(
+      options::OPT_fcontracts_p3097, options::OPT_fcontracts_p3098,
+      options::OPT_fcontracts_p3099, options::OPT_fcontracts_p3100,
+      options::OPT_fcontracts_p3290, options::OPT_fcontracts_p3400,
+      options::OPT_fcontracts_p3850, options::OPT_fcontracts_p4283,
+      options::OPT_fcontracts_p4298, options::OPT_fcontracts_p4301);
+}
+
 bool tools::isTLSDESCEnabled(const ToolChain &TC,
                              const llvm::opt::ArgList &Args) {
   const llvm::Triple &Triple = TC.getEffectiveTriple();
