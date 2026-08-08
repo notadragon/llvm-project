@@ -13211,6 +13211,15 @@ def err_contract_requires_clause_non_template : Error<
 def err_contracts_on_virtual_require_flag : Error<
   "contracts on virtual functions require '-fcontracts-p3097'">;
 
+// [over.call.func]/p3.1, [expr.prim.id.general]: an unqualified reference to a
+// non-static member (requiring an implied 'this') in a constructor precondition
+// or a destructor postcondition is ill-formed, because no object is within its
+// lifetime at that point.
+def err_contract_member_access_without_object : Error<
+  "cannot access non-static member %0 in the "
+  "%select{precondition of a constructor|postcondition of a destructor}1 "
+  "because no object is within its lifetime there">;
+
 // P3098 postcondition capture diagnostics
 def err_postcondition_capture_by_reference : Error<
   "capture-by-reference not allowed in postcondition captures">;

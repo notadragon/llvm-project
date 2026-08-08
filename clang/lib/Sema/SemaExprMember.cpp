@@ -1902,6 +1902,23 @@ Sema::BuildImplicitMemberExpr(const CXXScopeSpec &SS,
                               bool IsKnownInstance, const Scope *S) {
   assert(!R.empty() && !R.isAmbiguous());
 
+  // [over.call.func]/p3.1 and [expr.prim.id.general]: an unqualified reference to
+  // a non-static member -- which forms an implied 'this' access here -- is
+  // ill-formed in a constructor precondition or a destructor postcondition,
+  // because no object is within its lifetime at that point.
+  if (const ContractScopeRecord *CSR = getCurrentContractEntry()) {
+    const DeclContext *FnDC = getFunctionLevelDeclContext();
+    bool CtorPre =
+        CSR->Kind == ContractKind::Pre && isa_and_nonnull<CXXConstructorDecl>(FnDC);
+    bool DtorPost =
+        CSR->Kind == ContractKind::Post && isa_and_nonnull<CXXDestructorDecl>(FnDC);
+    if (CtorPre || DtorPost) {
+      Diag(R.getNameLoc(), diag::err_contract_member_access_without_object)
+          << R.getLookupName() << (DtorPost ? 1 : 0);
+      return ExprError();
+    }
+  }
+
   SourceLocation loc = R.getNameLoc();
 
   // If this is known to be an instance access, go ahead and build an
