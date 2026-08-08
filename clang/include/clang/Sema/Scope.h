@@ -174,6 +174,12 @@ public:
     // This is a bit of a hack, but it's the simplest way to get the
     // functionality we need.
     ContractAssertScope = 0x100000000,
+
+    /// This is the scope of a condition variable (e.g. the declaration in
+    /// `if (T x = ...)`), where 'continue' is disallowed despite being a
+    /// continue scope.  (efcs used 0x2000000, which upstream reassigned to
+    /// ExpansionStmtScope, so this flag was relocated to a free bit.)
+    ConditionVarScope = 0x200000000,
   };
   using UT = std::underlying_type_t<ScopeFlags>;
   static_assert(std::is_unsigned_v<UT>, "ScopeFlags must be an unsigned type");

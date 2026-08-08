@@ -140,7 +140,9 @@ public:
     // FIXME: Is this still necessary?
 
     QualType Result = SemaRef.Context.getAutoType(
-        Replacement, TL.getTypePtr()->getKeyword(), Replacement.isNull(), false,
+        Replacement.isNull() ? DeducedKind::DeducedAsDependent
+                             : DeducedKind::Deduced,
+        Replacement, TL.getTypePtr()->getKeyword(),
         TL.getTypePtr()->getTypeConstraintConcept(),
         TL.getTypePtr()->getTypeConstraintArguments());
     auto NewTL = TLB.push<AutoTypeLoc>(Result);
@@ -453,7 +455,7 @@ extractGroupNames(Sema &S, Expr *LabelExpr, QualType LabelTy,
     APValue::LValueBase Base = LabelValPtr->getLValueBase();
     if (const auto *VD = Base.dyn_cast<const ValueDecl *>()) {
       if (const auto *VarD = dyn_cast<VarDecl>(VD)) {
-        APValue *InitVal = VarD->getEvaluatedValue();
+        const APValue *InitVal = VarD->getEvaluatedValue();
         if (InitVal)
           LabelValPtr = InitVal;
       }
@@ -1160,8 +1162,8 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
   bool HasInventedPlaceholderTypes =
       RetType->isUndeducedAutoType() && !RetType->isDependentType();
   if (HasInventedPlaceholderTypes)
-    RetType = Context.getAutoType(QualType(), AutoTypeKeyword::Auto, true,
-                                  false, nullptr, {});
+    RetType = Context.getAutoType(DeducedKind::DeducedAsDependent, QualType(),
+                                  AutoTypeKeyword::Auto);
   auto *New = ResultNameDecl::Create(Context, CurContext, IDLoc, II, RetType,
                                      nullptr, HasInventedPlaceholderTypes, FunctionScopeDepth);
 

@@ -291,6 +291,8 @@ SourceLocation CXXExpansionStmtInstantiation::getBeginLoc() const {
 
 SourceLocation CXXExpansionStmtInstantiation::getEndLoc() const {
   return Parent->getExpansionPattern()->getEndLoc();
+}
+
 ContractStmt *ContractStmt::CreateEmpty(const ASTContext &C, ContractKind Kind,
                                         bool HasResultName, bool HasMessage,
                                         bool HasLabel, bool HasCaptures,

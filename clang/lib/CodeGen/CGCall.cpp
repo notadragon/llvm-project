@@ -4612,7 +4612,7 @@ void CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   }
 
   disableDebugInfo();
-  auto Reenabler = llvm::make_scope_exit([this]() { enableDebugInfo(); });
+  auto Reenabler = llvm::scope_exit([this]() { enableDebugInfo(); });
   for (auto *CA : FD->postconditions()) {
     // P3098: a postcondition whose capture construction threw under
     // 'observe' must have its predicate skipped entirely, not evaluated
