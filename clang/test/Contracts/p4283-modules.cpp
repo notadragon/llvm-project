@@ -6,8 +6,6 @@
 // RUN:   %t/mod.cppm -emit-module-interface -o %t/mod.pcm
 // RUN: %clang_cc1 -std=c++26 -fcontracts -fcontracts-p4283 \
 // RUN:   -fprebuilt-module-path=%t %t/use.cpp -fsyntax-only -verify
-// XFAIL: *
-// Pre-existing: ContractSpecifierDecl deserialization crash in module context.
 
 // P4283: Serialization round-trip for contracts with requires clauses.
 

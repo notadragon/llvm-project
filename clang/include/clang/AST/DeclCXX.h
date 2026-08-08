@@ -4716,8 +4716,12 @@ class ContractSpecifierDecl final
 
   ContractSpecifierDecl(DeclContext *DC, SourceLocation Loc,
                         unsigned NumContracts)
-      : Decl(Decl::ContractSpecifier, DC, Loc), IsUninstantiated(DC->isDependentContext()),
-         NumContracts(NumContracts) {
+      // DC is null on the deserialization path (CreateDeserialized); the real
+      // DeclContext is set later by the ASTReader. Guard the dependent-context
+      // query so it does not dereference a null DC.
+      : Decl(Decl::ContractSpecifier, DC, Loc),
+        IsUninstantiated(DC && DC->isDependentContext()),
+        NumContracts(NumContracts) {
     std::uninitialized_fill_n(getTrailingObjects(),
                               NumContracts, nullptr);
   }

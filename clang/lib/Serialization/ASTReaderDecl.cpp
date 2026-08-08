@@ -904,7 +904,8 @@ void ASTDeclReader::VisitPostconditionCaptureDecl(
 }
 
 void ASTDeclReader::VisitResultNameDecl(ResultNameDecl *VD) {
-  VisitNamedDecl(VD);
+  // Must mirror the writer (VisitValueDecl) so the result type is restored.
+  VisitValueDecl(VD);
   VD->setFunctionScopeDepth(Record.readInt());
   bool IsCanonical = Record.readInt();
   if (!IsCanonical) {
@@ -1200,18 +1201,16 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
 }
 
 void ASTDeclReader::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
+  // NumContracts was already read in ReadDeclRecord (to size the trailing
+  // storage) and precedes the VisitDecl fields in the record.
   VisitDecl(CSD);
-  // bool NumContracts = Record.readInt();
   assert(CSD->NumContracts > 0);
-  assert(Record.peekInt() != CSD->NumContracts);
 
   SmallVector<ContractStmt *, 8> Contracts;
   Contracts.reserve(CSD->NumContracts);
-  for (unsigned I = 0; I < CSD->NumContracts; ++I) {
+  for (unsigned I = 0; I < CSD->NumContracts; ++I)
     Contracts.push_back(cast<ContractStmt>(Record.readStmt()));
-  }
   CSD->setContracts(Contracts);
-
 }
 
 void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {

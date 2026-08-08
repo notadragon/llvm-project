@@ -948,8 +948,11 @@ void ASTDeclWriter::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
   assert(!CSD->hasInventedPlaceholdersTypes() &&
          "Cannot have invented placeholders on a serializable declaration");
 
-  VisitDecl(CSD);
+  // Record the number of contracts first to simplify deserialization: it is read
+  // in ReadDeclRecord (before the decl is created, to size the trailing storage),
+  // so it must precede the fields written by VisitDecl.
   Record.push_back(CSD->NumContracts);
+  VisitDecl(CSD);
   for (auto *C : CSD->contracts())
     Record.AddStmt(C);
 
@@ -1929,7 +1932,10 @@ void ASTDeclWriter::VisitPostconditionCaptureDecl(
 }
 
 void ASTDeclWriter::VisitResultNameDecl(ResultNameDecl *D) {
-  VisitNamedDecl(D);
+  // ResultNameDecl is a ValueDecl: use VisitValueDecl so the result type is
+  // serialized (VisitNamedDecl would drop it, leaving a null type that crashes
+  // template instantiation of the postcondition after a module import).
+  VisitValueDecl(D);
   Record.push_back(D->getFunctionScopeDepth());
   Record.push_back(D->isCanonicalResultName());
   if (!D->isCanonicalResultName()) {
