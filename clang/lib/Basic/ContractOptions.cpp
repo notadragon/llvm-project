@@ -22,6 +22,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
@@ -381,8 +382,9 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
 }
 
 void ContractOptions::parseConfigFile(DiagnosticsEngine &Diags,
+                                      llvm::vfs::FileSystem &VFS,
                                       llvm::StringRef Path) {
-  auto File = llvm::MemoryBuffer::getFile(Path);
+  auto File = VFS.getBufferForFile(Path);
   if (!File) {
     Diags.Report(diag::err_contract_config_cannot_open_file)
         << Path << File.getError().message();
@@ -391,15 +393,16 @@ void ContractOptions::parseConfigFile(DiagnosticsEngine &Diags,
   parseConfigJSON(Diags, File.get()->getBuffer(), Path);
 }
 
-void ContractOptions::initConfig(DiagnosticsEngine *Diags) const {
+void ContractOptions::initConfig(DiagnosticsEngine *Diags,
+                                 llvm::vfs::FileSystem *VFS) const {
   ContractConfigData &Data = ensureConfig();
   if (Data.Initialized)
     return;
   Data.Initialized = true;
 
-  // The configuration is always parsed eagerly, with a DiagnosticsEngine, from
-  // CompilerInvocation before any lazy resolution occurs, so Diags is present
-  // the first (and only) time initialization actually runs.
+  // The configuration is always parsed eagerly, with a DiagnosticsEngine and a
+  // VFS, from CompilerInstance before any lazy resolution occurs, so Diags is
+  // present the first (and only) time initialization actually runs.
   assert(Diags && "contract configuration initialized without a "
                   "DiagnosticsEngine");
 
@@ -433,7 +436,9 @@ void ContractOptions::initConfig(DiagnosticsEngine *Diags) const {
           *Diags, Src.Arg, "<command-line>");
       break;
     case ContractConfigSourceKind::JSONFile:
-      const_cast<ContractOptions *>(this)->parseConfigFile(*Diags, Src.Arg);
+      assert(VFS && "contract configuration file read without a VFS");
+      const_cast<ContractOptions *>(this)->parseConfigFile(*Diags, *VFS,
+                                                           Src.Arg);
       break;
     }
   }

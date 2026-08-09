@@ -1028,6 +1028,15 @@ bool CompilerInstance::ExecuteAction(FrontendAction &Act) {
   llvm::sort(getCodeGenOpts().TocDataVarsUserSpecified);
   llvm::sort(getCodeGenOpts().NoTocDataVars);
 
+  // Parse the contract configuration once, before any input is compiled.
+  // Reading it here goes through the VFS (sandbox-exempt and overlay-aware);
+  // reading during CompilerInvocation parsing would trip the IO sandbox that
+  // guards the argument round-trip.  initConfig() is idempotent, so the lazy
+  // resolution path in Sema later finds an already-initialized configuration.
+  if (getLangOpts().Contracts || getLangOpts().ContractsP4299)
+    getLangOpts().ContractOpts.initConfig(&getDiagnostics(),
+                                          &getVirtualFileSystem());
+
   for (const FrontendInputFile &FIF : getFrontendOpts().Inputs) {
     // Reset the ID tables if we are reusing the SourceManager and parsing
     // regular files.

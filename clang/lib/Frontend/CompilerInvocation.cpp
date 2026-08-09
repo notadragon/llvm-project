@@ -4881,13 +4881,12 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       Opts.ContractsP4301)
     Opts.Contracts = true;
 
-  // Eagerly parse and validate the contract configuration (for either the
-  // C++ or the C/D4299 contracts extension) so its diagnostics are
-  // reported here, once, with a DiagnosticsEngine -- rather than lazily during
-  // resolution, which has no engine and would otherwise be the first to
-  // initialize for the C extension.
-  if (Opts.Contracts || Opts.ContractsP4299)
-    Opts.ContractOpts.initConfig(&Diags);
+  // The contract configuration is parsed later by CompilerInstance (through the
+  // VFS), not here: reading configuration files during argument parsing would
+  // trip the IO sandbox that guards the CompilerInvocation round-trip and would
+  // bypass any VFS overlay.  The sources are already recorded above via
+  // addConfigSource(); CompilerInstance::ExecuteAction runs initConfig() with a
+  // DiagnosticsEngine and VFS before semantic analysis begins.
 
   return Diags.getNumErrors() == NumErrorsBefore;
 }

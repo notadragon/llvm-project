@@ -27,6 +27,12 @@
 #include <string>
 #include <utility>
 
+namespace llvm {
+namespace vfs {
+class FileSystem;
+} // namespace vfs
+} // namespace llvm
+
 namespace clang {
 using llvm::StringRef;
 class ASTContext;
@@ -345,18 +351,22 @@ public:
   void parseConfigJSON(DiagnosticsEngine &Diags, llvm::StringRef JSON,
                        llvm::StringRef SourceDesc);
 
-  /// Read a JSON file and parse it as contract configuration.
-  void parseConfigFile(DiagnosticsEngine &Diags, llvm::StringRef Path);
+  /// Read a JSON file (through \p VFS) and parse it as contract configuration.
+  void parseConfigFile(DiagnosticsEngine &Diags, llvm::vfs::FileSystem &VFS,
+                       llvm::StringRef Path);
 
   /// The configuration sources recorded in command-line order.  Empty when
   /// no configuration has been supplied.
   llvm::ArrayRef<ContractConfigSource> getConfigSources() const;
 
   /// Build the resolved entry list from the configuration sources, reporting
-  /// any problems through Diags (when non-null).  Runs once; subsequent calls
-  /// are a no-op.  Called eagerly (with Diags) from CompilerInvocation and
-  /// lazily (without) from resolveContractSemantic.
-  void initConfig(DiagnosticsEngine *Diags = nullptr) const;
+  /// any problems through Diags (when non-null) and reading any configuration
+  /// files through VFS (required when a JSON-file source is present).  Runs
+  /// once; subsequent calls are a no-op.  Called with Diags and VFS from
+  /// CompilerInstance (before semantic analysis) and lazily (without) from
+  /// resolveContractSemantic, which by then finds it already initialized.
+  void initConfig(DiagnosticsEngine *Diags = nullptr,
+                  llvm::vfs::FileSystem *VFS = nullptr) const;
 
   /// True iff the effective configuration contains an entry that requests
   /// caller-side contract checking with a semantic other than "ignore".
