@@ -2463,9 +2463,6 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
         ParseTrailingRequiresClauseWithScope(D);
       Decl *ThisDecl = ParseDeclarationAfterDeclarator(D, TemplateInfo);
 
-      // FIXME(EricWF): Remove this
-      //ThisDecl->dumpColor();
-
       D.complete(ThisDecl);
       if (ThisDecl)
         DeclsInGroup.push_back(ThisDecl);

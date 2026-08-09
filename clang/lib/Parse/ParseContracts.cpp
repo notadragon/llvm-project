@@ -1,21 +1,33 @@
+//===--- ParseContracts.cpp - C++ Contracts Parsing -----------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+//  This file implements parsing for C++ contracts (pre, post, and
+//  contract_assert), including P3400 labels, P3098 postcondition captures, and
+//  P4283 requires-clauses.
+//
+//===----------------------------------------------------------------------===//
 
 #include "clang/Parse/Parser.h"
 
 #include "clang/AST/ASTContext.h"
-#include "clang/Lex/LiteralSupport.h"
 #include "clang/AST/PrettyDeclStackTrace.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TokenKinds.h"
-#include "clang/Parse/Parser.h"
+#include "clang/Lex/LiteralSupport.h"
 #include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/EnterExpressionEvaluationContext.h"
 #include "clang/Sema/Scope.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/TimeProfiler.h"
-#include "llvm/ADT/ScopeExit.h"
 #include <optional>
 
 using namespace clang;
@@ -216,11 +228,11 @@ StmtResult Parser::ParseContractAssertStatement() {
 ///
 ///   function-contract-specifier-seq :
 ///       function-contract-specifier function-contract-specifier-seq
-//
+///
 ///   function-contract-specifier:
 ///       precondition-specifier
 ///       postcondition-specifier
-//
+///
 ///   precondition-specifier:
 ///       pre attribute-specifier-seq[opt] ( conditional-expression )
 ///
@@ -257,9 +269,6 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
   if (EnterScope) {
     ParserScope.emplace(this, Scope::DeclScope | Scope::FunctionPrototypeScope |
                                   Scope::FunctionDeclarationScope);
-
-   // PopFnContext.emplace(Actions);
-   // Actions.PushFunctionScope();
 
     auto FTI = DeclarationInfo.getFunctionTypeInfo();
 
@@ -398,7 +407,7 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   }
 
   ResultNameDecl *RND = nullptr;
-  // FIXME(EricWF): We allow parsing the result name declarator in `pre` so we
+  // FIXME: We allow parsing the result name declarator in `pre` so we
   // can diagnose it but we don't do the same for contract assert... Should we?
   if ((CK != ContractKind::Assert) && Tok.is(tok::identifier) &&
       NextToken().is(tok::colon)) {
