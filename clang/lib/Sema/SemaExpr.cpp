@@ -20306,8 +20306,17 @@ bool Sema::tryCaptureVariable(
     ConstTracker.enableDueToContract(ExprLoc);
   }
 
+  // If the scope that declares the variable is itself inside a contract
+  // predicate, an implicit by-reference capture crosses the contract boundary
+  // and must be const-qualified ([basic.contract.general]).  This decision has
+  // to be re-derived when a dependent lambda is instantiated: the const-ness of
+  // an implicit '[&]' capture is only computed here (there is no explicit
+  // capture to carry it), and the enclosing predicate's mutation of the
+  // captured entity is not checked until instantiation.  We must therefore not
+  // gate this on FunctionScopesStart: during template instantiation
+  // Sema::ContextRAII raises FunctionScopesStart past the function's own scope,
+  // which would otherwise drop the const and wrongly accept the mutation.
   if (FunctionScopesIndex < FunctionScopes.size() &&
-     FunctionScopesIndex >= FunctionScopesStart &&
       FunctionScopes[FunctionScopesIndex]->isInContract())
     ConstTracker.enableDueToContract(ContractScopeStack[FunctionScopes[FunctionScopesIndex]->ContractScopeIndex].KeywordLoc);
 
