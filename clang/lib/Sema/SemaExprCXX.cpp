@@ -1388,21 +1388,6 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
   }
   if (!BuildAndDiagnose) return false;
 
-#if 0
-  auto MinConstificationContext = [&]() -> std::optional<unsigned> {
-    auto *Ent = CurrentContractEntry;
-    while (Ent) {
-      if (!Ent->Previous) {
-        if (int(Ent->FunctionIndex) > MaxFunctionScopesIndex) {
-          return std::nullopt;
-        }
-        return Ent->FunctionIndex;
-      }
-      Ent = Ent->Previous;
-    }
-    return std::nullopt;
-  }();
-#endif
   auto ContractScopes = getContractScopes();
   std::optional<unsigned> MinConstificationContext;
   if (!ContractScopes.empty())
@@ -7841,12 +7826,10 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
         !IsFullExprInstantiationDependent)
       return;
 
-#if 1
     if (auto *DRE = dyn_cast<DeclRefExpr>(VarExpr))
       if (DRE->isInContractContext())
         return;
-#endif
-      
+
     VarDecl *UnderlyingVar = Var->getPotentiallyDecomposedVarDecl();
     if (!UnderlyingVar)
       return;

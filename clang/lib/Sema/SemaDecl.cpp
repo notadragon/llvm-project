@@ -15316,7 +15316,7 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
     //     semantics. If it fails, we need to diagnose the failure instead
     //     of falling back to dynamic initializer.
     //
-    // FIXME(EricWF): Technically we're required to do this check for constexpr
+    // FIXME: Technically we're required to do this check for constexpr
     // variables too, since the initializer may be non-constant only when
     // contracts are enabled.
     bool ConstantInitializerIsRequired =
@@ -15379,7 +15379,7 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
         // We need to clear the notes, as we will re-diagnose the contract
         // failure.
         SourceLocation DiagLoc = var->getLocation();
-        // FIXME(EricWF): This diagnostic is bad. What do we say here? Normally
+        // FIXME: This diagnostic is bad. What do we say here? Normally
         // this error would have been eaten.
         Diag(DiagLoc,
              diag::err_initialization_of_constant_initialized_variable_failed)
@@ -16534,13 +16534,6 @@ LambdaScopeInfo *Sema::RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator) {
   // captured within tryCaptureVar.
   auto I = LambdaClass->field_begin();
   for (const auto &C : LambdaClass->captures()) {
-    if (C.isCapturedAcrossContract()) {
-      if (C.capturesVariable())
-        C.getCapturedVar()->dumpColor();
-      else if (C.capturesThis())
-        llvm::errs() << "Captured This!!\n";
-    }
-//    assert(!C.isCapturedAcrossContract());
     if (C.capturesVariable()) {
       ValueDecl *VD = C.getCapturedVar();
       if (VD->isInitCapture())
@@ -16793,9 +16786,6 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
       getCurLexicalContext()->getDeclKind() != Decl::ObjCCategoryImpl &&
       getCurLexicalContext()->getDeclKind() != Decl::ObjCImplementation)
     Diag(FD->getLocation(), diag::warn_function_def_in_objc_container);
-
-   // FIXME(EricWF): Remove this
-  // ActOnContractsOnStartOfFunctionDef()
 
   maybeAddDeclWithEffects(FD);
 

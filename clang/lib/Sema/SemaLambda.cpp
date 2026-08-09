@@ -1999,8 +1999,6 @@ ExprResult Sema::BuildCaptureInit(const Capture &Cap,
       if (Cap.isCapturedAcrossContract() && !Cap.isCopyCapture()) {
         DRE->setIsInContractContext(true);
       }
-      // llvm::errs() << "Dumping DeclarationNameExpr\n";
-      // Init.get()->dumpColor();
     }
   }
 
@@ -2279,7 +2277,7 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc,
         LSI->ContractCaptureMap.count(From.getVariable()) != 0) {
       ((void)From);
       assert(false);
-      // FIXME(EricWF)
+      // FIXME
     }
 
     // Use source ranges of explicit captures for fixits where available.

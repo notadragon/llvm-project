@@ -344,7 +344,7 @@ CheckForDuplicateAndIncompatibleContractAttrs(Sema &S,
 
   SmallVector<const Attr *, 4> ContractAttrs(Attrs.begin(), Attrs.end());
 
-  // TODO(EricWF): We don't issue diagnostics for duplicate contract attributes
+  // TODO: We don't issue diagnostics for duplicate contract attributes
   // in the order they appear in source. The order is still correct relative to
   // duplicate attributes, but not for incompatible ones.
   std::stable_sort(

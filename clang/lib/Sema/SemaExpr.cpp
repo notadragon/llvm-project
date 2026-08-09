@@ -3556,11 +3556,12 @@ ExprResult Sema::BuildDeclarationNameExpr(
     break;
   }
 
-  case Decl::ResultName: {// FIXME(EricWF): Is this even close to correct?
+  case Decl::ResultName: {
+    // A result name is an lvalue naming the returned object.
     valueKind = VK_LValue;
     type = type.getNonReferenceType();
     break;
- }
+  }
 
   case Decl::Function: {
     if (unsigned BID = cast<FunctionDecl>(VD)->getBuiltinID()) {
@@ -14179,7 +14180,6 @@ static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
 
   if (DRE->isConstified() || DRE->isInContractContext())
     return NCCK_Contract;
-  //DRE->dumpColor();
   // Decide whether the first capture was for a block or a lambda.
   DeclContext *DC = S.CurContext, *Prev = nullptr;
   unsigned ScopeIndex = S.FunctionScopes.size();

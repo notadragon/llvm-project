@@ -1075,7 +1075,7 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
     StmtResult NewDeclStmt = ActOnDeclStmt(
         ConvertDeclToDeclGroup(RND), RND->getLocation(), RND->getLocation());
 
-    // FIXME(EricWF): Can this happen?
+    // FIXME: Can this happen?
     if (NewDeclStmt.isInvalid())
       return StmtError();
     RNDStmt = NewDeclStmt.getAs<DeclStmt>();
@@ -1168,7 +1168,7 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
   // Check for redeclaration of parameters, e.g. int foo(int x, int x);
   if (II) {
     LookupResult R(*this, II, IDLoc, LookupOrdinaryName,
-                   RedeclarationKind::ForVisibleRedeclaration); // FIXME(EricWF)
+                   RedeclarationKind::ForVisibleRedeclaration); // FIXME
     LookupName(R, S);
     if (!R.empty()) {
       NamedDecl *PrevDecl = *R.begin();
@@ -1178,11 +1178,11 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
         // Just pretend that we didn't see the previous declaration.
         PrevDecl = nullptr;
       }
-      // FIXME(EricWF): Diagnose lookup conflicts with lambda captures and
+      // FIXME: Diagnose lookup conflicts with lambda captures and
       // parameter declarations.
       if (auto *PVD = dyn_cast<ParmVarDecl>(PrevDecl)) {
         Diag(IDLoc, diag::err_result_name_shadows_param)
-            << II; // FIXME(EricWF): Change the diagnostic here.
+            << II; // FIXME: Change the diagnostic here.
         Diag(PVD->getLocation(), diag::note_previous_declaration);
         New->setInvalidDecl(true);
       }
@@ -1713,7 +1713,7 @@ static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
   ParamReferenceChecker Checker(S, FD);
   for (auto *CS : CSD->postconditions()) {
     Checker.TraverseContractStmt(CS);
-    // FIXME(EricWF): DIagnose non-const function param types.
+    // FIXME: Diagnose non-const function param types.
   }
 }
 
@@ -2316,7 +2316,7 @@ struct CaptureUsage {
   CaptureUsage(clang::LambdaCapture Capture) : Capture(Capture) {}
 };
 
-/// TODO(EricWF): Remove this and do it inline instead. We currently
+/// TODO: Remove this and do it inline instead. We currently
 /// do this as a RecursiveASTVisitor because the changes to do it during
 /// the initial parsing pass are too invasive to do dur
 struct LambdaCaptureChecker : RecursiveASTVisitor<LambdaCaptureChecker> {
@@ -2416,7 +2416,7 @@ public:
     // outside of a contract. This assumes that the inner lambda has a valid usage of the capture.
     // If it doesn't, we'll diagnose that separately.
     for (auto C : LE->captures()) {
-      // FIXME(EricWF): Figure out how to deal with VLA captures here
+      // FIXME: Figure out how to deal with VLA captures here
       if (C.capturesVLAType())
         continue;
 
