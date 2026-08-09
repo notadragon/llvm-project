@@ -2030,7 +2030,6 @@ void DeclPrinter::VisitResultNameDecl(ResultNameDecl *RND) {
   if (!RND->isCanonicalResultName()) {
     Out << " = ";
     RND->getCanonicalResultName()->printQualifiedName(Out);
-    Out << " " << RND << " ";
   }
 }
 

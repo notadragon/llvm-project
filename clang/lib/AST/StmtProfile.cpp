@@ -138,8 +138,8 @@ namespace {
         if (const auto *RND = dyn_cast<ResultNameDecl>(D)) {
           // Pointer equality cannot be used on result names either, since the result name on different declarations
           // should be considered equivalent.
-          // FIXME(EricWF): We may need to compare more than just the type and identifier, consider
-          //
+          // FIXME: We may need to compare more than just the type and
+          // identifier.
           VisitType(RND->getType());
           ID.AddInteger(RND->getFunctionScopeDepth());
           return;

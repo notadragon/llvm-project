@@ -10589,9 +10589,8 @@ ASTContext::BuildViolationObject(SourceLocation Loc, StringRef Comment,
       Value.getStructField(F->getFieldIndex()) =
           Message ? MakeStringLiteral(*Message) : MakeNullPtr();
     } else {
-      assert(false &&
-             "unexpected field in __builtin_contract_violation_info_t");
-      llvm_unreachable("can't touch this");
+      llvm_unreachable(
+          "unexpected field in __builtin_contract_violation_info_t");
     }
   }
   QualType QT =

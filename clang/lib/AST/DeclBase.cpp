@@ -924,9 +924,10 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
       // tag types, so we include them in the tag namespace.
       return IDNS_Ordinary | IDNS_Tag;
 
-    // FIXME(EricWF): IDK if this is correct
+    // A result name is a value-like entity (it names the return value in a
+    // postcondition); like a parameter, it lives only in the ordinary namespace.
     case ResultName:
-      return IDNS_Ordinary | IDNS_Tag;
+      return IDNS_Ordinary;
 
     case ObjCCompatibleAlias:
     case ObjCInterface:

@@ -4699,7 +4699,7 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
   } else if (const ValueDecl *D = LVal.Base.dyn_cast<const ValueDecl *>()) {
 
     // Allow reading the result of a function call inside a post contract.
-    // FIXME(EricWF): There's more validation that needs to be done here.
+    // FIXME: There's more validation that needs to be done here.
     if (auto *RND = dyn_cast<ResultNameDecl>(D); RND) {
       assert(RND == RND->getCanonicalResultName());
 

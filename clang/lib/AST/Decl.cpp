@@ -2705,7 +2705,7 @@ bool VarDecl::recheckForConstantInitialization(
   Eval->WasEvaluated = false;
 
   // Wipe out the previously computed value.
-  // FIXME(EricWF): We should diagnose when the initializer produces a different
+  // FIXME: We should diagnose when the initializer produces a different
   // value the second time around.
   Eval->Evaluated = APValue();
 

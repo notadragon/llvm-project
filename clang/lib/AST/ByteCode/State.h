@@ -195,7 +195,7 @@ public:
   bool CheckingForUndefinedBehavior = false;
 
 
-  // FIXME(EricWF): Use EvalMode instead of EvaluateContracts?
+  // TODO: Use EvalMode instead of EvaluateContracts?
   EvaluationMode EvalMode;
   ASTContext &Ctx;
   Expr::EvalStatus &EvalStatus;

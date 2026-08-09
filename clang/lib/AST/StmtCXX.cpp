@@ -339,7 +339,7 @@ ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
 ResultNameDecl *ContractStmt::getResultName() const {
   if (!hasResultName())
     return nullptr;
-  DeclStmt* D = getResultNameDeclStmt();
+  DeclStmt *D = getResultNameDeclStmt();
   assert(D);
   return cast<ResultNameDecl>(D->getSingleDecl());
 }
