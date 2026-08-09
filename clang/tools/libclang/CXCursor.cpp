@@ -674,7 +674,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     K = CXCursor_CXXParenListInitExpr;
     break;
 
-  // FIXME(EricWF): Add support for the following Stmt classes.
+  // FIXME: Add support for the following Stmt classes.
   case Stmt::ContractStmtClass:
     K = CXCursor_UnexposedStmt;
     break;

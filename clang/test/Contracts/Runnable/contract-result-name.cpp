@@ -2,7 +2,7 @@
 
 
 int main() {
-  // TODO(EricWF): Fix me
+  // TODO: Fix me
 }
 
 

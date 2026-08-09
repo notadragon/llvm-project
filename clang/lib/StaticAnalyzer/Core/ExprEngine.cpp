@@ -1815,7 +1815,8 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OpenACCAtomicConstructClass:
     case Stmt::OMPUnrollDirectiveClass:
     case Stmt::OMPMetaDirectiveClass:
-    case Stmt::ContractStmtClass: // FIXME(EricWF): Do something here
+    case Stmt::ContractStmtClass: // FIXME: The static analyzer does not yet
+                                  // model contract statements.
     case Stmt::HLSLOutArgExprClass: {
       const ExplodedNode *Node = Engine.makePostStmtNode(
           S, Pred->getState(), Pred, /*MarkAsSink=*/true);
