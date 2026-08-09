@@ -2777,21 +2777,21 @@ Sema::ContractScopeRAII::~ContractScopeRAII() {
 void Sema::PushContractScope(ContractKind Kind, ContractScopeOffset ScopeOffset, SourceLocation Loc) {
 //  assert(!FunctionScopes.empty());
 
-  ContractScopeRecord Record{
-         .Index = static_cast<unsigned>(ContractScopeStack.size()),
-         .Kind = Kind,
-         .ScopeOffset = ScopeOffset,
-         .KeywordLoc = Loc,
-         .ContextAtPush = CurContext,
-         .PreviousCXXThisType = CXXThisTypeOverride,
-         .FunctionIndex = static_cast<unsigned>(
-             FunctionScopes.empty() ? 0ul : FunctionScopes.size() - 1),
-         .StartFunctionIndex = FunctionScopesStart,
-         .FunctionScopeAtPush = getCurFunction(),
-         .AddedConstToCXXThis = false,
-         .WasInContractContext = ExprEvalContexts.back().InContractAssertion,
-         .HadNoFunctionScope = FunctionScopes.empty(),
-         .FunctionScopeStartAtPush = FunctionScopesStart};
+  ContractScopeRecord Record{};
+  Record.Index = static_cast<unsigned>(ContractScopeStack.size());
+  Record.Kind = Kind;
+  Record.ScopeOffset = ScopeOffset;
+  Record.KeywordLoc = Loc;
+  Record.ContextAtPush = CurContext;
+  Record.PreviousCXXThisType = CXXThisTypeOverride;
+  Record.FunctionIndex = static_cast<unsigned>(
+      FunctionScopes.empty() ? 0ul : FunctionScopes.size() - 1);
+  Record.StartFunctionIndex = FunctionScopesStart;
+  Record.FunctionScopeAtPush = getCurFunction();
+  Record.AddedConstToCXXThis = false;
+  Record.WasInContractContext = ExprEvalContexts.back().InContractAssertion;
+  Record.HadNoFunctionScope = FunctionScopes.empty();
+  Record.FunctionScopeStartAtPush = FunctionScopesStart;
 
     // Setup the constification context when building declref expressions.
     ExprEvalContexts.back().InContractAssertion = true;

@@ -1523,12 +1523,13 @@ void CodeGenFunction::EmitPostconditionCaptureInit(
   ContractData->CaptureInitFailed.insert({CS, FailedFlag});
 
   llvm::Constant *ViolationInfo = BuildContractViolationInfo(*this, *CS);
-  CurrentContractRAII CurContractRAII(*this,
-                                      {.Contract = CS,
-                                       .Style = Inline,
-                                       .Checkpoint = EmittingCaptureCatchBody,
-                                       .Semantic = Sem,
-                                       .ViolationInfoGV = ViolationInfo});
+  CurrentContractInfo CCInfo{};
+  CCInfo.Contract = CS;
+  CCInfo.Style = Inline;
+  CCInfo.Checkpoint = EmittingCaptureCatchBody;
+  CCInfo.Semantic = Sem;
+  CCInfo.ViolationInfoGV = ViolationInfo;
+  CurrentContractRAII CurContractRAII(*this, CCInfo);
   auto *Try = BuildCaptureTryCatch(*CS, *this);
 
   // Construct each capture in its own try/catch region, split into the
@@ -1745,9 +1746,9 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
       return Shared;
     case ContractEvaluationSemantic::Ignore:
     case ContractEvaluationSemantic::Assume:
-
       llvm_unreachable("unhandled semantic");
     }
+    llvm_unreachable("unhandled contract evaluation semantic");
   }();
 
   auto Violation = [&]() {
@@ -1760,6 +1761,7 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
                  ? GetSharedContractViolationEnforceBlock(S.getContractKind())
                  : GetSharedContractViolationTrapBlock();
     }
+    llvm_unreachable("unhandled contract emission style");
   }();
 
   llvm::BasicBlock *End = createBasicBlock("contract.end");
@@ -1813,14 +1815,15 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
     }
   }
 
-  CurrentContractRAII CurContractRAII(*this,
-                                      {.Contract = &S,
-                                       .Style = Style,
-                                       .Checkpoint = EmittingContract,
-                                       .Semantic = Semantic,
-                                       .Violation = Violation,
-                                       .End = End,
-                                       .ViolationInfoGV = ViolationInfo});
+  CurrentContractInfo CCInfo{};
+  CCInfo.Contract = &S;
+  CCInfo.Style = Style;
+  CCInfo.Checkpoint = EmittingContract;
+  CCInfo.Semantic = Semantic;
+  CCInfo.Violation = Violation;
+  CCInfo.End = End;
+  CCInfo.ViolationInfoGV = ViolationInfo;
+  CurrentContractRAII CurContractRAII(*this, CCInfo);
 
   bool IsPostCapture = (S.getContractKind() == ContractKind::Post &&
                         S.hasCaptures());

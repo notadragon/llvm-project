@@ -10347,6 +10347,7 @@ GetContractViolationDescriptorTypeString(ContractViolationDescriptorType DT) {
   case ContractViolationDescriptorType::DT_DescriptorTable:
     return "descriptor_table*";
   }
+  llvm_unreachable("unknown contract violation descriptor type");
 }
 
 QualType GetContractViolationDescriptorType(ContractViolationDescriptorType DT,

@@ -837,7 +837,7 @@ IdentifierTable::getFutureCompatDiagKind(const IdentifierInfo &II,
                                          const LangOptions &LangOpts) {
   assert(II.isFutureCompatKeyword() && "diagnostic should not be needed");
 
-  unsigned Flags = llvm::StringSwitch<unsigned>(II.getName())
+  uint64_t Flags = llvm::StringSwitch<uint64_t>(II.getName())
 #define KEYWORD(NAME, FLAGS) .Case(#NAME, FLAGS)
 #include "clang/Basic/TokenKinds.def"
 #undef KEYWORD

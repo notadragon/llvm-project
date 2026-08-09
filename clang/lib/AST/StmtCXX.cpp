@@ -407,8 +407,12 @@ StringRef ContractStmt::SemanticAsString(ContractEvaluationSemantic Sem) {
     return "quick_enforce";
   case ContractEvaluationSemantic::Assume:
     return "assume";
+  case ContractEvaluationSemantic::NoexceptObserve:
+    return "noexcept_observe";
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    return "noexcept_enforce";
   }
-  llvm_unreachable("Unknown contract kind");
+  llvm_unreachable("Unknown contract evaluation semantic");
 }
 
 // P3100: apply the -fcontracts-allow-assume gate to a contract's

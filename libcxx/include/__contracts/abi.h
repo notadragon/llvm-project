@@ -298,6 +298,31 @@ void __cxa_contract_violation_implicit_observe_ex_noexcept (void* __data) noexce
 [[noreturn]] void __cxa_contract_violation_implicit_enforce_ex (void* __data);
 [[noreturn]] void __cxa_contract_violation_implicit_enforce_ex_noexcept (void* __data) noexcept;
 
+// Specialized: noexcept_observe (D4298).  Defined in libc++ (contracts_abi.cpp);
+// each wraps a dispatch primitive in a terminate-on-throw barrier.
+void __cxa_contract_violation_pre_noexcept_observe_pf_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_pre_noexcept_observe_ex_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_post_noexcept_observe_pf_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_post_noexcept_observe_ex_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_assert_noexcept_observe_pf_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_assert_noexcept_observe_ex_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_post_capture_noexcept_observe_pf_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_post_capture_noexcept_observe_ex_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_implicit_noexcept_observe_pf_noexcept (void* __data) noexcept;
+void __cxa_contract_violation_implicit_noexcept_observe_ex_noexcept (void* __data) noexcept;
+
+// Specialized: noexcept_enforce ([[noreturn]], D4298).
+[[noreturn]] void __cxa_contract_violation_pre_noexcept_enforce_pf_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_pre_noexcept_enforce_ex_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_post_noexcept_enforce_pf_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_post_noexcept_enforce_ex_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_assert_noexcept_enforce_pf_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_assert_noexcept_enforce_ex_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_post_capture_noexcept_enforce_pf_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_post_capture_noexcept_enforce_ex_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_implicit_noexcept_enforce_pf_noexcept (void* __data) noexcept;
+[[noreturn]] void __cxa_contract_violation_implicit_noexcept_enforce_ex_noexcept (void* __data) noexcept;
+
 } // extern "C"
 
 #endif // _LIBCPP_CONTRACTS_ABI_H

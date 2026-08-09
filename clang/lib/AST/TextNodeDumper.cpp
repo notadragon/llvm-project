@@ -3466,6 +3466,12 @@ void TextNodeDumper::VisitContractStmt(const ContractStmt *S) {
     case ContractEvaluationSemantic::Assume:
       OS << " assume";
       break;
+    case ContractEvaluationSemantic::NoexceptObserve:
+      OS << " noexcept_observe";
+      break;
+    case ContractEvaluationSemantic::NoexceptEnforce:
+      OS << " noexcept_enforce";
+      break;
     }
   }
 }

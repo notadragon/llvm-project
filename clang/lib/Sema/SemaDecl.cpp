@@ -10224,8 +10224,7 @@ static void CheckHandleContractViolation(Sema &S, FunctionDecl *FD) {
     S.Diag(Loc, diag::err_ericwf_generic)
         << "'::handle_contract_violation' shall have C++ language linkage";
 
-  if (FD->isInExportDeclContext())
-    ; // fine
+  // Being declared in an export context is fine.
 
   if (FD->getOwningModule() && FD->getOwningModule()->isNamedModule())
     S.Diag(Loc, diag::err_ericwf_generic)

@@ -1085,7 +1085,7 @@ Parser::ParseCastExpression(CastParseKind ParseKind, bool isAddressOfOperand,
     Res = ParseGenericSelectionExpression();
     break;
   case tok::kw_contract_control: {
-    SourceLocation KWLoc = ConsumeToken();
+    ConsumeToken();
     BalancedDelimiterTracker T(*this, tok::l_paren);
     if (T.expectAndConsume(diag::err_expected_lparen_after, "contract_control"))
       return ExprError();
