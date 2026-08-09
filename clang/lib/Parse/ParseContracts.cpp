@@ -132,6 +132,10 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
       Toks.push_back(Tok);
       ConsumeToken();
     }
+    // P4283: cache an optional requires-clause between the label and the
+    // attributes/captures/predicate.
+    if (Tok.is(tok::kw_requires) && !LateParseContractRequiresClause(Toks))
+      return false;
     // Cache attribute tokens [[...]] after label.
     while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
       Toks.push_back(Tok);
@@ -171,6 +175,11 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
   // Cache any [[attribute]] tokens before captures/paren.
   Toks.push_back(StartTok);             // contract keyword
 
+  // P4283: cache an optional requires-clause (no label) before the
+  // attributes/captures/predicate.
+  if (Tok.is(tok::kw_requires) && !LateParseContractRequiresClause(Toks))
+    return false;
+
   // Cache attribute tokens [[...]].
   while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
     Toks.push_back(Tok);
@@ -206,6 +215,132 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
                        /*StopAtSemi=*/true,
                        /*ConsumeFinalToken=*/true);
   ContractRange.setEnd(Toks.back().getLocation());
+  return true;
+}
+
+/// LateParseContractRequiresClause - Cache the tokens of a P4283 requires-
+/// clause on a member function's contract so they can be re-parsed later along
+/// with the rest of the contract specifier.
+///
+/// The grammar is
+///   requires constraint-logical-or-expression
+/// i.e. a sequence of primary-expressions joined by top-level '&&' / '||' with
+/// no mandatory parentheses.  We cache tokens while tracking bracket nesting;
+/// the clause ends at the first depth-0 predicate '(' or capture/attribute '['
+/// unless that token opens a parenthesized primary or a requires-expression's
+/// parameter list.  Returns false on error; on success Tok is left at the
+/// attribute/capture/predicate that follows the clause.
+bool Parser::LateParseContractRequiresClause(CachedTokens &Toks) {
+  assert(Tok.is(tok::kw_requires) && "Not a requires-clause");
+
+  // Cache a depth-counted template argument list '<...>', modelled on the
+  // P3400 label caching above (splitting a '>>' that closes two levels).
+  // Assumes Tok is '<'.
+  auto cacheAngles = [&]() -> bool {
+    Toks.push_back(Tok);
+    ConsumeToken(); // '<'
+    unsigned Depth = 1;
+    while (Depth > 0) {
+      if (Tok.is(tok::less)) {
+        ++Depth;
+      } else if (Tok.is(tok::greater)) {
+        --Depth;
+      } else if (Tok.is(tok::greatergreater) && Depth >= 2) {
+        Depth -= 2;
+        Token GT;
+        GT.startToken();
+        GT.setKind(tok::greater);
+        GT.setLocation(Tok.getLocation());
+        Toks.push_back(GT);
+        GT.setLocation(Tok.getLocation().getLocWithOffset(1));
+        Toks.push_back(GT);
+        ConsumeToken();
+        continue;
+      } else if (Tok.is(tok::eof) || Tok.is(tok::semi)) {
+        Diag(Tok, diag::err_expected) << tok::greater;
+        return false;
+      }
+      Toks.push_back(Tok);
+      ConsumeToken();
+    }
+    return true;
+  };
+
+  // Cache a balanced '(...)' / '[...]' / '{...}' group.  Assumes Tok is the
+  // opener; ConsumeAndStoreUntil handles inner nesting.
+  auto cacheBalanced = [&](tok::TokenKind Close) {
+    Toks.push_back(Tok);
+    if (Close == tok::r_paren)
+      ConsumeParen();
+    else if (Close == tok::r_brace)
+      ConsumeBrace();
+    else
+      ConsumeBracket();
+    ConsumeAndStoreUntil(Close, Toks, /*StopAtSemi=*/false,
+                         /*ConsumeFinalToken=*/true);
+  };
+
+  // Cache a single constraint primary-expression.
+  auto cachePrimary = [&]() -> bool {
+    // requires-expression: 'requires' requirement-parameter-list[opt]
+    // requirement-body.
+    if (Tok.is(tok::kw_requires)) {
+      Toks.push_back(Tok);
+      ConsumeToken(); // 'requires'
+      if (Tok.is(tok::l_paren))
+        cacheBalanced(tok::r_paren);
+      if (Tok.is(tok::l_brace)) {
+        cacheBalanced(tok::r_brace);
+        return true;
+      }
+      Diag(Tok, diag::err_expected) << tok::l_brace;
+      return false;
+    }
+    // Parenthesized primary: '(' expression ')'.
+    if (Tok.is(tok::l_paren)) {
+      cacheBalanced(tok::r_paren);
+      return true;
+    }
+    // id-expression / literal, possibly with a nested-name-specifier and a
+    // template argument list.  Cache tokens until a depth-0 terminator.
+    bool CachedAny = false;
+    while (true) {
+      if (Tok.is(tok::less)) {
+        if (!cacheAngles())
+          return false;
+        CachedAny = true;
+        continue;
+      }
+      // A depth-0 connector, the predicate '(', the captures/attributes '[',
+      // or an end marker terminates the primary.
+      if (Tok.isOneOf(tok::ampamp, tok::pipepipe, tok::l_paren, tok::l_square,
+                      tok::l_brace, tok::comma, tok::semi, tok::eof,
+                      tok::r_paren, tok::r_square, tok::r_brace))
+        break;
+      Toks.push_back(Tok);
+      ConsumeToken();
+      CachedAny = true;
+    }
+    if (!CachedAny) {
+      Diag(Tok, diag::err_expected_expression);
+      return false;
+    }
+    return true;
+  };
+
+  // Cache the clause keyword and its constraint-logical-or-expression.
+  Toks.push_back(Tok);
+  ConsumeToken(); // 'requires'
+  while (true) {
+    if (!cachePrimary())
+      return false;
+    if (Tok.is(tok::ampamp) || Tok.is(tok::pipepipe)) {
+      Toks.push_back(Tok);
+      ConsumeToken();
+      continue;
+    }
+    break;
+  }
   return true;
 }
 

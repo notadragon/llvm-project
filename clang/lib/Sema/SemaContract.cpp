@@ -1794,10 +1794,20 @@ void Sema::InstantiateContractSpecifier(
       NewContracts.push_back(NewCS);
   }
 
-  // P4283: If all contracts were discarded by requires clauses, don't
-  // create a ContractSpecifierDecl at all.
-  if (NewContracts.empty() && !IsInvalid)
+  // P4283: If every contract was discarded by an unsatisfied requires-clause,
+  // clear the instantiation's contracts.  Returning early here would leave the
+  // instantiation pointing at the pattern's dependent contract specifier (the
+  // placeholder installed at class-template instantiation), so downstream
+  // consumers -- in particular the P3097 virtual interface wrapper -- would
+  // emit the pattern's discarded contract and reference the pattern's
+  // parameters (crashing in CodeGen).  A null specifier makes hasContracts()
+  // false, so the wrapper is skipped and no check is emitted; the on-use
+  // re-entry guard (InstantiateVirtualFunctionContractsOnUse) also treats a
+  // null specifier as "already resolved".
+  if (NewContracts.empty() && !IsInvalid) {
+    Instantiation->setContracts(nullptr);
     return;
+  }
 
   ContractSpecifierDecl *NewCSD = BuildContractSpecifierDecl(
       NewContracts, Instantiation, PatternCSD->getLocation(), IsInvalid);

@@ -9155,6 +9155,7 @@ private:
 
   void LateParseFunctionContractSpecifierSeq(CachedTokens &ContractToks);
   bool LateParseFunctionContractSpecifier(CachedTokens &ContractToks);
+  bool LateParseContractRequiresClause(CachedTokens &ContractToks);
 
   bool ParseLexedFunctionContracts(CachedTokens &Toks, Decl *FD,
                                    ContractEnterScopeKind EnterScopeKinds);
