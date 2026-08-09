@@ -37,7 +37,6 @@
 #include "clang/Basic/BuiltinTraits.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/DiagnosticSema.h"
-#include "clang/Basic/EricWFDebug.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
@@ -72,7 +71,6 @@
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/TypeSize.h"
-#include "clang/Basic/EricWFDebug.h"
 #include <limits>
 #include <optional>
 
@@ -14190,24 +14188,19 @@ static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
   if (S.getContractConstification(Var) == CC_ApplyConst)
     return NCCK_Contract;
 
-#if 1
   bool PassedThroughContract = false;
 
   if (ScopeIndex - 1u < S.FunctionScopes.size()) {
     PassedThroughContract |= S.FunctionScopes[ScopeIndex - 1]->isInContract();
   }
-#endif
 
     // Decide whether the first capture was for a block or a lambda.
   while (DC) {
-#if 1
     if (DC->isFunctionOrMethod()) {
       --ScopeIndex;
-      //assert(ScopeIndex >= S.FunctionScopesStart);
       assert(ScopeIndex < S.FunctionScopes.size());
       PassedThroughContract |= S.FunctionScopes[ScopeIndex]->isInContract();
     }
-#endif
     // For init-capture, it is possible that the variable belongs to the
     // template pattern of the current context.
     if (auto *FD = dyn_cast<FunctionDecl>(DC))
@@ -14219,14 +14212,12 @@ static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
     Prev = DC;
     DC = DC->getParent();
   }
-#if 1
   if (!DC) {
     --ScopeIndex;
     if (ScopeIndex < S.FunctionScopes.size())
       PassedThroughContract |= S.FunctionScopes[ScopeIndex]->isInContract();
 
   }
-#endif
   // Unless we have an init-capture, we've gone one step too far.
   if (!Var->isInitCapture())
     DC = Prev;
@@ -20307,56 +20298,6 @@ bool Sema::tryCaptureVariable(
     if (IsInScopeDeclarationContext)
       DC = ParentDC;
   } while (!VarDC->Equals(DC));
-
-
-#if 0
-  const unsigned VarDeclScopeIndex = FunctionScopesIndex;
-
-  struct ContractScope {
-    unsigned Index;
-    SourceLocation Loc;
-  };
-
-  SmallVector<ContractScope, 4> ContractFunctionScopeIdxs;
-  auto *CurContract = getCurrentContractEntry();
-  auto *Currentcontract = Contract
-  while (CurContract) {
-    ContractFunctionScopeIdxs.push_back(
-        {CurContract->FunctionIndex, CurContract->KeywordLoc});
-    CurContract = CurContract->Previous;
-  }
-  // Get rid of contracts in function scopes that we don't care about. Either
-  // because they're non-lexical, or because they fully enclose the variable
-  // declaration we care about.
-  llvm::erase_if(ContractFunctionScopeIdxs, [&](const ContractScope &ScopeLoc) {
-    if (ScopeLoc.Index > MaxFunctionScopesIndex)
-      return true;
-    if (ScopeLoc.Index < VarDeclScopeIndex)
-      return true;
-    return false;
-  });
-
-  SourceLocation InterveiningContractLoc;
-  auto HasInterveningContract = [&](unsigned CurScopeIndex) -> bool {
-    for (auto &IndexLoc : ContractFunctionScopeIdxs) {
-      if (IndexLoc.Index < CurScopeIndex) {
-        InterveiningContractLoc = IndexLoc.Loc;
-        return true;
-      }
-    }
-    return false;
-  };
-  SourceLocation ContractBelowLoc;
-  auto HasContractBelow = [&](unsigned CurScopeIndex) -> bool {
-    for (auto &IndexLoc : ContractFunctionScopeIdxs) {
-      if (IndexLoc.Index >= CurScopeIndex) {
-        ContractBelowLoc = IndexLoc.Loc;
-        return true;
-      }
-    }
-    return false;
-  };
-#endif
 
 
   ConstificationInfo ConstTracker;

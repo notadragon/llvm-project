@@ -13076,22 +13076,20 @@ def select_contract_kind : TextSubstitution<
   "%select{pre|post|contract_assert}0">;
 
 let CategoryName = "Contract Issue" in {
-def err_ericwf_unimplemented : Error<
-  "contract feature %0 is not yet implemented (complain to eric@efcs.ca)"
->;
-def warn_ericwf_unimplemented : Warning<
-  "contract feature %0 is not yet _correctly_ implemented (Danm it Eric!)"
->, InGroup<EricWFFixme>;
-
-def err_ericwf_fixme : Error<
-  "woops... FIXME(EricWF): %0"
->;
-def err_ericwf_generic : Error<"%0">;
-def note_ericwf_generic : Note<"%0">;
-
-def warn_ericwf_fixme : Warning<
-  "woops... FIXME(EricWF): %0"
->, InGroup<EricWFFixme>;
+def err_contract_violation_handler_invalid : Error<
+  "%select{"
+  "'::handle_contract_violation' shall not be declared 'inline'|"
+  "'::handle_contract_violation' shall have C++ language linkage|"
+  "'::handle_contract_violation' shall be attached to the global module|"
+  "'::handle_contract_violation' shall return 'void'|"
+  "'::handle_contract_violation' shall have a single parameter of type "
+  "'const std::contracts::contract_violation&'|"
+  "parameter of '::handle_contract_violation' shall be an lvalue reference to "
+  "'const std::contracts::contract_violation'|"
+  "parameter of '::handle_contract_violation' shall be a reference to "
+  "'const std::contracts::contract_violation'|"
+  "parameter of '::handle_contract_violation' shall be of type "
+  "'const std::contracts::contract_violation&'}0">;
 
 def err_result_name_shadows_param : Error<
   "declaration of result name %0 shadows parameter">;

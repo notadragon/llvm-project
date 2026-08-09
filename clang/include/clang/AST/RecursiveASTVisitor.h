@@ -2395,12 +2395,10 @@ bool RecursiveASTVisitor<Derived>::TraverseFunctionHelper(FunctionDecl *D) {
         const_cast<Expr *>(TrailingRequiresClause.ConstraintExpr)));
   }
 
-  // Visit any contracts attached to the function declaration..
-#if 1 // TODO(EricWF): Enable this.
+  // Visit any contracts attached to the function declaration.
   if (auto *Contracts = D->getContracts()) {
     TRY_TO(TraverseDecl(Contracts));
   }
-#endif
 
   if (CXXConstructorDecl *Ctor = dyn_cast<CXXConstructorDecl>(D)) {
     // Constructor initializers.

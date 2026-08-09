@@ -54,7 +54,6 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/DiagnosticSema.h"
-#include "clang/Basic/EricWFDebug.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/APFixedPoint.h"
@@ -4707,8 +4706,8 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       APValue *Val = Frame->getTemporary(RND, LVal.Base.getVersion());
 
       if (!Val) {
-        Info.CCEDiag(RND->getLocation(), diag::err_ericwf_fixme)
-            << "Failing to find completed object";
+        Info.CCEDiag(RND->getLocation(),
+                     diag::note_invalid_subexpr_in_const_expr);
         return CompleteObject();
       }
       return CompleteObject(LVal.Base, Val, RND->getType());

@@ -2033,7 +2033,6 @@ def ContractConfiguration : DiagGroup<"contract-configuration">;
 def ContractWarning : DiagGroup<"contracts",
                                 [ContractViolation, ContractConfiguration]>;
 
-def EricWFFixme : DiagGroup<"ericwf-fixme">;
 
 // A warning for options that enable a feature that is not yet complete
 def ExperimentalOption : DiagGroup<"experimental-option">;
