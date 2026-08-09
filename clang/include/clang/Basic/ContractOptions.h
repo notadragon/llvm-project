@@ -1,4 +1,4 @@
-//===- ContractsOptions.h - C++ Contract Options ----------------*- C++ -*-===//
+//===- ContractOptions.h - C++ Contract Options -----------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -76,7 +76,7 @@ enum class ContractKind {
   Implicit
 };
 
-// std::contracts::assertion_kind
+/// std::contracts::assertion_kind
 enum class ContractAssertionKind {
   Pre = 1,
 
@@ -90,9 +90,9 @@ enum class ContractAssertionKind {
 };
 
 /// Contract evaluation mode. Determines whether to check contracts, and
-// whether contract failures cause compile errors.
-//
-// Values match std::contracts::evaluation_semantic per [support.contract.enum].
+/// whether contract failures cause compile errors.
+///
+/// Values match std::contracts::evaluation_semantic per [support.contract.enum].
 enum class ContractEvaluationSemantic {
   Ignore = 1,
   Observe = 2,
@@ -211,9 +211,9 @@ enum class ContractEmissionStyle {
   InDefinition,
 };
 
-
-// Indicates whether the contract scope information was pushed prior to the function declaration context being
-// available (and therefore will need special consideration when adjusting the context).
+/// Indicates whether the contract-scope information was pushed before the
+/// function's declaration context was available (and so needs special handling
+/// when adjusting the context).
 enum ContractScopeOffset {
   CSO_ParentContext,
   CSO_FunctionContext
@@ -288,13 +288,12 @@ private:
 /// will enable 'std.hardening.baz', but disable 'std.hardening.foo.bar' and
 /// 'std.baz'.
 ///
-/// TODO(EricWF): Should we match in the same manner as clang-tidy checks?
+/// TODO: Should we match in the same manner as clang-tidy checks?
 ///    Specifically, allow the use of '*' and drop all notion of groups?
 class ContractOptions {
 public:
   ContractOptions() = default;
 
-public:
   using DiagnoseGroupFunc =
       std::function<void(ContractGroupDiagnostic, StringRef, StringRef)>;
 
@@ -309,7 +308,6 @@ public:
   void addUnparsedContractGroup(StringRef GroupAndValue,
                                 const DiagnoseGroupFunc &Diagnoser);
 
-public:
   /// The default semantics for contracts (the catch-all used by initConfig).
   /// Set by -fcontract-evaluation-semantic= (marshalled) or a bare
   /// -fcontracts-group-evaluation-semantic=<semantic>.

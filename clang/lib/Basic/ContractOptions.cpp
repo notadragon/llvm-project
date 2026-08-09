@@ -1,4 +1,4 @@
-//===- Contracts.cpp - C Language Family Language Options -----------------===//
+//===- ContractOptions.cpp - C++ Contract Options -------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -18,6 +18,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
@@ -27,16 +28,14 @@
 
 using namespace clang;
 
-std::optional<ContractEvaluationSemantic> semanticFromString(StringRef Str) {
-  return llvm::StringSwitch<std::optional<ContractEvaluationSemantic>>(Str)
-      .Case("ignore", ContractEvaluationSemantic::Ignore)
-      .Case("enforce", ContractEvaluationSemantic::Enforce)
-      .Case("observe", ContractEvaluationSemantic::Observe)
-      .Case("quick_enforce", ContractEvaluationSemantic::QuickEnforce)
-      .Case("assume", ContractEvaluationSemantic::Assume)
-      .Case("noexcept_enforce", ContractEvaluationSemantic::NoexceptEnforce)
-      .Case("noexcept_observe", ContractEvaluationSemantic::NoexceptObserve)
-      .Default(std::nullopt);
+// Delegates to contractSemanticFromName (ContractOptions.h), the single source
+// of truth for semantic-name spelling.
+static std::optional<ContractEvaluationSemantic>
+semanticFromString(StringRef Str) {
+  ContractEvaluationSemantic Sem;
+  if (contractSemanticFromName(Str, Sem))
+    return Sem;
+  return std::nullopt;
 }
 
 void ContractOptions::addUnparsedContractGroup(
@@ -44,7 +43,7 @@ void ContractOptions::addUnparsedContractGroup(
   if (Group.empty())
     return Diagnoser(ContractGroupDiagnostic::Empty, "", "");
 
-  const bool ParseAsValueOnly = not Group.contains(":");
+  const bool ParseAsValueOnly = !Group.contains(":");
   auto [Key, Value] = Group.split(':');
   if (ParseAsValueOnly) {
     assert(Value.empty() && "Value should be empty");
@@ -170,7 +169,7 @@ static void parseLocationString(llvm::StringRef LocStr,
     return;
   }
   llvm::StringRef After = LocStr.substr(ColonPos + 1);
-  if (After.empty() || !isdigit(After[0])) {
+  if (After.empty() || !llvm::isDigit(After[0])) {
     OutFile = LocStr.str();
     return;
   }
