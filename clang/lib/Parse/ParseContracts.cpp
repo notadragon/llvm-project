@@ -326,33 +326,27 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
       return StmtError();
   }
 
-  // Parse optional requires clause (P4283): pre <label> requires(C) ...
-  // The constraint is a parenthesized expression: requires(constraint-expr).
+  // Parse optional requires clause (P4283): pre <label> requires C ...
+  // P4283 uses the standard requires-clause grammar,
+  //   requires constraint-logical-or-expression
+  // with no mandatory parentheses: the constraint's atoms are primary-
+  // expressions, so parsing stops before the contract predicate's '('.  This
+  // matches the paper's `pre requires std::integral<T> (x > 0)` form and GCC.
   ExprResult RequiresClauseExpr;
   if (Tok.is(tok::kw_requires)) {
+    SourceLocation RequiresLoc = ConsumeToken(); // consume 'requires'
     if (!getLangOpts().ContractsP4283) {
-      Diag(Tok.getLocation(),
-           diag::err_contract_requires_clause_require_flag);
-      ConsumeToken(); // consume 'requires'
-      if (Tok.is(tok::l_paren)) {
-        ConsumeParen();
-        SkipUntil(tok::r_paren, StopAtSemi);
-      }
+      Diag(RequiresLoc, diag::err_contract_requires_clause_require_flag);
+      // Parse and discard the constraint so we recover to the predicate.
+      (void)ParseConstraintLogicalOrExpression(
+          /*IsTrailingRequiresClause=*/false,
+          /*IsContractRequiresClause=*/true);
     } else {
-      ConsumeToken(); // consume 'requires'
-      if (Tok.isNot(tok::l_paren)) {
-        Diag(Tok, diag::err_expected_lparen_after) << "requires";
-        return StmtError();
-      }
-      BalancedDelimiterTracker ReqT(*this, tok::l_paren);
-      ReqT.consumeOpen();
       RequiresClauseExpr = ParseConstraintLogicalOrExpression(
-          /*IsTrailingRequiresClause=*/false);
-      if (RequiresClauseExpr.isInvalid()) {
-        ReqT.skipToEnd();
+          /*IsTrailingRequiresClause=*/false,
+          /*IsContractRequiresClause=*/true);
+      if (RequiresClauseExpr.isInvalid())
         return StmtError();
-      }
-      ReqT.consumeClose();
     }
   }
 

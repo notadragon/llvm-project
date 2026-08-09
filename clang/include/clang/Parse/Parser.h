@@ -3806,7 +3806,8 @@ public:
   ///         constraint-logical-and-expression '&&' primary-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause);
+  ExprResult ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
+                                                 bool IsContractRequiresClause = false);
 
   /// \brief Parse a constraint-logical-or-expression.
   ///
@@ -3818,7 +3819,8 @@ public:
   ///             constraint-logical-and-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause);
+  ExprResult ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
+                                                bool IsContractRequiresClause = false);
 
   /// Parse an expr that doesn't include (top-level) commas.
   ExprResult
