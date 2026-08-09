@@ -2619,7 +2619,7 @@ DEF_TRAVERSE_STMT(ObjCAtThrowStmt, {})
 DEF_TRAVERSE_STMT(ObjCAtTryStmt, {})
 DEF_TRAVERSE_STMT(ObjCForCollectionStmt, {})
 DEF_TRAVERSE_STMT(ObjCAutoreleasePoolStmt, {})
-// FIXME(EricWF): This may have a declaration with a body eventually.
+// FIXME: This may have a declaration with a body eventually.
 // Will that need a different implementation.
 DEF_TRAVERSE_STMT(ContractStmt, {
   if (S->hasResultName()) {

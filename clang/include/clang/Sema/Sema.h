@@ -3300,8 +3300,6 @@ public:
   void CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
     bool IsInstantiation);
 
-  // FIXME(EricWF): Remove me. These are just convinence hooks while I move
-  // things around in the implementation.
   ContractSpecifierDecl *
   ActOnFinishContractSpecifierSequence(ArrayRef<ContractStmt *> ContractStmts,
                                        SourceLocation Loc, bool IsInvalid);

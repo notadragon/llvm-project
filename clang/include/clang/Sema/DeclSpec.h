@@ -1928,7 +1928,6 @@ enum class DeclaratorContext {
   AliasDecl,              // C++11 alias-declaration.
   AliasTemplate,          // C++11 alias-declaration template.
   RequiresExpr,           // C++2a requires-expression.
-  //ContractPostcondition,  // C++2a requires-type. FIXME(EricWF)
   Association          // C11 _Generic selection expression association.
 };
 
