@@ -151,9 +151,9 @@ void CodeGenFunction::EmitDecl(const Decl &D, bool EvaluateConditionDecl) {
     EmitStmt(ESD->getInstantiations());
     return;
   }
-  case Decl::ResultName: // FIXME(EricWF): This should be removed.
+  case Decl::ResultName:
+    // A result name is never emitted as a function-body declaration.
     llvm_unreachable("result name in function");
-    return;
 
   case Decl::NamespaceAlias:
     if (CGDebugInfo *DI = getDebugInfo())

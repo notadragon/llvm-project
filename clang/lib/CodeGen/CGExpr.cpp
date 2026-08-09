@@ -3648,7 +3648,7 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   assert(E->isNonOdrUse() != NOUR_Unevaluated &&
          "should not emit an unevaluated operand");
 
-  // FIXME(EricWF): There's got to be more to this.
+  // FIXME: There's got to be more to this.
   if (const auto *RND = dyn_cast<ResultNameDecl>(ND)) {
     ((void)RND);
     return MakeAddrLValue(ReturnValue, T, AlignmentSource::Decl);
