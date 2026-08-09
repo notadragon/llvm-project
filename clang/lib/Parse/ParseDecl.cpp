@@ -70,8 +70,20 @@ TypeResult Parser::ParseTypeName(SourceRange *Range, DeclaratorContext Context,
   }
 
   // Parse the abstract-declarator, if present.
+  //
+  // In a trailing-return type, a function-contract-specifier (pre/post, P3400)
+  // can follow the type. A labelled contract such as `pre<lbl>(...)` otherwise
+  // looks like a template-id and is consumed (and annotated) here as part of
+  // the abstract-declarator, dropping the contract and leaving the enclosing
+  // declarator unable to parse it. So do not attempt an abstract-declarator
+  // when a contract introducer follows in a trailing-return context; the
+  // contract is parsed later by the enclosing declarator (see ParseDeclGroup,
+  // which calls ParseContractSpecifierSequence). Mirrors gnu_gcc b6648b3d7d4.
   Declarator DeclaratorInfo(DS, ParsedAttributesView::none(), Context);
-  ParseDeclarator(DeclaratorInfo);
+  if (!((Context == DeclaratorContext::TrailingReturn ||
+         Context == DeclaratorContext::TrailingReturnVar) &&
+        isFunctionContractKeyword(Tok)))
+    ParseDeclarator(DeclaratorInfo);
   if (Range)
     *Range = DeclaratorInfo.getSourceRange();
 
