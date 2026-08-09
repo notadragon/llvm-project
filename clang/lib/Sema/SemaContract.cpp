@@ -1709,12 +1709,12 @@ private:
 static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
                                ContractSpecifierDecl *CSD) {
 
-  // Check for post-conditions that reference non-const parameters.
+  // Diagnose postconditions that odr-use a non-reference parameter of
+  // non-const, array, or function type ([dcl.contract.func]).  The checker
+  // emits the diagnostics as it traverses each postcondition predicate.
   ParamReferenceChecker Checker(S, FD);
-  for (auto *CS : CSD->postconditions()) {
+  for (auto *CS : CSD->postconditions())
     Checker.TraverseContractStmt(CS);
-    // FIXME: Diagnose non-const function param types.
-  }
 }
 
 void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition, bool IsInstantiation) {
@@ -1877,7 +1877,8 @@ void Sema::ActOnContractsOnFinishFunctionDecl(FunctionDecl *D,
     // case, since we can't have a placeholder return type on a declaration that
     // isn't a definition.
 
-    // TODO: I don't think we should be rebuilding for
+    // TODO: Revisit whether the contract specifier needs rebuilding in this
+    // case rather than reusing the pattern's.
     assert(FD->getTemplatedKind() != FunctionDecl::TK_FunctionTemplateSpecialization);
     assert(FD->getTemplatedKind() != FunctionDecl::TK_MemberSpecialization);
 
