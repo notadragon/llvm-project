@@ -60,20 +60,6 @@ constexpr ContractDetectionMode ExceptionRaised =
 
 namespace clang::CodeGen {
 
-enum ContractCheckpoint {
-  EmittingContract,
-  EmittingTryBody,
-  EmittingCatchBody,
-
-  // P3098: dispatch checkpoint for the synthetic catch(...) wrapped around a
-  // postcondition's capture-construction DeclStmt (see
-  // EmitPostconditionCaptureInit / EmitContractStmtAsCaptureCatchBody).
-  // Unlike EmittingTryBody/EmittingCatchBody, there is no try-body dispatch
-  // for this case: the try body is the real capture DeclStmt, emitted
-  // directly rather than re-entering EmitContractStmt.
-  EmittingCaptureCatchBody,
-};
-
 enum ContractEmissionStyle {
   /// Emit the contract violation as an inline basic block immediately following
   /// the predicate. The basic block is not shared by other contracts.
@@ -97,14 +83,12 @@ struct CurrentContractInfo {
 
   const ContractStmt *Contract;
   ContractEmissionStyle Style;
-  ContractCheckpoint Checkpoint = EmittingContract;
   ContractEvaluationSemantic Semantic;
 
   llvm::BasicBlock *Violation = nullptr;
   llvm::BasicBlock *End = nullptr;
 
   llvm::Constant *ViolationInfoGV = nullptr;
-  Address EHPredicateStore = Address::invalid();
 };
 
 // A contract enforce block is a block used to create and call the violation
@@ -195,7 +179,7 @@ struct CGContractData {
 
   // P3098: per-postcondition i1 flag, true once that postcondition's capture
   // construction has been observed to throw (observe semantic only -- see
-  // EmitContractStmtAsCaptureCatchBody). Consulted by EmitPostContracts to
+  // EmitPostconditionCaptureInit's catch body). Consulted by EmitPostContracts to
   // skip that postcondition's predicate. Only populated for postconditions
   // whose capture initializers can actually throw; absence means "never
   // fails" (EmitPostContracts pull for LoadPostconditionCaptureFailed).
@@ -645,136 +629,26 @@ static llvm::Function *getOrCreateQueryTrampoline(
 
 // Emit the contract expression.
 void CodeGenFunction::EmitContractStmt(const ContractStmt &S) {
-  assert(!CurContract() || CurContract()->Contract == &S);
-
-  if (!CurContract()) {
-    // FIXME: Remove this. It's a hack to prevent crashing.
-
-    EmitContractStmtAsFullStmt(S);
-
-  } else if (CurContract()->Checkpoint == EmittingTryBody) {
-    return EmitContractStmtAsTryBody(S);
-  } else if (CurContract()->Checkpoint == EmittingCatchBody) {
-    return EmitContractStmtAsCatchBody(S);
-  } else if (CurContract()->Checkpoint == EmittingCaptureCatchBody) {
-    return EmitContractStmtAsCaptureCatchBody(S);
-  } else {
-    llvm_unreachable("Invalid checkpoint");
-  }
+  assert(CurContract() == nullptr &&
+         "contract emission is not re-entrant; there is no dispatch checkpoint");
+  EmitContractStmtAsFullStmt(S);
 }
 
-// FIXME: Do I really need this?
-void CodeGenFunction::EmitContractStmtAsTryBody(const ContractStmt &S) {
-  assert(CurContract() && CurContract()->Contract == &S &&
-         CurContract()->Checkpoint == EmittingTryBody);
-  llvm::Value *CondVal = EmitScalarExpr(S.getCond());
-  if (CondVal->getType() != Builder.getInt1Ty())
-    CondVal = Builder.CreateIsNotNull(CondVal, "contract.tobool");
-  Builder.CreateStore(CondVal, CurContract()->EHPredicateStore);
-
-}
-
-void CodeGenFunction::EmitContractStmtAsCatchBody(const ContractStmt &S) {
-  assert(CurContract() && CurContract()->Contract == &S &&
-         CurContract()->Checkpoint == EmittingCatchBody);
-  auto CurInfo = CurContract();
-
-  if (CurInfo->Semantic == Enforce || CurInfo->Semantic == Observe ||
-      CurInfo->Semantic == NoexceptEnforce ||
-      CurInfo->Semantic == NoexceptObserve) {
-    // We have to emit the contract violation block inside the catch block so
-    // that the handler can see the exception via std::current_exception
-    bool IsPostCapture = (S.getContractKind() == ContractKind::Post &&
-                          S.hasCaptures());
-    EmitCxaContractViolationCall(
-        S.getContractKind(), CurInfo->Semantic, ExceptionRaised,
-        CurInfo->ViolationInfoGV,
-        /*IsNoExcept=*/CurInfo->Semantic == NoexceptEnforce ||
-            CurInfo->Semantic == NoexceptObserve,
-        IsPostCapture);
-  } else if (CurInfo->Semantic == QuickEnforce) {
-    CreateTrap(*this);
-  } else {
-    llvm_unreachable("Unhandled semantic");
-  }
-}
-
-// P3098: catch body for a postcondition capture's construction try/catch
-// (see EmitPostconditionCaptureInit). Unlike EmitContractStmtAsCatchBody,
-// there's no predicate to re-check afterward -- construction either
-// succeeded (no catch) or failed, and 'observe' must skip the predicate
-// entirely rather than fall through to evaluate it.
-void CodeGenFunction::EmitContractStmtAsCaptureCatchBody(const ContractStmt &S) {
-  auto *CurInfo = CurContract();
-  assert(CurInfo && CurInfo->Contract == &S &&
-         CurInfo->Checkpoint == EmittingCaptureCatchBody);
-
-  if (CurInfo->Semantic == Enforce || CurInfo->Semantic == Observe ||
-      CurInfo->Semantic == NoexceptEnforce ||
-      CurInfo->Semantic == NoexceptObserve) {
-    EmitCxaContractViolationCall(ContractKind::Post, CurInfo->Semantic,
-                                 ExceptionRaised, CurInfo->ViolationInfoGV,
-                                 /*IsNoExcept=*/CurInfo->Semantic == NoexceptEnforce ||
-                                     CurInfo->Semantic == NoexceptObserve,
-                                 /*IsPostCapture=*/true);
-    if (CurInfo->Semantic == Observe ||
-        CurInfo->Semantic == NoexceptObserve) {
-      auto It = ContractData->CaptureInitFailed.find(&S);
-      assert(It != ContractData->CaptureInitFailed.end());
-      Builder.CreateStore(Builder.getTrue(), It->second);
-    }
-  } else if (CurInfo->Semantic == QuickEnforce) {
-    CreateTrap(*this);
-  } else {
-    llvm_unreachable("Unhandled semantic");
-  }
-}
-
-static CXXTryStmt *BuildTryCatch(const ContractStmt &S, CodeGenFunction &CGF) {
+// Build a synthetic try/catch whose sole handler is a catch-all with an empty
+// body.  The empty bodies are placeholders: this node is only used to drive the
+// EH-scope machinery (EnterCXXTryStmt / ExitCXXTryStmtWithCatchIR).  The guarded
+// code and the handler body are both emitted as direct IR by the caller, so
+// neither the try body nor the catch body of this node is ever emitted via
+// EmitStmt -- in particular, the contract statement is never re-emitted.
+static CXXTryStmt *BuildContractCatchAllTry(SourceLocation Loc,
+                                            CodeGenFunction &CGF) {
   auto &Ctx = CGF.getContext();
-  auto Loc = S.getCond()->getExprLoc();
-
-  llvm::SmallVector<Stmt *> BodyStmts;
-  BodyStmts.push_back(const_cast<ContractStmt *>(&S));
-
-  // FIXME: This is a hack.
-  //   In order to emit the contract assertion violation in the catch block
-  //   we add the current statement to a dummy handler, and then detect
-  //   when we're inside that dummy handler to only emit the violation
-  //
-  // This should have some other representation, but I don't want to eagerly
-  // build all these nodes in the AST.
-
-  auto *CatchStmt =
-      CompoundStmt::Create(Ctx, BodyStmts, FPOptionsOverride(), Loc, Loc);
-  auto *Catch =
-      new (Ctx) CXXCatchStmt(Loc, /*exDecl=*/nullptr, /*block=*/CatchStmt);
-  auto *TryBody =
-      CompoundStmt::Create(Ctx, BodyStmts, FPOptionsOverride(), Loc, Loc);
-  return CXXTryStmt::Create(Ctx, Loc, TryBody, Catch);
-}
-
-// P3098: like BuildTryCatch, but the try body is the real capture DeclStmt
-// (emitted directly, no dispatch hack needed -- it's an ordinary statement)
-// while the catch body reuses the same sentinel-dispatch trick, keyed off
-// EmittingCaptureCatchBody instead of EmittingCatchBody.
-static CXXTryStmt *BuildCaptureTryCatch(const ContractStmt &S,
-                                        CodeGenFunction &CGF) {
-  auto &Ctx = CGF.getContext();
-  auto Loc = S.getCapturesDeclStmt()->getBeginLoc();
-
-  llvm::SmallVector<Stmt *> CatchStmts;
-  CatchStmts.push_back(const_cast<ContractStmt *>(&S));
   auto *CatchBody =
-      CompoundStmt::Create(Ctx, CatchStmts, FPOptionsOverride(), Loc, Loc);
+      CompoundStmt::Create(Ctx, {}, FPOptionsOverride(), Loc, Loc);
   auto *Catch =
       new (Ctx) CXXCatchStmt(Loc, /*exDecl=*/nullptr, /*block=*/CatchBody);
-
-  llvm::SmallVector<Stmt *> TryStmts;
-  TryStmts.push_back(const_cast<DeclStmt *>(S.getCapturesDeclStmt()));
   auto *TryBody =
-      CompoundStmt::Create(Ctx, TryStmts, FPOptionsOverride(), Loc, Loc);
-
+      CompoundStmt::Create(Ctx, {}, FPOptionsOverride(), Loc, Loc);
   return CXXTryStmt::Create(Ctx, Loc, TryBody, Catch);
 }
 
@@ -1523,24 +1397,39 @@ void CodeGenFunction::EmitPostconditionCaptureInit(
   ContractData->CaptureInitFailed.insert({CS, FailedFlag});
 
   llvm::Constant *ViolationInfo = BuildContractViolationInfo(*this, *CS);
-  CurrentContractInfo CCInfo{};
-  CCInfo.Contract = CS;
-  CCInfo.Style = Inline;
-  CCInfo.Checkpoint = EmittingCaptureCatchBody;
-  CCInfo.Semantic = Sem;
-  CCInfo.ViolationInfoGV = ViolationInfo;
-  CurrentContractRAII CurContractRAII(*this, CCInfo);
-  auto *Try = BuildCaptureTryCatch(*CS, *this);
+  auto *Try = BuildContractCatchAllTry(CS->getCapturesDeclStmt()->getBeginLoc(),
+                                       *this);
+
+  // Catch body for a capture's construction try/catch: report the exception as
+  // a post_capture violation.  Unlike the predicate-throw path there is no
+  // predicate to re-check afterward -- construction either succeeded (no catch)
+  // or failed, and 'observe' must skip the predicate entirely (recorded via
+  // FailedFlag) rather than fall through to evaluate it.
+  auto EmitCaptureCatchBody = [&] {
+    if (Sem == Enforce || Sem == Observe || Sem == NoexceptEnforce ||
+        Sem == NoexceptObserve) {
+      EmitCxaContractViolationCall(
+          ContractKind::Post, Sem, ExceptionRaised, ViolationInfo,
+          /*IsNoExcept=*/Sem == NoexceptEnforce || Sem == NoexceptObserve,
+          /*IsPostCapture=*/true);
+      if (Sem == Observe || Sem == NoexceptObserve)
+        Builder.CreateStore(Builder.getTrue(), FailedFlag);
+    } else if (Sem == QuickEnforce) {
+      CreateTrap(*this);
+    } else {
+      llvm_unreachable("Unhandled semantic");
+    }
+  };
 
   // Construct each capture in its own try/catch region, split into the
   // Alloca/Init/Cleanups steps ExitCXXTryStmt normally performs together via
-  // EmitAutoVarDecl. This matters because ExitCXXTryStmt requires the catch
+  // EmitAutoVarDecl. This matters because the catch teardown requires the catch
   // scope it pushed to still be the top of the EHScopeStack -- but a
   // capture's destructor cleanup must persist past this function (Task 2's
   // ordering fix and the body-throws path both depend on it living until
   // the real function exit), so it cannot be pushed until after the catch
-  // scope is torn down. Deferring EmitAutoVarCleanups until after
-  // ExitCXXTryStmt satisfies both constraints; a still-throwing later
+  // scope is torn down. Deferring EmitAutoVarCleanups until after the catch
+  // teardown satisfies both constraints; a still-throwing later
   // capture in the same DeclStmt correctly unwinds this one via that
   // (by-then-active) cleanup, exactly like ordinary sequential construction.
   llvm::BasicBlock *DoneBB = nullptr;
@@ -1551,7 +1440,7 @@ void CodeGenFunction::EmitPostconditionCaptureInit(
     EnsureInsertPoint();
     EnterCXXTryStmt(*Try);
     EmitAutoVarInit(Emission);
-    ExitCXXTryStmt(*Try);
+    ExitCXXTryStmtWithCatchIR(*Try, EmitCaptureCatchBody);
 
     llvm::Value *Failed = Builder.CreateLoad(FailedFlag);
     llvm::BasicBlock *ContBB = createBasicBlock("contract.capture.cont");
@@ -1641,11 +1530,6 @@ getOrCreateDynamicSelector(CodeGenModule &CGM, StringRef Name, int Linkage,
 
 void CodeGenFunction::EmitContractStmtAsFullStmt(const ContractStmt &S) {
   assert(CurContract() == nullptr);
-  // FIXME: We recursively call EmitContractStmt to build the catch
-  // block that reports contract violations that have thrown. In order to do
-  // this without building additional AST nodes, use this Stmt as the body
-  // of the catch block, detecting when we're inside the catch block to only
-  // emit the violation.
 
   ContractEvaluationSemantic Semantic = S.ensureRuntimeSemantic(
       getContext(), CurFuncDecl ? CurFuncDecl->getDeclContext() : nullptr);
@@ -1818,7 +1702,6 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
   CurrentContractInfo CCInfo{};
   CCInfo.Contract = &S;
   CCInfo.Style = Style;
-  CCInfo.Checkpoint = EmittingContract;
   CCInfo.Semantic = Semantic;
   CCInfo.Violation = Violation;
   CCInfo.End = End;
@@ -1830,25 +1713,46 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
 
   llvm::Value *BranchOn;
   if (getLangOpts().Exceptions && getLangOpts().ContractExceptions && StmtCanThrow(S.getCond())) {
-
-    CurContract()->EHPredicateStore = CreateTempAlloca(
+    // Base P2900 evaluation_exception: a predicate that itself throws is a
+    // violation with detection_mode ExceptionRaised.  Evaluate the predicate
+    // inside a synthetic catch-all try (emitting both the guarded predicate and
+    // the handler as direct IR), storing the predicate's boolean into a slot
+    // pre-initialized to true so that, if it threw, the post-catch load makes
+    // the assertion appear failed and falls through to the predicate-false path.
+    Address EHPredicateStore = CreateTempAlloca(
         Builder.getInt1Ty(), CharUnits::One(), "contract.pred.value");
-    // Set the initial value to true. If the contract throws, we'll see the true
-    // value after the catch block is done handling the exception.
-    Builder.CreateStore(Builder.getTrue(), CurContract()->EHPredicateStore);
+    Builder.CreateStore(Builder.getTrue(), EHPredicateStore);
 
     assert(Builder.GetInsertBlock());
     EnsureInsertPoint();
 
-    auto *Try = BuildTryCatch(S, *this);
+    auto *Try = BuildContractCatchAllTry(S.getCond()->getExprLoc(), *this);
     EnterCXXTryStmt(*Try);
-    CurContract()->Checkpoint = EmittingTryBody;
-    EmitStmt(Try->getTryBlock());
-    CurContract()->Checkpoint = EmittingCatchBody;
-    ExitCXXTryStmt(*Try);
-    CurContract()->Checkpoint = EmittingContract;
 
-    BranchOn = Builder.CreateLoad(CurContract()->EHPredicateStore);
+    // Try body: evaluate the predicate directly and record its value.
+    llvm::Value *CondVal = EmitScalarExpr(S.getCond());
+    if (CondVal->getType() != Builder.getInt1Ty())
+      CondVal = Builder.CreateIsNotNull(CondVal, "contract.tobool");
+    Builder.CreateStore(CondVal, EHPredicateStore);
+
+    // Catch body: report the ExceptionRaised violation while the exception is
+    // still live (so the handler can observe it via std::current_exception).
+    ExitCXXTryStmtWithCatchIR(*Try, [&] {
+      if (Semantic == Enforce || Semantic == Observe ||
+          Semantic == NoexceptEnforce || Semantic == NoexceptObserve) {
+        EmitCxaContractViolationCall(
+            S.getContractKind(), Semantic, ExceptionRaised, ViolationInfo,
+            /*IsNoExcept=*/Semantic == NoexceptEnforce ||
+                Semantic == NoexceptObserve,
+            IsPostCapture);
+      } else if (Semantic == QuickEnforce) {
+        CreateTrap(*this);
+      } else {
+        llvm_unreachable("Unhandled semantic");
+      }
+    });
+
+    BranchOn = Builder.CreateLoad(EHPredicateStore);
   } else {
     BranchOn = EmitScalarExpr(S.getCond());
     // In C mode, the condition may be an integer rather than i1.

@@ -3750,6 +3750,16 @@ public:
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
   void ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
 
+  /// A variant of ExitCXXTryStmt for a synthetic try whose (single) catch-all
+  /// handler has no AST representation: instead of emitting the handler body
+  /// with EmitStmt, it is produced by \p EmitCatchBody as direct IR.  \p S must
+  /// have exactly one catch-all handler.  The personality-specific dispatch and
+  /// funclet setup are shared with ExitCXXTryStmt so this stays portable across
+  /// EH models.  Used by contract codegen, whose exception-raised catch(...)
+  /// reports a violation via a runtime call that no Stmt lowers to.
+  void ExitCXXTryStmtWithCatchIR(const CXXTryStmt &S,
+                                 llvm::function_ref<void()> EmitCatchBody);
+
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitSEHTryStmt(const SEHTryStmt &S);
   void EmitSEHLeaveStmt(const SEHLeaveStmt &S);
@@ -4669,9 +4679,6 @@ public:
   llvm::Value *LoadPostconditionCaptureFailed(const ContractStmt *CS);
 
 private:
-  void EmitContractStmtAsTryBody(const ContractStmt &);
-  void EmitContractStmtAsCatchBody(const ContractStmt &S);
-  void EmitContractStmtAsCaptureCatchBody(const ContractStmt &S);
   void EmitContractStmtAsFullStmt(const ContractStmt &S);
 
   // Emit the per-semantic check body for a single, already-resolved evaluation

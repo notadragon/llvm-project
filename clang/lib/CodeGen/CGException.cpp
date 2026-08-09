@@ -1351,6 +1351,74 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
   incrementProfileCounter(&S);
 }
 
+void CodeGenFunction::ExitCXXTryStmtWithCatchIR(
+    const CXXTryStmt &S, llvm::function_ref<void()> EmitCatchBody) {
+  assert(S.getNumHandlers() == 1 && !S.getHandler(0)->getExceptionDecl() &&
+         "ExitCXXTryStmtWithCatchIR expects a single catch-all handler");
+  EHCatchScope &CatchScope = cast<EHCatchScope>(*EHStack.begin());
+  assert(CatchScope.getNumHandlers() == 1);
+  llvm::BasicBlock *DispatchBlock = CatchScope.getCachedEHDispatchBlock();
+
+  // If the guarded body could not actually throw, no landing pad targeted the
+  // catch; discard the handler and continue (mirrors ExitCXXTryStmt).
+  if (!CatchScope.hasEHBranches()) {
+    CatchScope.clearHandlerBlocks();
+    EHStack.popCatch();
+    return;
+  }
+
+  // Emit the structure of the EH dispatch for this catch.
+  emitCatchDispatchBlock(*this, CatchScope);
+
+  // Copy the handler off before we pop the EH stack (emitting the handler might
+  // scribble on this memory).
+  EHCatchScope::Handler Handler = CatchScope.getHandler(0);
+  EHStack.popCatch();
+
+  // The fall-through block.
+  llvm::BasicBlock *ContBB = createBasicBlock("try.cont");
+
+  // We just emitted the body of the try; jump to the continue block.
+  if (HaveInsertPoint())
+    Builder.CreateBr(ContBB);
+
+  // Wasm merges all catch clauses into one big catchpad, so save/restore the
+  // funclet pad and point it at that catchpad (mirrors ExitCXXTryStmt).
+  SaveAndRestore RestoreCurrentFuncletPad(CurrentFuncletPad);
+  if (EHPersonality::get(*this).isWasmPersonality()) {
+    auto *CatchSwitch =
+        cast<llvm::CatchSwitchInst>(DispatchBlock->getFirstNonPHIIt());
+    llvm::BasicBlock *WasmCatchStartBlock =
+        CatchSwitch->hasUnwindDest() ? CatchSwitch->getSuccessor(1)
+                                     : CatchSwitch->getSuccessor(0);
+    auto *CPI =
+        cast<llvm::CatchPadInst>(WasmCatchStartBlock->getFirstNonPHIIt());
+    CurrentFuncletPad = CPI;
+  }
+
+  EmitBlockAfterUses(Handler.Block);
+
+  // Enter a cleanup scope, including the catch variable and the end-catch.
+  RunCleanupsScope CatchCleanupScope(*this);
+
+  // Set up the catch (begin-catch, end-catch cleanup, funclet pad), then emit
+  // the handler body as direct IR instead of via EmitStmt.
+  SaveAndRestore RestoreCurrentFuncletPadForHandler(CurrentFuncletPad);
+  CGM.getCXXABI().emitBeginCatch(*this, S.getHandler(0));
+  incrementProfileCounter(S.getHandler(0));
+  EmitCatchBody();
+
+  // Fall out through the catch cleanups.
+  CatchCleanupScope.ForceCleanup();
+
+  // Branch out of the try.
+  if (HaveInsertPoint())
+    Builder.CreateBr(ContBB);
+
+  EmitBlock(ContBB);
+  incrementProfileCounter(&S);
+}
+
 namespace {
   struct CallEndCatchForFinally final : EHScopeStack::Cleanup {
     llvm::Value *ForEHVar;
