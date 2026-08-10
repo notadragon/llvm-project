@@ -1070,6 +1070,17 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
                                      DeclStmt *Captures,
                                      Expr *RequiresClause) {
 
+  // A contract condition is a full-expression and, like any other, must not
+  // contain an unexpanded parameter pack.  Diagnose this here on the primary
+  // parse; this path is not taken during template instantiation (which goes
+  // through TreeTransform::RebuildContractStmt -> BuildContractStmt), where the
+  // pack has already been expanded.  Without this an unexpanded pack such as
+  // `pre(args[0])` slips through to instantiation and trips an assertion in
+  // DiagnoseUnexpandedParameterPack.  Pack expansions and pack indexing leave
+  // no unexpanded pack behind, so they are unaffected.
+  if (Cond && DiagnoseUnexpandedParameterPack(Cond))
+    return StmtError();
+
   DeclStmt *RNDStmt = nullptr;
   if (RND) {
     StmtResult NewDeclStmt = ActOnDeclStmt(
@@ -1617,6 +1628,22 @@ public:
                                          CurrentContract == nullptr);
     if (CS->getCond())
       TraverseStmt(CS->getCond());
+    return true;
+  }
+
+  bool TraversePackIndexingExpr(PackIndexingExpr *E) {
+    if (!super::TraversePackIndexingExpr(E))
+      return false;
+    // A pack-indexing expression (args...[i]) odr-uses only the *selected*
+    // element.  That element lives among the trailing substituted expressions,
+    // not among children() -- which the base visitor traverses and which hold
+    // only the dependent pack pattern and the index.  Traverse the selected
+    // element so its parameter reference reaches VisitDeclRefExpr and is
+    // checked.  In an uninstantiated template the index is not yet known (there
+    // is no selected element); the dependent parameter is diagnosed once the
+    // pack-indexing expression is substituted at instantiation.
+    if (E->isFullySubstituted())
+      return TraverseStmt(E->getSelectedExpr());
     return true;
   }
 
