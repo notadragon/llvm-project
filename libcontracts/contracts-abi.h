@@ -141,6 +141,19 @@ void __contract_dispatch_core (const __cxa_contract_data_block *chain,
 void __dispatch_with_override_core (void *data, uint8_t kind,
                                    uint8_t semantic, uint8_t mode);
 
+/* Weak reference to the C++ runtime's noexcept terminate-on-throw wrapper
+   around __contract_dispatch_core (defined in libstdc++/libc++'s
+   contracts_abi.{cc,cpp}).  A pure-C entry point that dispatches a violation
+   from inside a noexcept context -- notably __cxa_contract_violation_sanitizer
+   below, called on a sanitizer runtime's noexcept report path -- must call this
+   rather than the raw core so that a handler which exits via an exception under
+   the noexcept evaluation semantics terminates the program (std::terminate)
+   instead of escaping into frames that cannot unwind it.  Null when the C++
+   runtime is not linked (freestanding); callers fall back to the raw core.  */
+extern void __contract_dispatch_core_noexcept (
+    const __cxa_contract_data_block *chain, uint8_t semantic)
+  __attribute__ ((weak));
+
 /* Universal (non-noexcept) entry point.  */
 void __cxa_contract_violation (void *data);
 

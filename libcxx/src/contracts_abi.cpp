@@ -81,6 +81,24 @@ __cxa_contract_violation_noexcept (void* __data) noexcept {
 #endif
 }
 
+// Noexcept terminate-on-throw wrapper around __contract_dispatch_core, invoked
+// with an explicit core semantic.  The pure-C libcontracts declares this as a
+// weak reference (contracts-abi.h) and its sanitizer-report routing entry point
+// calls it in place of the raw core: that entry runs on the sanitizer runtime's
+// noexcept report path under the D4298 noexcept evaluation semantics, so a
+// handler that exits via an exception must terminate the program here rather
+// than escape into frames that cannot unwind it.
+extern "C" _LIBCPP_EXPORTED_FROM_ABI void
+__contract_dispatch_core_noexcept (const __cxa_contract_data_block* __chain,
+                                   __UINT8_TYPE__ __semantic) noexcept {
+#if _LIBCPP_HAS_EXCEPTIONS
+  try { __contract_dispatch_core(__chain, __semantic); }
+  catch (...) { std::terminate(); }
+#else
+  __contract_dispatch_core(__chain, __semantic);
+#endif
+}
+
 // Specialized noexcept entry points: observe.
 #define CXA_OBSERVE_NX(kind_name, kind_val, mode_name, mode_val)             \
   extern "C" _LIBCPP_EXPORTED_FROM_ABI void                                  \

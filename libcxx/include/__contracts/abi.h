@@ -235,6 +235,14 @@ void __dispatch_with_override_core (void* __data, __UINT8_TYPE__ __kind,
                                     __UINT8_TYPE__ __semantic,
                                     __UINT8_TYPE__ __mode);
 
+// Noexcept terminate-on-throw wrapper around __contract_dispatch_core, invoked
+// with an explicit core semantic.  Provided by libc++ (contracts_abi.cpp) and
+// referenced weakly by the pure-C libcontracts sanitizer-report routing entry
+// point so a throwing handler under the noexcept semantics terminates.
+void __contract_dispatch_core_noexcept (
+    const __cxxabiv1::__cxa_contract_data_block* __chain,
+    __UINT8_TYPE__ __semantic) noexcept;
+
 void __cxa_contract_violation (void* __data);
 void __cxa_contract_violation_noexcept (void* __data) noexcept;
 

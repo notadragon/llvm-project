@@ -202,9 +202,19 @@ __cxa_contract_violation_sanitizer (const char *comment, const char *file,
     }
 
   /* Dispatch with a non-terminating core semantic (OBSERVE) so libcontracts
-     never aborts; the block still carries the true semantic for the handler.  */
-  __contract_dispatch_core ((const __cxa_contract_data_block *) &data,
-			    (uint8_t) CXA_ES_OBSERVE);
+     never aborts; the block still carries the true semantic for the handler.
+     This runs on the sanitizer runtime's noexcept report path, and routing here
+     only ever happens under the noexcept (D4298) evaluation semantics, so a
+     handler that exits via an exception must terminate the program rather than
+     escape into the sanitizer's non-unwindable C frames.  Route through the C++
+     runtime's noexcept terminate-on-throw wrapper when it is linked; fall back
+     to the raw core only in a freestanding build without the C++ runtime.  */
+  if (__contract_dispatch_core_noexcept)
+    __contract_dispatch_core_noexcept ((const __cxa_contract_data_block *) &data,
+				       (uint8_t) CXA_ES_OBSERVE);
+  else
+    __contract_dispatch_core ((const __cxa_contract_data_block *) &data,
+			      (uint8_t) CXA_ES_OBSERVE);
 }
 
 /* --------------------------------------------------------------------- */
