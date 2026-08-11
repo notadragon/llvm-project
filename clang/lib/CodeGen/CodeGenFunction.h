@@ -4735,6 +4735,15 @@ public:
   /// proceed).
   bool EmitImplicitNullDerefGuard(llvm::Value *Ptr, SourceLocation Loc);
 
+  /// P3100: guard a possibly-misaligned data access (Ptr, required alignment
+  /// Align) with an implicit ub:basic.align.object.alignment contract assertion.
+  /// Like the null guard, a misaligned access is an lvalue with no defined
+  /// substitute: assume/ignore emit nothing (caller performs the raw access);
+  /// otherwise emits `if ((Ptr & (Align-1)) != 0) <reaction>` and continues at
+  /// the aligned (and, for observe, post-handler) path, returning true.
+  bool EmitImplicitMisalignedGuard(llvm::Value *Ptr, llvm::Align Align,
+                                   SourceLocation Loc);
+
   /// P3100: emit the reaction for control flowing off the end of a coroutine
   /// with no usable return_void ({stmt.return.coroutine.flow.off}) at Loc.  No
   /// return value is substituted (the return object already exists); the

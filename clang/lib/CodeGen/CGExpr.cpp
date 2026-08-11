@@ -864,7 +864,25 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
     llvm::MaybeAlign AlignVal;
     llvm::Value *PtrAsInt = nullptr;
 
-    if (SanOpts.has(SanitizerKind::Alignment) &&
+    // P3100: a data access (load/store) through a possibly-misaligned pointer
+    // carries an implicit ub:basic.align.object.alignment contract assertion.
+    // Emit its reaction here (independent of the null check above); it takes
+    // precedence over the sanitizer alignment check, which is then skipped.
+    bool P3100AlignHandled = false;
+    if (getLangOpts().ContractsP3100 &&
+        !SkippedChecks.has(SanitizerKind::Alignment) &&
+        (TCK == TCK_Load || TCK == TCK_Store)) {
+      llvm::MaybeAlign CAlign = Alignment.getAsMaybeAlign();
+      if (!Ty->isIncompleteType() && !CAlign)
+        CAlign = CGM.getNaturalTypeAlignment(Ty, nullptr, nullptr,
+                                             /*ForPointeeType=*/true)
+                     .getAsMaybeAlign();
+      if (CAlign && *CAlign > llvm::Align(1) &&
+          (!PtrToAlloca || PtrToAlloca->getAlign() < *CAlign))
+        P3100AlignHandled = EmitImplicitMisalignedGuard(Ptr, *CAlign, Loc);
+    }
+
+    if (SanOpts.has(SanitizerKind::Alignment) && !P3100AlignHandled &&
         !SkippedChecks.has(SanitizerKind::Alignment)) {
       AlignVal = Alignment.getAsMaybeAlign();
       if (!Ty->isIncompleteType() && !AlignVal)

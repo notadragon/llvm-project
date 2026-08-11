@@ -1043,6 +1043,67 @@ bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
   return true;
 }
 
+bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
+                                                  llvm::Align Align,
+                                                  SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for ub:basic.align.object.alignment at this site.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  std::string GroupStr = "ub:basic.align.object.alignment";
+  ContractQuery Q;
+  Q.Kind = ContractKind::Implicit;
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = false;
+  Q.Groups = ArrayRef<std::string>(GroupStr);
+  Q.FnContext = FD;
+  Q.Loc = Loc;
+  Q.SM = &getContext().getSourceManager();
+  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
+  if (getLangOpts().ContractsP4298)
+    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
+            (1u << unsigned(CES::NoexceptObserve));
+  Q.AllowedMask = Mask;
+
+  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+
+  // assume / ignore: a misaligned access is an lvalue with no defined
+  // substitute, so leave the raw access untouched (byte-identical to no P3100).
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return false;
+
+  // Emit `if ((Ptr & (Align - 1)) != 0) <reaction>` before the real access.
+  llvm::Value *PtrInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+  llvm::Value *Masked = Builder.CreateAnd(
+      PtrInt, llvm::ConstantInt::get(IntPtrTy, Align.value() - 1));
+  llvm::Value *IsMisaligned = Builder.CreateIsNotNull(Masked);
+  llvm::BasicBlock *ViolBB = createBasicBlock("misalign.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("misalign.ok");
+  Builder.CreateCondBr(IsMisaligned, ViolBB, ContBB);
+
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(
+                   Loc, "misaligned pointer access", std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce terminates (noreturn entry); observe returns and falls through to
+    // the real (still-misaligned) access -- report then proceed.
+    if (!IsEnforce)
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  return true;
+}
+
 void CodeGenFunction::EmitCXXAssumeCheck(const Expr *Cond,
                                          ContractEvaluationSemantic Sem,
                                          SourceLocation Loc,
