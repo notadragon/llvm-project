@@ -235,6 +235,11 @@ void __c_contract_check_enforce
 void __c_contract_check_observe
   (const char *comment, const char *file, const char *func, unsigned line,
    unsigned char kind);
+/* Build a block and dispatch through the noexcept terminate-on-throw barrier
+   with an explicit core SEMANTIC (D4298 / P3100).  */
+void __c_contract_check_noexcept
+  (const char *comment, const char *file, const char *func, unsigned line,
+   unsigned char kind, unsigned char semantic);
 
 /* Handler resolution (see contracts ABI specification, section 8.4).
    Both are weak *references*: libcontracts never defines them.

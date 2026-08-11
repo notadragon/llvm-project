@@ -78,22 +78,30 @@ static const struct c_report_desc_t c_report_desc = {
 };
 
 static void
+c_fill_block (struct c_p3290_data_block_t *data, const char *comment,
+	      const char *file, const char *func, unsigned line,
+	      uint8_t kind, uint8_t semantic, uint8_t mode)
+{
+  data->descriptor = (const __cxa_descriptor_table_t *) &c_p3290_desc;
+  data->next = NULL;
+  data->location.file_name = file ? file : "";
+  data->location.function_name = func ? func : "";
+  data->location.line = line;
+  data->location.column = 0;
+  data->comment = comment ? comment : "";
+  data->kind = kind;
+  data->semantic = semantic;
+  data->mode = mode;
+}
+
+static void
 c_build_and_dispatch (const char *comment, const char *file, const char *func,
 		      unsigned line, uint8_t kind, uint8_t semantic,
 		      uint8_t mode)
 {
   struct c_p3290_data_block_t data;
 
-  data.descriptor = (const __cxa_descriptor_table_t *) &c_p3290_desc;
-  data.next = NULL;
-  data.location.file_name = file ? file : "";
-  data.location.function_name = func ? func : "";
-  data.location.line = line;
-  data.location.column = 0;
-  data.comment = comment ? comment : "";
-  data.kind = kind;
-  data.semantic = semantic;
-  data.mode = mode;
+  c_fill_block (&data, comment, file, func, line, kind, semantic, mode);
   __cxa_contract_violation (&data);
 }
 
@@ -240,4 +248,30 @@ __c_contract_check_observe (const char *comment, const char *file,
 {
   c_build_and_dispatch (comment, file, func, line, (uint8_t) kind,
 			CXA_ES_OBSERVE, CXA_DM_PREDICATE_FALSE);
+}
+
+/* Build a data block and dispatch through the noexcept terminate-on-throw
+   barrier with an explicit core SEMANTIC (D4298 / P3100): a handler that exits
+   via an exception terminates the program at the barrier rather than escaping
+   into a noexcept caller.  __contract_dispatch_core_noexcept is a weak
+   reference provided by the C++ runtime (libc++), so this must only be called
+   from contexts where that runtime is present.  */
+void
+__c_contract_check_noexcept (const char *comment, const char *file,
+			     const char *func, unsigned line,
+			     unsigned char kind, unsigned char semantic)
+{
+  struct c_p3290_data_block_t data;
+
+  c_fill_block (&data, comment, file, func, line, (uint8_t) kind,
+		(uint8_t) semantic, CXA_DM_PREDICATE_FALSE);
+  const __cxa_contract_data_block *chain
+    = (const __cxa_contract_data_block *) &data;
+  /* Route through the C++ runtime's terminate-on-throw wrapper when it is
+     linked (as in the sanitizer-report path above); fall back to the raw core
+     in a freestanding build without the C++ runtime.  */
+  if (__contract_dispatch_core_noexcept)
+    __contract_dispatch_core_noexcept (chain, (uint8_t) semantic);
+  else
+    __contract_dispatch_core (chain, (uint8_t) semantic);
 }

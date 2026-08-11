@@ -699,6 +699,34 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
                &S, dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl)));
 }
 
+// P3100: resolve the evaluation semantic of an implicit contract assertion for
+// the core-language UB named by GROUP, as configured for FNCONTEXT at LOC.  All
+// implicit checks share this query: kind Implicit, callee-side, and an allowed
+// set of the four C++26 semantics + "assume" ALWAYS (implicit-assume introduces
+// no new UB, so it is not gated on -fcontracts-allow-assume) + the P4298
+// noexcept variants when -fcontracts-p4298 is in effect.
+static ContractEvaluationSemantic
+resolveImplicitContractSemantic(CodeGenModule &CGM, StringRef Group,
+                                const DeclContext *FnContext,
+                                SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+  std::string GroupStr(Group);
+  ContractQuery Q;
+  Q.Kind = ContractKind::Implicit;
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = false;
+  Q.Groups = ArrayRef<std::string>(GroupStr);
+  Q.FnContext = FnContext;
+  Q.Loc = Loc;
+  Q.SM = &CGM.getContext().getSourceManager();
+  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
+  if (CGM.getLangOpts().ContractsP4298)
+    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
+            (1u << unsigned(CES::NoexceptObserve));
+  Q.AllowedMask = Mask;
+  return CGM.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+}
+
 // P3100: at the point a value-returning function can fall off its end
 // ({stmt.return.flow.off}), resolve the implicit contract assertion's
 // evaluation semantic and emit the corresponding reaction.  Returns true when a
@@ -709,25 +737,8 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
 bool CodeGenFunction::EmitImplicitFlowOffReaction(const FunctionDecl *FD) {
   using CES = ContractEvaluationSemantic;
 
-  std::string GroupStr = "ub:stmt.return.flow.off";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = FD->getLocation();
-  Q.SM = &getContext().getSourceManager();
-  // Allowed set: the four C++26 semantics + "assume" ALWAYS (implicit-assume
-  // introduces no new UB, so it is not gated on -fcontracts-allow-assume) + the
-  // P4298 noexcept variants when -fcontracts-p4298 is in effect.
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:stmt.return.flow.off", FD, FD->getLocation());
 
   if (Sem == CES::Assume)
     return false;
@@ -798,48 +809,40 @@ CodeGenModule::getPureVirtualContractTerminusName(const CXXMethodDecl *MD) {
     return StringRef();
 
   const CXXRecordDecl *RD = MD->getParent();
-  std::string GroupStr = "ub:class.abstract.pure.virtual";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = RD;
-  Q.Loc = RD->getLocation();
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      *this, "ub:class.abstract.pure.virtual", RD, RD->getLocation());
 
   // assume/ignore: keep the legacy terminus (no defined value to substitute).
   if (Sem == CES::Assume || Sem == CES::Ignore)
     return StringRef();
 
-  // A throwing handler must not escape a noexcept pure virtual, so pick the
-  // terminate-on-throw (noexcept) terminus for those.
+  // A throwing handler must not escape a noexcept pure virtual, so promote a
+  // throwing enforce/observe to its terminate-on-throw (noexcept) terminus.
   bool Nothrow = false;
   if (const auto *FPT = MD->getType()->getAs<FunctionProtoType>())
     Nothrow = FPT->isNothrow();
+  if (Nothrow) {
+    if (Sem == CES::Enforce)
+      Sem = CES::NoexceptEnforce;
+    else if (Sem == CES::Observe)
+      Sem = CES::NoexceptObserve;
+  }
 
   switch (Sem) {
   case CES::QuickEnforce:
     return "__cxa_pure_virtual_quick";
   case CES::Enforce:
-    return Nothrow ? "__cxa_pure_virtual_noexcept_enforce"
-                   : "__cxa_pure_virtual_enforce";
+    return "__cxa_pure_virtual_enforce";
   case CES::Observe:
-    return Nothrow ? "__cxa_pure_virtual_noexcept_observe"
-                   : "__cxa_pure_virtual_observe";
+    return "__cxa_pure_virtual_observe";
   case CES::NoexceptEnforce:
     return "__cxa_pure_virtual_noexcept_enforce";
   case CES::NoexceptObserve:
     return "__cxa_pure_virtual_noexcept_observe";
   default:
-    return StringRef();
+    // assume/ignore were handled above; every other semantic is one of the five
+    // termini.
+    llvm_unreachable("unexpected contract semantic for pure-virtual terminus");
   }
 }
 
@@ -855,22 +858,8 @@ void CodeGenFunction::EmitImplicitCoroutineFlowOffReaction(SourceLocation Loc) {
   using CES = ContractEvaluationSemantic;
 
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = "ub:stmt.return.coroutine.flow.off";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:stmt.return.coroutine.flow.off", FD, Loc);
 
   // assume / ignore: no check; fall through to the final suspend as today.
   if (Sem == CES::Assume || Sem == CES::Ignore)
@@ -903,22 +892,8 @@ llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
   // ub:expr.mul.div.by.zero, ub:expr.shift.neg.and.width).  See
   // EmitImplicitFlowOffReaction for the allowed-set rationale.
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = GroupName.str();
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, GroupName, FD, Loc);
 
   // assume: today's behaviour -- emit the operation unguarded (UB preserved).
   if (Sem == CES::Assume)
@@ -979,6 +954,38 @@ llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
   return Phi;
 }
 
+// Shared reaction tail for an implicit guard that has already branched to ViolBB
+// on its violating condition and continues at ContBB (null-dereference,
+// misaligned access).  See the declaration in CodeGenFunction.h.
+void CodeGenFunction::emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
+                                                llvm::BasicBlock *ViolBB,
+                                                llvm::BasicBlock *ContBB,
+                                                SourceLocation Loc,
+                                                StringRef Msg,
+                                                const FunctionDecl *FD) {
+  using CES = ContractEvaluationSemantic;
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    // Trap before the guarded access; CreateTrap terminates the block.
+    CreateTrap(*this);
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(Loc, Msg, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce: the entry point is noreturn (block already terminated).  observe:
+    // the handler returned -- branch to ContBB to continue.
+    if (!IsEnforce)
+      Builder.CreateBr(ContBB);
+  }
+  // Continue at the post-guard path; the caller performs the real access here.
+  EmitBlock(ContBB);
+}
+
 bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
                                                  SourceLocation Loc) {
   using CES = ContractEvaluationSemantic;
@@ -986,22 +993,8 @@ bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
   // Resolve the semantic for ub:expr.unary.dereference.nullptr at this site.
   // See EmitImplicitFlowOffReaction for the allowed-set rationale.
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = "ub:expr.unary.dereference.nullptr";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:expr.unary.dereference.nullptr", FD, Loc);
 
   // assume / ignore: `*p` is an lvalue with no defined substitute, so leave the
   // raw dereference untouched (byte-identical to no P3100).
@@ -1015,31 +1008,9 @@ bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
   llvm::Value *IsNull = Builder.CreateIsNull(Ptr);
   Builder.CreateCondBr(IsNull, ViolBB, ContBB);
 
-  EmitBlock(ViolBB);
-  if (Sem == CES::QuickEnforce) {
-    // Trap before the dereference; CreateTrap terminates the block.
-    CreateTrap(*this);
-  } else {
-    bool IsNoExcept =
-        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
-    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
-    llvm::Constant *Info = FinishViolationInfo(
-        *this, getContext().BuildViolationObject(
-                   Loc, "null pointer dereference", std::nullopt, FD));
-    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
-                                 ContractDetectionMode::PredicateFailed, Info,
-                                 IsNoExcept, /*IsPostCapture=*/false);
-    // enforce: EmitCxaContractViolationCall already terminated the block (the
-    // entry point is noreturn) and cleared the insertion point.  observe: the
-    // handler returned -- fall through to the real dereference (report then
-    // proceed; for a null pointer this proceeds into the still-UB access).
-    if (!IsEnforce)
-      Builder.CreateBr(ContBB);
-  }
-
-  // Continue at the non-null (and, for observe, post-handler) path; the caller
-  // performs the real access here.
-  EmitBlock(ContBB);
+  // observe reports then proceeds into the real (still-null) dereference.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc, "null pointer dereference",
+                            FD);
   return true;
 }
 
@@ -1050,22 +1021,8 @@ bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
 
   // Resolve the semantic for ub:basic.align.object.alignment at this site.
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = "ub:basic.align.object.alignment";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:basic.align.object.alignment", FD, Loc);
 
   // assume / ignore: a misaligned access is an lvalue with no defined
   // substitute, so leave the raw access untouched (byte-identical to no P3100).
@@ -1081,26 +1038,9 @@ bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
   llvm::BasicBlock *ContBB = createBasicBlock("misalign.ok");
   Builder.CreateCondBr(IsMisaligned, ViolBB, ContBB);
 
-  EmitBlock(ViolBB);
-  if (Sem == CES::QuickEnforce) {
-    CreateTrap(*this);
-  } else {
-    bool IsNoExcept =
-        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
-    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
-    llvm::Constant *Info = FinishViolationInfo(
-        *this, getContext().BuildViolationObject(
-                   Loc, "misaligned pointer access", std::nullopt, FD));
-    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
-                                 ContractDetectionMode::PredicateFailed, Info,
-                                 IsNoExcept, /*IsPostCapture=*/false);
-    // enforce terminates (noreturn entry); observe returns and falls through to
-    // the real (still-misaligned) access -- report then proceed.
-    if (!IsEnforce)
-      Builder.CreateBr(ContBB);
-  }
-
-  EmitBlock(ContBB);
+  // observe reports then proceeds into the real (still-misaligned) access.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc, "misaligned pointer access",
+                            FD);
   return true;
 }
 
@@ -1216,22 +1156,8 @@ llvm::Value *CodeGenFunction::EmitImplicitSignedOverflowOp(
   // codegen is always in a valid EH context, so throwing enforce/observe are
   // supported here (no need to exclude them as the GCC middle-end does).
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = GroupName.str();
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, GroupName, FD, Loc);
 
   auto EmitNSW = [&]() -> llvm::Value * {
     switch (Op) {
@@ -1347,22 +1273,8 @@ CodeGenFunction::EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
   // Resolve the semantic once for this site; assume leaves the raw load (so the
   // caller attaches range metadata, i.e. the optimizer may assume validity).
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = "ub:conv.lval.valid.representation.bool.enum";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:conv.lval.valid.representation.bool.enum", FD, Loc);
   if (Sem == CES::Assume)
     return Loaded;
 
@@ -1429,22 +1341,8 @@ llvm::Value *CodeGenFunction::EmitImplicitArrayBoundsGuard(llvm::Value *Idx,
   // Resolve the semantic once for this subscript; assume leaves the raw index
   // (byte-identical -- no predicate emitted).
   const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
-  std::string GroupStr = "ub:expr.add.out.of.bounds.known";
-  ContractQuery Q;
-  Q.Kind = ContractKind::Implicit;
-  Q.CallerSide = false;
-  Q.InConstantEvaluation = false;
-  Q.Groups = ArrayRef<std::string>(GroupStr);
-  Q.FnContext = FD;
-  Q.Loc = Loc;
-  Q.SM = &getContext().getSourceManager();
-  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
-  if (getLangOpts().ContractsP4298)
-    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
-            (1u << unsigned(CES::NoexceptObserve));
-  Q.AllowedMask = Mask;
-
-  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:expr.add.out.of.bounds.known", FD, Loc);
   if (Sem == CES::Assume)
     return Idx;
 

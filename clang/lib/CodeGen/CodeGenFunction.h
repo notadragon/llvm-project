@@ -4744,6 +4744,17 @@ public:
   bool EmitImplicitMisalignedGuard(llvm::Value *Ptr, llvm::Align Align,
                                    SourceLocation Loc);
 
+  /// P3100: emit the reaction for an implicit guard that has already branched to
+  /// ViolBB on its violating condition and continues at ContBB.  Traps
+  /// (quick_enforce) or reports through the CAK_IMPLICIT entry point (enforce
+  /// terminates the block; observe reports and branches to ContBB).  Msg is the
+  /// violation comment; FD the enclosing function.  Leaves the insertion point
+  /// at ContBB.
+  void emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
+                                 llvm::BasicBlock *ViolBB,
+                                 llvm::BasicBlock *ContBB, SourceLocation Loc,
+                                 StringRef Msg, const FunctionDecl *FD);
+
   /// P3100: emit the reaction for control flowing off the end of a coroutine
   /// with no usable return_void ({stmt.return.coroutine.flow.off}) at Loc.  No
   /// return value is substituted (the return object already exists); the

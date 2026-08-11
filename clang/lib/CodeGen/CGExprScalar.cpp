@@ -389,6 +389,14 @@ public:
                                              QualType SrcType, QualType DstType,
                                              llvm::Type *DstTy);
 
+  /// P3100: emit the predicate "the integer/enumeration value \p Src is outside
+  /// the target enumeration \p DstType's [dcl.enum] value range", for a
+  /// non-fixed-underlying-type enum ({expr.static.cast.enum.outside.range}).
+  /// Returns nullptr when \p DstType is not such an enum or is
+  /// sanitizer-ignored.  Companion to the P3100 guard in EmitScalarConversion.
+  llvm::Value *EmitEnumCastInRangePredicate(Value *Src, QualType SrcType,
+                                            QualType DstType, llvm::Type *SrcTy);
+
   /// Emit a check that a conversion from a floating-point type does not
   /// overflow.
   void EmitFloatConversionCheck(Value *OrigSrc, QualType OrigSrcType,
@@ -1076,6 +1084,31 @@ Value *ScalarExprEmitter::EmitConversionToBool(Value *Src, QualType SrcType) {
   return EmitPointerToBoolConversion(Src, SrcType);
 }
 
+llvm::Value *ScalarExprEmitter::EmitEnumCastInRangePredicate(
+    Value *Src, QualType SrcType, QualType DstType, llvm::Type *SrcTy) {
+  const EnumDecl *ED = DstType->getAsEnumDecl();
+  if (!(CGF.getLangOpts().CPlusPlus && ED && !ED->isFixed()) ||
+      CGF.getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, DstType))
+    return nullptr;
+
+  // Enumeration value range [Min, End); a value outside it is UB.  Compare at a
+  // width covering both the source and the range (no truncation) using the
+  // unsigned-offset trick, so a below-Min value wraps and is caught too.
+  llvm::APInt Min, End;
+  ED->getValueRange(End, Min);
+  unsigned CmpBits = std::max(
+      cast<llvm::IntegerType>(SrcTy)->getBitWidth(), End.getBitWidth());
+  llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
+  llvm::Value *SrcX = Builder.CreateIntCast(
+      Src, CmpTy, SrcType->isSignedIntegerOrEnumerationType());
+  llvm::APInt MinX = Min.sext(CmpBits);
+  llvm::APInt SpanX = (End - 1).sext(CmpBits) - MinX;
+  llvm::Value *Off = Builder.CreateSub(
+      SrcX, llvm::ConstantInt::get(CGF.getLLVMContext(), MinX));
+  return Builder.CreateICmpUGT(
+      Off, llvm::ConstantInt::get(CGF.getLLVMContext(), SpanX), "enum.oor");
+}
+
 llvm::Value *ScalarExprEmitter::EmitFloatCastInRangePredicate(
     Value *Src, QualType OrigSrcType, QualType SrcType, QualType DstType,
     llvm::Type *DstTy) {
@@ -1714,27 +1747,8 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
   // loads, not casts, so there is no sanitizer to defer to at the cast site.
   if (CGF.getLangOpts().ContractsP3100 && DstType->isEnumeralType() &&
       isa<llvm::IntegerType>(SrcTy) && isa<llvm::IntegerType>(DstTy)) {
-    const EnumDecl *ED = DstType->getAsEnumDecl();
-    if (CGF.getLangOpts().CPlusPlus && ED && !ED->isFixed() &&
-        !CGF.getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum,
-                                                   DstType)) {
-      // Enumeration value range [Min, End); a value outside it is UB.  Compare
-      // at a width covering both the source and the range (no truncation) using
-      // the unsigned-offset trick, so a below-Min value wraps and is caught too.
-      llvm::APInt Min, End;
-      ED->getValueRange(End, Min);
-      unsigned CmpBits = std::max(cast<llvm::IntegerType>(SrcTy)->getBitWidth(),
-                                  End.getBitWidth());
-      llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
-      llvm::Value *SrcX = Builder.CreateIntCast(
-          Src, CmpTy, SrcType->isSignedIntegerOrEnumerationType());
-      llvm::APInt MinX = Min.sext(CmpBits);
-      llvm::APInt SpanX = (End - 1).sext(CmpBits) - MinX;
-      llvm::Value *Off =
-          Builder.CreateSub(SrcX, llvm::ConstantInt::get(CGF.getLLVMContext(),
-                                                         MinX));
-      llvm::Value *IsViol = Builder.CreateICmpUGT(
-          Off, llvm::ConstantInt::get(CGF.getLLVMContext(), SpanX), "enum.oor");
+    if (llvm::Value *IsViol =
+            EmitEnumCastInRangePredicate(Src, SrcType, DstType, SrcTy))
       return CGF.EmitImplicitIntOpGuard(
           DstType, IsViol, Loc, "ub:expr.static.cast.enum.outside.range",
           "enumeration value out of range", [&] {
@@ -1743,7 +1757,6 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
                        : EmitScalarCast(Src, SrcType, DstType, SrcTy, DstTy,
                                         Opts);
           });
-    }
   }
 
   // Determine whether an overflow behavior of 'trap' has been specified for
