@@ -1706,6 +1706,46 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
 
   llvm::Type *DstTy = ConvertType(DstType);
 
+  // P3100: guard an integer/enumeration -> enumeration conversion whose value
+  // may be outside the target enumeration's value range, for a non-fixed
+  // underlying enum ({expr.static.cast.enum.outside.range}: [expr.static.cast]/8).
+  // Placed before the SrcTy==DstTy fast path below, since an int->enum cast often
+  // shares the underlying LLVM integer type.  UBSan's enum check instruments
+  // loads, not casts, so there is no sanitizer to defer to at the cast site.
+  if (CGF.getLangOpts().ContractsP3100 && DstType->isEnumeralType() &&
+      isa<llvm::IntegerType>(SrcTy) && isa<llvm::IntegerType>(DstTy)) {
+    const EnumDecl *ED = DstType->getAsEnumDecl();
+    if (CGF.getLangOpts().CPlusPlus && ED && !ED->isFixed() &&
+        !CGF.getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum,
+                                                   DstType)) {
+      // Enumeration value range [Min, End); a value outside it is UB.  Compare
+      // at a width covering both the source and the range (no truncation) using
+      // the unsigned-offset trick, so a below-Min value wraps and is caught too.
+      llvm::APInt Min, End;
+      ED->getValueRange(End, Min);
+      unsigned CmpBits = std::max(cast<llvm::IntegerType>(SrcTy)->getBitWidth(),
+                                  End.getBitWidth());
+      llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
+      llvm::Value *SrcX = Builder.CreateIntCast(
+          Src, CmpTy, SrcType->isSignedIntegerOrEnumerationType());
+      llvm::APInt MinX = Min.sext(CmpBits);
+      llvm::APInt SpanX = (End - 1).sext(CmpBits) - MinX;
+      llvm::Value *Off =
+          Builder.CreateSub(SrcX, llvm::ConstantInt::get(CGF.getLLVMContext(),
+                                                         MinX));
+      llvm::Value *IsViol = Builder.CreateICmpUGT(
+          Off, llvm::ConstantInt::get(CGF.getLLVMContext(), SpanX), "enum.oor");
+      return CGF.EmitImplicitIntOpGuard(
+          DstType, IsViol, Loc, "ub:expr.static.cast.enum.outside.range",
+          "enumeration value out of range", [&] {
+            return SrcTy == DstTy
+                       ? Src
+                       : EmitScalarCast(Src, SrcType, DstType, SrcTy, DstTy,
+                                        Opts);
+          });
+    }
+  }
+
   // Determine whether an overflow behavior of 'trap' has been specified for
   // either the destination or the source types. If so, we can elide sanitizer
   // capability checks as this overflow behavior kind is also capable of
