@@ -184,3 +184,144 @@ CXA_NOEXCEPT_ENFORCE(implicit,     CXA_AK_IMPLICIT,     pf, CXA_DM_PREDICATE_FAL
 CXA_NOEXCEPT_ENFORCE(implicit,     CXA_AK_IMPLICIT,     ex, CXA_DM_EVALUATION_EXCEPTION)
 
 #undef CXA_NOEXCEPT_ENFORCE
+
+// P3100: pure-virtual-call terminus variants (ub:class.abstract.pure.virtual).
+//
+// The vtable slot for a pure virtual is a plain void() function pointer.  When
+// the class's implicit contract configuration (resolved where the vtable is
+// emitted) selects a checking semantic, the compiler points that slot at one of
+// these instead of the legacy __cxa_pure_virtual.  Each builds a generic
+// implicit contract-violation data block ("pure virtual function called", with
+// no per-site source location -- the terminus is shared across every pure
+// virtual configured to this semantic) and dispatches it through the
+// contract-violation handler.
+//
+// A pure-virtual call has no valid continuation (no function to run, no value to
+// return), so every reacting variant ends by terminating; the one escape is a
+// throwing handler on a non-noexcept pure virtual, which unwinds out through the
+// caller.  The compiler selects the _noexcept variant when the pure virtual is
+// declared noexcept, so such a throwing handler terminates here at the noexcept
+// boundary rather than escaping into a caller that assumed the call could not
+// throw.
+
+namespace {
+
+// A minimal data block matching the compiler-emitted layout: the five basic
+// fields an implicit violation needs (no local handler, no lazy report).
+struct __pv_data_block {
+  const __cxa_descriptor_table_t*  descriptor;
+  const __cxa_contract_data_block* next;
+  __cxa_source_location            location;
+  const char*                      comment;
+  __UINT8_TYPE__                   kind;
+  __UINT8_TYPE__                   semantic;
+  __UINT8_TYPE__                   mode;
+};
+
+struct __pv_desc {
+  __UINT8_TYPE__          header;
+  __UINT8_TYPE__          num_entries;
+  __UINT8_TYPE__          fid[5];
+  __UINT8_TYPE__          pad[1];
+  __cxa_descriptor_data_t data[5];
+};
+
+const __pv_desc __pv_descriptor = {
+    (__UINT8_TYPE__)((1u << 4) | CXA_VENDOR_CLANG),
+    5,
+    {CXA_FIELD_SOURCE_LOCATION, CXA_FIELD_COMMENT, CXA_FIELD_ASSERTION_KIND,
+     CXA_FIELD_EVALUATION_SEMANTIC, CXA_FIELD_DETECTION_MODE},
+    {0},
+    {
+        {__builtin_offsetof(__pv_data_block, location)},
+        {__builtin_offsetof(__pv_data_block, comment)},
+        {__builtin_offsetof(__pv_data_block, kind)},
+        {__builtin_offsetof(__pv_data_block, semantic)},
+        {__builtin_offsetof(__pv_data_block, mode)},
+    }};
+
+// Fill DATA with a generic pure-virtual implicit violation carrying SEM.
+void __pv_fill(__pv_data_block& __data, __UINT8_TYPE__ __sem) {
+  __data.descriptor          = (const __cxa_descriptor_table_t*)&__pv_descriptor;
+  __data.next                = nullptr;
+  __data.location.file_name  = "";
+  __data.location.function_name = "";
+  __data.location.line       = 0;
+  __data.location.column     = 0;
+  __data.comment             = "pure virtual function called";
+  __data.kind                = (__UINT8_TYPE__)CXA_AK_IMPLICIT;
+  __data.semantic            = __sem;
+  __data.mode                = (__UINT8_TYPE__)CXA_DM_PREDICATE_FALSE;
+}
+
+} // namespace
+
+// quick_enforce: fast, silent termination -- no handler, no report.
+extern "C" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
+__cxa_pure_virtual_quick (void) noexcept {
+  __builtin_trap();
+}
+
+// enforce (throwing): the handler runs; a throwing handler unwinds out through
+// this frame to the caller, otherwise the enforcing core terminates via abort()
+// after the handler returns.
+extern "C" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
+__cxa_pure_virtual_enforce (void) {
+  __pv_data_block __data;
+  __pv_fill(__data, (__UINT8_TYPE__)CXA_ES_ENFORCE);
+  __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                           (__UINT8_TYPE__)CXA_ES_ENFORCE);
+  __builtin_unreachable();
+}
+
+// noexcept_enforce: as enforce, but a throwing handler terminates here (the pure
+// virtual is noexcept, so it must not escape into the caller).
+extern "C" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
+__cxa_pure_virtual_noexcept_enforce (void) noexcept {
+  __pv_data_block __data;
+  __pv_fill(__data, (__UINT8_TYPE__)CXA_ES_NOEXCEPT_ENFORCE);
+#if _LIBCPP_HAS_EXCEPTIONS
+  try {
+    __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                             (__UINT8_TYPE__)CXA_ES_NOEXCEPT_ENFORCE);
+  } catch (...) {
+    std::terminate();
+  }
+#else
+  __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                           (__UINT8_TYPE__)CXA_ES_NOEXCEPT_ENFORCE);
+#endif
+  __builtin_unreachable();
+}
+
+// observe (throwing): the handler runs and returns; a throwing handler unwinds
+// out through this frame to the caller.  A pure-virtual call has no valid
+// continuation, so if the handler returns normally we terminate the same way the
+// enforcing core does (abort()).
+extern "C" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
+__cxa_pure_virtual_observe (void) {
+  __pv_data_block __data;
+  __pv_fill(__data, (__UINT8_TYPE__)CXA_ES_OBSERVE);
+  __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                           (__UINT8_TYPE__)CXA_ES_OBSERVE);
+  __builtin_abort();
+}
+
+// noexcept_observe: as observe, but a throwing handler terminates here.
+extern "C" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
+__cxa_pure_virtual_noexcept_observe (void) noexcept {
+  __pv_data_block __data;
+  __pv_fill(__data, (__UINT8_TYPE__)CXA_ES_NOEXCEPT_OBSERVE);
+#if _LIBCPP_HAS_EXCEPTIONS
+  try {
+    __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                             (__UINT8_TYPE__)CXA_ES_NOEXCEPT_OBSERVE);
+  } catch (...) {
+    std::terminate();
+  }
+#else
+  __contract_dispatch_core((const __cxa_contract_data_block*)&__data,
+                           (__UINT8_TYPE__)CXA_ES_NOEXCEPT_OBSERVE);
+#endif
+  __builtin_abort();
+}

@@ -331,6 +331,23 @@ void __cxa_contract_violation_implicit_noexcept_observe_ex_noexcept (void* __dat
 [[noreturn]] void __cxa_contract_violation_implicit_noexcept_enforce_pf_noexcept (void* __data) noexcept;
 [[noreturn]] void __cxa_contract_violation_implicit_noexcept_enforce_ex_noexcept (void* __data) noexcept;
 
+// P3100: pure-virtual-call terminus variants (ub:class.abstract.pure.virtual).
+// A pure virtual's vtable slot points at one of these instead of the legacy
+// __cxa_pure_virtual when the class's implicit contract configuration (resolved
+// where the vtable is emitted) selects a checking semantic.  Each is a plain
+// void() the slot can hold; it builds a generic implicit contract violation
+// ("pure virtual function called") and reacts per its semantic.  A pure-virtual
+// call has no valid continuation, so the observing variants report and then
+// terminate.  The compiler selects the noexcept (terminate-on-throw) variant
+// when the pure virtual is itself declared noexcept, so a throwing handler still
+// terminates at the noexcept boundary rather than escaping into a caller that
+// assumed the call could not throw.  Defined in libc++ (contracts_abi.cpp).
+[[noreturn]] void __cxa_pure_virtual_quick (void) noexcept;
+[[noreturn]] void __cxa_pure_virtual_enforce (void);
+[[noreturn]] void __cxa_pure_virtual_noexcept_enforce (void) noexcept;
+[[noreturn]] void __cxa_pure_virtual_observe (void);
+[[noreturn]] void __cxa_pure_virtual_noexcept_observe (void) noexcept;
+
 } // extern "C"
 
 #endif // _LIBCPP_CONTRACTS_ABI_H

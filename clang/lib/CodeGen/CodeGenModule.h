@@ -1121,6 +1121,14 @@ public:
   /// interface postconditions.
   llvm::Function *getOrEmitVirtualContractWrapper(const CXXMethodDecl *MD);
 
+  /// P3100: for a pure virtual MD, return the name of the __cxa_pure_virtual
+  /// terminus variant selected by the implicit contract configuration for
+  /// ub:class.abstract.pure.virtual (resolved at MD's declaring class), or an
+  /// empty StringRef to use the legacy __cxa_pure_virtual.  The vtable slot for
+  /// the pure virtual is pointed at this terminus; the compiler picks the
+  /// noexcept (terminate-on-throw) variant when MD is itself declared noexcept.
+  StringRef getPureVirtualContractTerminusName(const CXXMethodDecl *MD);
+
   // Return the function body address of the given function.
   llvm::Constant *GetFunctionStart(const ValueDecl *Decl);
 

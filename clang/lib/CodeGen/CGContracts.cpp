@@ -780,6 +780,69 @@ bool CodeGenFunction::EmitImplicitFlowOffReaction(const FunctionDecl *FD) {
   return true;
 }
 
+// P3100: select the __cxa_pure_virtual terminus for a pure virtual
+// (ub:class.abstract.pure.virtual).  A call that dispatches to a pure virtual is
+// core-language UB, but there is no per-call site (a pure-virtual dispatch is an
+// ordinary indirect call, and only the runtime object's current vtable knows the
+// slot is pure).  Instead the semantic is resolved here, where the vtable is
+// emitted, at MD's declaring (base) class -- so per-file/line and per-namespace
+// P3595 config selects the terminus per class.  The vtable slot stays a plain
+// function pointer; only its default value changes, from the legacy
+// __cxa_pure_virtual to a semantic-specific terminus.  Returns an empty StringRef
+// for assume/ignore (a pure-virtual call has no defined value to substitute) or
+// when -fcontracts-p3100 is off; the caller then keeps __cxa_pure_virtual.
+StringRef
+CodeGenModule::getPureVirtualContractTerminusName(const CXXMethodDecl *MD) {
+  using CES = ContractEvaluationSemantic;
+  if (!getLangOpts().ContractsP3100)
+    return StringRef();
+
+  const CXXRecordDecl *RD = MD->getParent();
+  std::string GroupStr = "ub:class.abstract.pure.virtual";
+  ContractQuery Q;
+  Q.Kind = ContractKind::Implicit;
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = false;
+  Q.Groups = ArrayRef<std::string>(GroupStr);
+  Q.FnContext = RD;
+  Q.Loc = RD->getLocation();
+  Q.SM = &getContext().getSourceManager();
+  unsigned Mask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
+  if (getLangOpts().ContractsP4298)
+    Mask |= (1u << unsigned(CES::NoexceptEnforce)) |
+            (1u << unsigned(CES::NoexceptObserve));
+  Q.AllowedMask = Mask;
+
+  CES Sem = getLangOpts().ContractOpts.resolveContractSemantic(Q);
+
+  // assume/ignore: keep the legacy terminus (no defined value to substitute).
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return StringRef();
+
+  // A throwing handler must not escape a noexcept pure virtual, so pick the
+  // terminate-on-throw (noexcept) terminus for those.
+  bool Nothrow = false;
+  if (const auto *FPT = MD->getType()->getAs<FunctionProtoType>())
+    Nothrow = FPT->isNothrow();
+
+  switch (Sem) {
+  case CES::QuickEnforce:
+    return "__cxa_pure_virtual_quick";
+  case CES::Enforce:
+    return Nothrow ? "__cxa_pure_virtual_noexcept_enforce"
+                   : "__cxa_pure_virtual_enforce";
+  case CES::Observe:
+    return Nothrow ? "__cxa_pure_virtual_noexcept_observe"
+                   : "__cxa_pure_virtual_observe";
+  case CES::NoexceptEnforce:
+    return "__cxa_pure_virtual_noexcept_enforce";
+  case CES::NoexceptObserve:
+    return "__cxa_pure_virtual_noexcept_observe";
+  default:
+    return StringRef();
+  }
+}
+
 // P3100: control flowing off the end of a coroutine whose promise type has no
 // usable return_void ({stmt.return.coroutine.flow.off}) is undefined behavior.
 // Emit the configured reaction at the fall-off point.  The point is inside the
