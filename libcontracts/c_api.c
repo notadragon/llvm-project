@@ -133,8 +133,9 @@ stdc_handle_quick_enforced_contract_violation_explicit (const char *comment,
   (void) file;
   (void) func;
   (void) line;
-  /* Quick-enforce terminates immediately without invoking the handler.  */
-  abort ();
+  /* Quick-enforce terminates immediately without invoking the handler, in the
+     most efficient implementation-defined way (__builtin_trap, not abort).  */
+  __builtin_trap ();
 }
 
 /* --------------------------------------------------------------------- */
