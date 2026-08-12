@@ -304,11 +304,9 @@ ContractStmt *ContractStmt::CreateEmpty(const ASTContext &C, ContractKind Kind,
               HasRequiresClause,
           NumAttrs),
       alignof(ContractStmt));
-  auto *CS = new (Mem)
+  return new (Mem)
       ContractStmt(EmptyShell(), Kind, HasResultName, HasMessage, HasLabel,
-                   HasCaptures, NumAttrs);
-  CS->ContractAssertBits.HasRequiresClause = HasRequiresClause;
-  return CS;
+                   HasCaptures, HasRequiresClause, NumAttrs);
 }
 
 ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
@@ -328,11 +326,9 @@ ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
       alignof(ContractStmt));
   auto *CS = new (Mem)
       ContractStmt(Kind, KeywordLoc, Condition, ResultNameDecl, Message, Label,
-                   Captures, Attrs);
-  if (RequiresClause) {
-    CS->ContractAssertBits.HasRequiresClause = true;
+                   Captures, Attrs, RequiresClause != nullptr);
+  if (RequiresClause)
     CS->setRequiresClause(RequiresClause);
-  }
   return CS;
 }
 

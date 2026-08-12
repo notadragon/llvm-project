@@ -1227,18 +1227,24 @@ class ContractStmt final
     std::copy(Attrs.begin(), Attrs.end(), getAttrPtr());
   }
 
+  // NOTE: every Has* bit that numTrailingObjects() consults must be set
+  // before the first trailing-object access, because the offset of the
+  // const Attr * array is a function of the Stmt * count.  In particular
+  // HasRequiresClause must be correct before copyAttrs() runs, or the
+  // attributes land one slot short of where every later read looks for them.
   ContractStmt(ContractKind CK, SourceLocation KeywordLoc, Expr *Condition,
                DeclStmt *RN, Expr *Message = nullptr,
                Expr *Label = nullptr,
                DeclStmt *Captures = nullptr,
-               ArrayRef<const Attr *> Attrs = {})
+               ArrayRef<const Attr *> Attrs = {},
+               bool HasRequiresClause = false)
       : Stmt(ContractStmtClass), KeywordLoc(KeywordLoc) {
     ContractAssertBits.ContractKind = static_cast<unsigned>(CK);
     ContractAssertBits.HasResultName = RN != nullptr;
     ContractAssertBits.HasMessage = Message != nullptr;
     ContractAssertBits.HasLabel = Label != nullptr;
     ContractAssertBits.HasCaptures = Captures != nullptr;
-    ContractAssertBits.HasRequiresClause = false;
+    ContractAssertBits.HasRequiresClause = HasRequiresClause;
     ContractAssertBits.AllowedMask = AllContractSemanticsMaskWithExtensions;
     ContractAssertBits.HasLocalHandler = false;
     ContractAssertBits.HasQuery = false;
@@ -1258,14 +1264,14 @@ class ContractStmt final
 
   ContractStmt(EmptyShell Empty, ContractKind Kind, bool HasResultName,
                bool HasMessage, bool HasLabel, bool HasCaptures,
-               unsigned NumAttrs = 0)
+               bool HasRequiresClause = false, unsigned NumAttrs = 0)
       : Stmt(ContractStmtClass, Empty) {
     ContractAssertBits.ContractKind = static_cast<unsigned>(Kind);
     ContractAssertBits.HasResultName = HasResultName;
     ContractAssertBits.HasMessage = HasMessage;
     ContractAssertBits.HasLabel = HasLabel;
     ContractAssertBits.HasCaptures = HasCaptures;
-    ContractAssertBits.HasRequiresClause = false;
+    ContractAssertBits.HasRequiresClause = HasRequiresClause;
     ContractAssertBits.AllowedMask = AllContractSemanticsMaskWithExtensions;
     ContractAssertBits.HasLocalHandler = false;
     ContractAssertBits.HasQuery = false;
