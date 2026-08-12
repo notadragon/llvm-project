@@ -1,14 +1,14 @@
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -fsyntax-only -fcontract-evaluation-semantic=enforce -fcontracts-group-evaluation-semantic=safety:observe
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -fsyntax-only -fcontract-evaluation-semantic=enforce -fcontracts-group-evaluation-semantic=safety:observe -fcontracts-group-evaluation-semantic=safety.memory:ignore
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -fsyntax-only -fcontract-evaluation-semantic=enforce -fcontract-group-evaluation-semantic=safety:observe
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -fsyntax-only -fcontract-evaluation-semantic=enforce -fcontract-group-evaluation-semantic=safety:observe -fcontract-group-evaluation-semantic=safety.memory:ignore
 
 // Label groups feed into P3595 config resolution.
-// Group-specific -fcontracts-group-evaluation-semantic flags match labels.
+// Group-specific -fcontract-group-evaluation-semantic flags match labels.
 
 #include <contracts>
 using namespace std::contracts;
 using namespace std::contracts::labels;
 
-// With -fcontracts-group-evaluation-semantic=safety:observe,
+// With -fcontract-group-evaluation-semantic=safety:observe,
 // contracts in group "safety" get observe semantic.
 void f(int x) pre<"safety"group>(x > 0) {}
 

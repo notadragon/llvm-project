@@ -1,9 +1,9 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontracts-group-evaluation-semantic=safety:observe %libcxx_flags -o %t
+// RUN:   -fcontract-group-evaluation-semantic=safety:observe %libcxx_flags -o %t
 // RUN: %t
 
 // P3400: identification_label facet -- basic group labels and the
-// -fcontracts-group-evaluation-semantic flag.
+// -fcontract-group-evaluation-semantic flag.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-group-basic.C)
 
 #include <contracts>

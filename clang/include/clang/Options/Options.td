@@ -1832,7 +1832,7 @@ def fcontract_evaluation_semantic_EQ : Joined<["-"], "fcontract-evaluation-seman
   NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce", "Assume", "NoexceptEnforce", "NoexceptObserve"]>,
   MarshallingInfoEnum<LangOpts<"ContractOpts.DefaultSemantic">, "Enforce">;
 
-def fcontracts_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontracts-group-evaluation-semantic=">,
+def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Set the evaluation semantic for contracts in a specific group. "
            "Format: group:semantic (e.g., safety:observe).">;
@@ -1922,7 +1922,7 @@ defm contracts_p4298 : BoolFOption<"contracts-p4298",
 defm contracts_p4301 : BoolFOption<"contracts-p4301",
   LangOpts<"ContractsP4301">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
-          "Enable D4301 contract_violation::report() ASan/UBSan diagnostic accessor">,
+          "Enable P4301 contract_violation::report() ASan/UBSan diagnostic accessor">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
 defm contracts_allow_assume : BoolFOption<"contracts-allow-assume",

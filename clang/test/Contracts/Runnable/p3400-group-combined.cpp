@@ -1,6 +1,6 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontracts-group-evaluation-semantic=safety:observe \
-// RUN:   -fcontracts-group-evaluation-semantic=audit:observe %libcxx_flags -o %t
+// RUN:   -fcontract-group-evaluation-semantic=safety:observe \
+// RUN:   -fcontract-group-evaluation-semantic=audit:observe %libcxx_flags -o %t
 // RUN: %t
 
 // P3400: group identification labels combined with operator|.  A combined

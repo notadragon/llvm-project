@@ -1,5 +1,5 @@
 // RUN: %clangxx -fcontracts -std=c++26 -fcontract-evaluation-semantic=observe \
-// RUN:    -fcontracts-group-evaluation-semantic=observe:observe,enforce:enforce,ignore:ignore,quick_enforce:quick_enforce \
+// RUN:    -fcontract-group-evaluation-semantic=observe:observe,enforce:enforce,ignore:ignore,quick_enforce:quick_enforce \
 // RUN:    %s %libcxx_flags -o %t -g
 // RUN:  %t 0
 // RUN: %t 1

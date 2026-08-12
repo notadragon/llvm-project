@@ -1,5 +1,5 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p3098 \
-// RUN:   -fcontracts-group-evaluation-semantic=g:ignore \
+// RUN:   -fcontract-group-evaluation-semantic=g:ignore \
 // RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags -o %t
 // RUN: %t
 

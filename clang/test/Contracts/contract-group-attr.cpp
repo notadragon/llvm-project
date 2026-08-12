@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected %s -fcontracts -fcontracts-group-evaluation-semantic=std.foo:ignore,std.foo.baz:enforce,std.bar:enforce
+// RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected %s -fcontracts -fcontract-group-evaluation-semantic=std.foo:ignore,std.foo.baz:enforce,std.bar:enforce
 
 
 

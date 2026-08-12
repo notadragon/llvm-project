@@ -1,4 +1,4 @@
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -o %t -fcontract-evaluation-semantic=enforce -fcontracts-group-evaluation-semantic=safety:observe && %t 2>&1 | FileCheck %s
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 %libcxx_flags -o %t -fcontract-evaluation-semantic=enforce -fcontract-group-evaluation-semantic=safety:observe && %t 2>&1 | FileCheck %s
 
 // Runtime test: group-based semantic selection via P3595 config.
 // Default semantic is enforce; "safety"group overridden to observe.

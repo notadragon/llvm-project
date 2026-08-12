@@ -1,9 +1,9 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontracts-group-evaluation-semantic=safety:observe \
-// RUN:   -fcontracts-group-evaluation-semantic=perf:ignore %libcxx_flags -o %t
+// RUN:   -fcontract-group-evaluation-semantic=safety:observe \
+// RUN:   -fcontract-group-evaluation-semantic=perf:ignore %libcxx_flags -o %t
 // RUN: %t
 
-// P3400: multiple -fcontracts-group-evaluation-semantic flags and prefix
+// P3400: multiple -fcontract-group-evaluation-semantic flags and prefix
 // matching on the '.' delimiter.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-group-multi.C)
 

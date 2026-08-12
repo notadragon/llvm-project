@@ -7982,7 +7982,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back(Args.MakeArgString(
           Twine("-fcontract-evaluation-semantic=") + A->getValue()));
     for (const Arg *A : Args.filtered(
-             options::OPT_fcontracts_group_evaluation_semantic_EQ,
+             options::OPT_fcontract_group_evaluation_semantic_EQ,
              options::OPT_fcontract_configuration_EQ,
              options::OPT_fcontract_configuration_file_EQ)) {
       A->claim();
@@ -8035,7 +8035,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
           Twine("-fcontract-evaluation-semantic=") + A->getValue()));
     }
     for (const Arg *A : Args.filtered(
-             options::OPT_fcontracts_group_evaluation_semantic_EQ,
+             options::OPT_fcontract_group_evaluation_semantic_EQ,
              options::OPT_fcontract_configuration_EQ,
              options::OPT_fcontract_configuration_file_EQ)) {
       A->claim();

@@ -11,7 +11,7 @@
 // REQUIRES: can-test-hardening-assertions
 // HWASAN replaces TRAP with abort or error exit code.
 // XFAIL: hwasan
-// ADDITIONAL_COMPILE_FLAGS: -fcontracts-group-evaluation-semantic=std.compatible_allocator:enforce,std.internal:ignore
+// ADDITIONAL_COMPILE_FLAGS: -fcontract-group-evaluation-semantic=std.compatible_allocator:enforce,std.internal:ignore
 
 #include <cassert>
 #include "check_assertion.h"

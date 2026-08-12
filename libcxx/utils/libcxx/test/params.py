@@ -133,9 +133,6 @@ def testClangTidy(cfg, version, executable):
     except ConfigurationRuntimeError:
         return None
 
-def hasContractSupport(cfg):
-    return hasCompileFlag(cfg, "-fcontracts") and hasCompileFlag(cfg, "-fcontracts-group-evaluation-semantic=std:enforce")
-
 def getSuitableClangTidy(cfg):
     # If we didn't build the libcxx-tidy plugin via CMake, we can't run the clang-tidy tests.
     if (
@@ -488,7 +485,7 @@ DEFAULT_PARAMETERS = [
             AddCompileFlag("-fcontracts"),
             AddCompileFlag('-fcolor-diagnostics'),
             AddFeature("contracts"),
-            AddCompileFlag("-fcontracts-group-evaluation-semantic=std:enforce"),
+            AddCompileFlag("-fcontract-group-evaluation-semantic=std:enforce"),
         ]
     ),
     Parameter(
@@ -496,7 +493,7 @@ DEFAULT_PARAMETERS = [
         type=bool,
         default=False,
         help="Whether to test the main or C++03-specific headers. Only changes behaviour when std=c++03.",
-        actions=lambda enabled: [] if not enabled else [AddFlag("-D_LIBCPP_USE_FROZEN_CXX03_HEADERS"), AddFeature("FROZEN-CXX03-HEADERS-FIXME")]
+        actions=lambda enabled: [] if not enabled else [AddFlag("-D_LIBCPP_USE_FROZEN_CXX03_HEADERS"), AddFeature("FROZEN-CXX03-HEADERS-FIXME")],
     ),
     Parameter(
         name='assertion_semantic',

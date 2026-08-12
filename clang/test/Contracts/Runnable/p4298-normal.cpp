@@ -5,7 +5,7 @@
 // config (P3400) to select two different semantics for two different
 // functions within one translation unit.
 //
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p4298 -fcontracts-group-evaluation-semantic=obs:noexcept_observe -fcontracts-group-evaluation-semantic=enf:noexcept_enforce -fcontract-evaluation-semantic=ignore %libcxx_flags -o %t
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p4298 -fcontract-group-evaluation-semantic=obs:noexcept_observe -fcontract-group-evaluation-semantic=enf:noexcept_enforce -fcontract-evaluation-semantic=ignore %libcxx_flags -o %t
 // RUN: %t
 
 #include <contracts>

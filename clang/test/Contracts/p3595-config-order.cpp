@@ -1,4 +1,4 @@
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-group-evaluation-semantic=safety:observe -fcontract-configuration-file=%S/p3595-config-order-override.json %libcxx_flags -o %t && %t
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontract-group-evaluation-semantic=safety:observe -fcontract-configuration-file=%S/p3595-config-order-override.json %libcxx_flags -o %t && %t
 
 // P3595: test interleaved command-line ordering.
 // The group flag sets safety=observe, then a config file sets safety to ignore.

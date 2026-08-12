@@ -1,5 +1,5 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontracts-group-evaluation-semantic=safety:observe %libcxx_flags -o %t
+// RUN:   -fcontract-group-evaluation-semantic=safety:observe %libcxx_flags -o %t
 // RUN: %t
 
 // P3400: group labels combined with other facets (allowed_semantics,

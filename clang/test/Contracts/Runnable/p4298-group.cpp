@@ -1,6 +1,6 @@
 // D4298: noexcept_enforce/noexcept_observe are selectable via group config.
 // (GCC mirror: g++.dg/contracts/cpp26/p4298-group.C)
-// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p4298 -fcontracts-group-evaluation-semantic=g:noexcept_observe -fcontract-evaluation-semantic=ignore %libcxx_flags -o %t
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p4298 -fcontract-group-evaluation-semantic=g:noexcept_observe -fcontract-evaluation-semantic=ignore %libcxx_flags -o %t
 // RUN: %t
 
 #include <contracts>

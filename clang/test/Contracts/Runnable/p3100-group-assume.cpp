@@ -1,5 +1,5 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -fcontracts-p3100 \
-// RUN:   -fcontracts-allow-assume -fcontracts-group-evaluation-semantic=safety:assume \
+// RUN:   -fcontracts-allow-assume -fcontract-group-evaluation-semantic=safety:assume \
 // RUN:   %libcxx_flags -o %t
 // RUN: %t
 

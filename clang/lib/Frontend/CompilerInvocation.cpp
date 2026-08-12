@@ -3837,7 +3837,7 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
     for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
       switch (Src.Kind) {
       case ContractConfigSourceKind::GroupSemantic:
-        GenerateArg(Consumer, OPT_fcontracts_group_evaluation_semantic_EQ,
+        GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ,
                     Src.Arg);
         break;
       case ContractConfigSourceKind::JSONInline:
@@ -4102,7 +4102,7 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
   for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
     switch (Src.Kind) {
     case ContractConfigSourceKind::GroupSemantic:
-      GenerateArg(Consumer, OPT_fcontracts_group_evaluation_semantic_EQ,
+      GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ,
                   Src.Arg);
       break;
     case ContractConfigSourceKind::JSONInline:
@@ -4835,11 +4835,11 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
   };
 
   for (const Arg *A : Args.filtered(
-           options::OPT_fcontracts_group_evaluation_semantic_EQ,
+           options::OPT_fcontract_group_evaluation_semantic_EQ,
            options::OPT_fcontract_configuration_EQ,
            options::OPT_fcontract_configuration_file_EQ)) {
     switch (A->getOption().getID()) {
-    case options::OPT_fcontracts_group_evaluation_semantic_EQ:
+    case options::OPT_fcontract_group_evaluation_semantic_EQ:
       for (unsigned I = 0, N = A->getNumValues(); I < N; ++I) {
         Opts.ContractOpts.addUnparsedContractGroup(A->getValue(I),
                                                    EmitContractDiag);
