@@ -1153,7 +1153,17 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
 
   bool IsInvalid = false;
 
-  if (RetType->isVoidType()) {
+  // A result name is only meaningful on a postcondition.  Check that FIRST:
+  // it is the fundamental error, and `contract_assert` has no return type at
+  // all (the parser supplies no resolver), so RetType is null there and none
+  // of the return-type reasoning below could run.  Substitute a placeholder
+  // type so we can still build a node and keep parsing the predicate.
+  if (CK != ContractKind::Post) {
+    Diag(IDLoc, diag::err_result_name_not_allowed) << II;
+    IsInvalid = true;
+    if (RetType.isNull())
+      RetType = Context.IntTy;
+  } else if (RetType->isVoidType()) {
     // Adjust the type of the result name to be int so we can actually produce a
     // node.
     RetType = Context.IntTy;
@@ -1171,40 +1181,34 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
     RetType = Context.getAutoType(DeducedKind::DeducedAsDependent, QualType(),
                                   AutoTypeKeyword::Auto);
   auto *New = ResultNameDecl::Create(Context, CurContext, IDLoc, II, RetType,
-                                     nullptr, HasInventedPlaceholderTypes, FunctionScopeDepth);
+                                     HasInventedPlaceholderTypes, FunctionScopeDepth);
 
   if (IsInvalid)
-    New->isInvalidDecl();
+    New->setInvalidDecl();
 
   // Check for redeclaration of parameters, e.g. int foo(int x, int x);
   if (II) {
     LookupResult R(*this, II, IDLoc, LookupOrdinaryName,
-                   RedeclarationKind::ForVisibleRedeclaration); // FIXME
+                   RedeclarationKind::ForVisibleRedeclaration);
     LookupName(R, S);
     if (!R.empty()) {
       NamedDecl *PrevDecl = *R.begin();
       if (R.isSingleResult() && PrevDecl->isTemplateParameter()) {
         // Maybe we will complain about the shadowed template parameter.
-        // DiagnoseTemplateParameterShadow(D.getIdentifierLoc(), PrevDecl);
+        DiagnoseTemplateParameterShadow(IDLoc, PrevDecl);
         // Just pretend that we didn't see the previous declaration.
         PrevDecl = nullptr;
       }
       // FIXME: Diagnose lookup conflicts with lambda captures and
       // parameter declarations.
-      if (auto *PVD = dyn_cast<ParmVarDecl>(PrevDecl)) {
-        Diag(IDLoc, diag::err_result_name_shadows_param)
-            << II; // FIXME: Change the diagnostic here.
+      // NOTE: PrevDecl is deliberately cleared above for a shadowed template
+      // parameter, so this must tolerate null.
+      if (auto *PVD = dyn_cast_if_present<ParmVarDecl>(PrevDecl)) {
+        Diag(IDLoc, diag::err_result_name_shadows_param) << II;
         Diag(PVD->getLocation(), diag::note_previous_declaration);
         New->setInvalidDecl(true);
       }
     }
-  }
-
-  if (CK != ContractKind::Post) {
-    assert(II && "ResultName requires an identifier");
-
-    Diag(IDLoc, diag::err_result_name_not_allowed) << II;
-    New->setInvalidDecl(true);
   }
 
   assert(!S || S->isContractAssertScope());
@@ -2034,7 +2038,7 @@ Sema::RebuildContractSpecifierForDecl(FunctionDecl *First, FunctionDecl *Def) {
   Def->setContracts(CSD);
 
   if (CSD->isInvalidDecl())
-    Def->isInvalidDecl();
+    Def->setInvalidDecl();
   return CSD;
 }
 
@@ -2101,7 +2105,7 @@ DeclResult Sema::RebuildContractsWithPlaceholderReturnType(FunctionDecl *FD) {
 
   FD->setContracts(NewCSD);
   if (NewCSD->isInvalidDecl())
-    FD->isInvalidDecl();
+    FD->setInvalidDecl();
 
   return NewCSD;
 }
@@ -2173,7 +2177,7 @@ void Sema::ActOnContractsOnFinishFunctionBody(FunctionDecl *Def) {
            diag::note_lambda_implicit_capture_in_contracts_only)
           << ND;
       Diag(C.getContractLoc(), diag::note_contract_context);
-      Def->isInvalidDecl();
+      Def->setInvalidDecl();
     }
   }
 }
@@ -2301,8 +2305,6 @@ static const DeclContext* walkUpDeclContextToFunction(const DeclContext *DC, boo
       assert(!DC->getLexicalParent() ||
              !DC->getLexicalParent()->isFunctionOrMethod());
     }
-  } else {
-    llvm::errs() << "Found Null DC";
   }
   if (DC && !DC->isFunctionOrMethod())
     return nullptr;

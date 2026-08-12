@@ -355,7 +355,7 @@ StmtResult Parser::ParseContractAssertStatement() {
           Tok.is(tok::kw__ContractAssert)) &&
          "Not a contract assert statement");
   bool IsInvalidTmp = false;
-  return ParseFunctionContractSpecifierImpl({}, CSO_FunctionContext, IsInvalidTmp);
+  return ParseFunctionContractSpecifierImpl({}, ContractScopeOffset::FunctionContext, IsInvalidTmp);
 }
 
 /// ParseFunctionContractSpecifierSeq - Parse a series of pre/post contracts on
@@ -423,7 +423,7 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
   while (isFunctionContractKeyword(Tok)) {
     bool IsInvalidTmp = false;
     StmtResult Contract =
-        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, EnterScope ? CSO_ParentContext : CSO_FunctionContext, IsInvalidTmp);
+        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, EnterScope ? ContractScopeOffset::ParentContext : ContractScopeOffset::FunctionContext, IsInvalidTmp);
     IsInvalid |= IsInvalidTmp;
     if (Contract.isUsable())
       Contracts.push_back(Contract.getAs<ContractStmt>());
@@ -442,7 +442,7 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   ContractKind CK = getContractKeyword(Tok).value();
   assert((CK == ContractKind::Assert || ReturnTypeResolver) &&
          "Missing return type resolver for function contract sequence");
-  assert((ScopeOffset == CSO_FunctionContext || CK != ContractKind::Assert) &&
+  assert((ScopeOffset == ContractScopeOffset::FunctionContext || CK != ContractKind::Assert) &&
          "Incorrect scope offset for contract assert");
   auto SetInvalidOnExit = llvm::scope_exit([&]() { IsInvalid = true; });
 
@@ -452,13 +452,22 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   ConsumeToken();
 
   ExprResult LabelExpr;
-  if (getLangOpts().ContractsP3400 && Tok.is(tok::less)) {
-    ConsumeToken();
+  // Recognise the label syntax even when P3400 is off, so we can diagnose the
+  // missing flag and still recover to the predicate.  Bailing out on the '<'
+  // instead would derail the whole declaration and bury the real problem under
+  // unrelated parse errors.  Mirrors the P4283 requires-clause handling below
+  // and GCC's "assertion-control labels require %<-fcontracts-p3400%>".
+  if (Tok.is(tok::less)) {
+    SourceLocation LabelLoc = ConsumeToken();
     llvm::SaveAndRestore OldGreater(GreaterThanIsOperator, false);
     llvm::SaveAndRestore SetFlag(Actions.InAssertionControlExpression, true);
-    LabelExpr = ParseConstantExpression();
+    ExprResult Parsed = ParseConstantExpression();
     if (ExpectAndConsume(tok::greater))
       return StmtError();
+    if (getLangOpts().ContractsP3400)
+      LabelExpr = Parsed;
+    else
+      Diag(LabelLoc, diag::err_contract_label_require_flag);
   }
 
   // Parse optional requires clause (P4283): pre <label> requires C ...
@@ -536,12 +545,12 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   }
 
   ResultNameDecl *RND = nullptr;
-  // FIXME: We allow parsing the result name declarator in `pre` so we
-  // can diagnose it but we don't do the same for contract assert... Should we?
-  if ((CK != ContractKind::Assert) && Tok.is(tok::identifier) &&
-      NextToken().is(tok::colon)) {
-    // Let this parse for non-post contracts. We'll diagnose it later.
-
+  // Parse a result-name declarator for EVERY contract kind, not just `post`.
+  // On `pre` and `contract_assert` it is ill-formed, but parsing it lets Sema
+  // say so ("result name not allowed outside of post condition specifier");
+  // leaving it to fall through to the predicate instead produces an unrelated
+  // "use of undeclared identifier" for the result name and then a cascade.
+  if (Tok.is(tok::identifier) && NextToken().is(tok::colon)) {
     IdentifierInfo *Id = Tok.getIdentifierInfo();
     SourceLocation IdLoc = ConsumeToken();
 
@@ -558,6 +567,13 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
 
     if (RND->isInvalidDecl())
       IsInvalid = true;
+
+    // Only a postcondition can hold a result name.  Sema has already
+    // diagnosed the misplacement above, and the declaration stays in scope so
+    // the predicate still resolves the name instead of producing a spurious
+    // "use of undeclared identifier"; just do not hand it to the statement.
+    if (CK != ContractKind::Post)
+      RND = nullptr;
   }
 
   ExprResult Cond = [&]() {
@@ -804,7 +820,7 @@ bool Parser::ParseLexedFunctionContracts(
     assert(Actions.CurContext == FunctionToPush);
     bool IsInvalidTmp = false;
     StmtResult Contract =
-        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, CSO_FunctionContext, IsInvalidTmp);
+        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, ContractScopeOffset::FunctionContext, IsInvalidTmp);
     if (Contract.isUsable())
       Contracts.push_back(Contract.getAs<ContractStmt>());
     IsInvalid |= IsInvalidTmp;

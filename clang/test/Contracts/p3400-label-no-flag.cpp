@@ -5,4 +5,7 @@
 struct L { using assertion_control_object = L; };
 constexpr L l{};
 
-void f(int x) pre<l>(x > 0) {} // expected-error {{expected '(' after 'pre'}} expected-error {{use of undeclared identifier 'x'}} expected-error {{expected ';' after top level declarator}}
+// The label is still parsed so that we can point at the missing flag and then
+// recover to the predicate, rather than derailing the whole declaration.
+// Mirrors GCC's "assertion-control labels require %<-fcontracts-p3400%>".
+void f(int x) pre<l>(x > 0) {} // expected-error {{assertion-control labels require '-fcontracts-p3400'}}

@@ -4590,7 +4590,7 @@ public:
   static bool classofKind(Kind K) { return K == Decl::PostconditionCapture; }
 };
 
-/// A result name introduces in a post condition. For instance, given:
+/// A result name introduced in a postcondition. For instance, given:
 ///
 ///   int foo() post(r : r > 0);
 ///
@@ -4624,8 +4624,12 @@ class ResultNameDecl : public ValueDecl {
   /// Needed for checking for structural equivalence.
   unsigned FunctionScopeDepth = InvalidFunctionScopeDepth;
 
+  // NOTE: the canonical result name is not set here.  It is established
+  // afterwards by ContractSpecifierDecl::setContracts, which is the only
+  // place that can see the whole postcondition sequence, and on
+  // deserialization by ASTDeclReader.
   ResultNameDecl(DeclContext *DC, SourceLocation IdLoc, IdentifierInfo *Id,
-                 QualType T, ResultNameDecl *CanonicalDecl = nullptr,
+                 QualType T,
                  bool HasInventedPlaceholderType = false,
                  unsigned FunctionScopeDepth = InvalidFunctionScopeDepth)
       : ValueDecl(Decl::ResultName, DC, IdLoc, Id, T),
@@ -4645,7 +4649,7 @@ public:
 
   static ResultNameDecl *Create(ASTContext &C, DeclContext *DC,
                                 SourceLocation IdLoc, IdentifierInfo *Id,
-                                QualType T, ResultNameDecl *CRND = nullptr,
+                                QualType T,
                                 bool HasInventedPlaceholderType = false,
                                 unsigned FunctionScopeDepth = InvalidFunctionScopeDepth);
   static ResultNameDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);

@@ -9231,7 +9231,7 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
 
   assert(getSema().getFunctionLevelDeclContext(true)->isFunctionOrMethod());
 
-  Sema::ContractScopeRAII ContractScope(getSema(), S->getContractKind(), CSO_FunctionContext, S->getKeywordLoc());
+  Sema::ContractScopeRAII ContractScope(getSema(), S->getContractKind(), ContractScopeOffset::FunctionContext, S->getKeywordLoc());
 
   StmtResult NewResultName;
   if (S->hasResultName()) {

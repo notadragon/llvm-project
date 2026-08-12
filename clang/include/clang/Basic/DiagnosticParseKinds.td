@@ -1771,4 +1771,8 @@ def err_postcondition_captures_on_non_post : Error<
 def err_contract_requires_clause_require_flag : Error<
   "requires clauses on contract assertions require '-fcontracts-p4283'">;
 
+// P3400 assertion-control label diagnostics
+def err_contract_label_require_flag : Error<
+  "assertion-control labels require '-fcontracts-p3400'">;
+
 } // end of Parser diagnostics

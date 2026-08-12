@@ -58,10 +58,13 @@ enum class ContractGroupDiagnostic {
   InvalidSemantic,
 };
 
-/// The kind of contract.
+/// The kind of contract, as classified internally by the implementation.
 ///
-/// NOTE: These enumerations _do not_ match the values in
-/// std::contracts::assertion_kind because they start at 1.
+/// NOTE: This is deliberately distinct from ContractAssertionKind (the
+/// ABI-visible std::contracts::assertion_kind) and is not a renumbering of
+/// it: Implicit has no assertion_kind counterpart, and assertion_kind's
+/// Manual/CAssert have no ContractKind counterpart.  Do not cast between
+/// them.
 enum class ContractKind {
   /// A function precondition
   Pre,
@@ -103,12 +106,12 @@ enum class ContractEvaluationSemantic {
   NoexceptEnforce = 7, // D4298
 };
 
-/// Bitmask (bit N == ContractEvaluationSemantic value N) of the standard
+/// Bitmask (bit N == ContractEvaluationSemantic value N) of the four standard
 /// evaluation semantics.  This is the default "all allowed" set for a
-/// contract's allowed-semantics mask.  Note that QuickEnforce (bit 4) IS
-/// included: the previous default of 0xF silently excluded it (and set the
-/// unused bit 0), which meant a contract that resolved to quick_enforce was
-/// downgraded through the fallback chain.
+/// contract's allowed-semantics mask.  QuickEnforce is deliberately part of
+/// it: omitting a semantic from the mask sends a contract that resolves to it
+/// down the fallback chain (see clampToAllowed), so the default set must name
+/// every standard semantic explicitly.
 inline constexpr unsigned AllContractSemanticsMask =
     (1u << static_cast<unsigned>(ContractEvaluationSemantic::Ignore)) |
     (1u << static_cast<unsigned>(ContractEvaluationSemantic::Observe)) |
@@ -149,7 +152,7 @@ inline constexpr unsigned gatedContractSemanticsMask(bool AllowAssume,
 /// Parse a contract evaluation semantic name (e.g. "observe",
 /// "noexcept_enforce") to its enum value.  Returns false if NAME does not
 /// name a known semantic.  Single source of truth for semantic-name spelling,
-/// shared by -fcontracts-group-evaluation-semantic= parsing and the P3100
+/// shared by -fcontract-group-evaluation-semantic= parsing and the P3100
 /// -fsanitize-semantic= driver parsing.
 inline bool contractSemanticFromName(StringRef Name,
                                      ContractEvaluationSemantic &Out) {
@@ -214,9 +217,9 @@ enum class ContractEmissionStyle {
 /// Indicates whether the contract-scope information was pushed before the
 /// function's declaration context was available (and so needs special handling
 /// when adjusting the context).
-enum ContractScopeOffset {
-  CSO_ParentContext,
-  CSO_FunctionContext
+enum class ContractScopeOffset {
+  ParentContext,
+  FunctionContext
 };
 
 /// Source type for a contract configuration entry.
@@ -275,21 +278,19 @@ private:
   mutable bool LocationComputed = false;
 };
 
-/// Represents the set of contract groups that have been enabled or disabled
-/// on the command line using '-fclang-contract-groups='.
+/// The contract options for a translation unit: the default evaluation
+/// semantic, the P3100 assume gate, and the P3595 configuration sources that
+/// together decide which evaluation semantic each contract assertion gets.
 ///
-/// A contract group is a string consisting of identifiers join by '.'. For
-/// example, "a.b.c" is a contract group with three subgroups.
-///
-/// When determining if a particular contract check is enabled, we check if
-/// the user has enabled/disabled the group/subgroup that the check belongs to,
-/// in order of specificity. For example, passing
-///   '-fclang-contract-groups=-std,+std.hardening,-std.hardening.foo'
-/// will enable 'std.hardening.baz', but disable 'std.hardening.foo.bar' and
-/// 'std.baz'.
-///
-/// TODO: Should we match in the same manner as clang-tidy checks?
-///    Specifically, allow the use of '*' and drop all notion of groups?
+/// A contract group is a string of identifiers joined by '.', e.g. "a.b.c" is
+/// a group with three subgroups.  A group's semantic is set with
+///   -fcontract-group-evaluation-semantic=<group>:<semantic>
+/// and matching is by specificity, so
+///   -fcontract-group-evaluation-semantic=std:ignore,std.hardening:enforce
+/// enforces 'std.hardening.foo' while ignoring 'std.baz'.  Richer selection
+/// (by kind, namespace, source location, caller) comes from the P3595 JSON
+/// configuration supplied via -fcontract-configuration= or
+/// -fcontract-configuration-file=; see resolveContractSemantic.
 class ContractOptions {
 public:
   ContractOptions() = default;
@@ -300,7 +301,7 @@ public:
   static bool validateContractGroup(llvm::StringRef GroupAndValue,
                                     const DiagnoseGroupFunc &Diagnoser);
 
-  /// Validate a -fcontracts-group-evaluation-semantic= argument, reporting
+  /// Validate a -fcontract-group-evaluation-semantic= argument, reporting
   /// problems through Diagnoser.  A bare "semantic" (no group) sets
   /// DefaultSemantic; a "group:semantic" entry is validated here and recorded
   /// as a configuration source (see addConfigSource) rather than stored
@@ -310,7 +311,7 @@ public:
 
   /// The default semantics for contracts (the catch-all used by initConfig).
   /// Set by -fcontract-evaluation-semantic= (marshalled) or a bare
-  /// -fcontracts-group-evaluation-semantic=<semantic>.
+  /// -fcontract-group-evaluation-semantic=<semantic>.
   ContractEvaluationSemantic DefaultSemantic =
       ContractEvaluationSemantic::Enforce;
 

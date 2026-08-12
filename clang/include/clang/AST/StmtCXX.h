@@ -1111,13 +1111,13 @@ class ContractStmt final
       private llvm::TrailingObjects<ContractStmt, Stmt *, const Attr *> {
 
   // A Note on attributes:
-  // Contracts allow attribute to apppear in two places:
+  // Contracts allow attributes to appear in two places:
   //   [[#1]] pre [[#2]] ( ... )
   //
-  // Unlike most statements, contracts will have meaning ful attributes. For
+  // Unlike most statements, contracts will have meaningful attributes. For
   // example, one which overrides the message in diagnostics.
   //
-  // Because these attributes apply directly to the contract and it's semantics
+  // Because these attributes apply directly to the contract and its semantics
   // we store them directly in the contract statement. This is different from
   // other statements, which use AttributedStmt to wrap the statement.
   // However, the wrapping behavior makes it non-trivial for a contract to

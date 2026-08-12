@@ -2691,7 +2691,7 @@ public:
 
     SetRangeEnd(TRC->getEndLoc());
   }
-  
+
   /// \brief Sets a trailing requires clause for this declarator.
   Expr *getTrailingRequiresClause() {
     return TrailingRequiresClause;
