@@ -528,6 +528,9 @@ def err_contract_config_caller_not_bool_or_object : Error<
   "boolean or object">;
 def err_contract_config_cannot_open_file : Error<
   "cannot open contract configuration file '%0': %1">;
+def err_contract_config_wrong_type : Error<
+  "'%0' in entry %1 of contract configuration from %2 must be %select{a "
+  "string|a boolean}3">;
 def warn_contract_config_unknown_key : Warning<
   "unknown key '%0' in '%1' object in contract configuration from %2">,
   InGroup<ContractConfiguration>;

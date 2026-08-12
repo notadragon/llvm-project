@@ -252,7 +252,23 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
 
     ContractConfigEntry E;
 
-    if (auto SemStr = OutputObj->getString("semantic")) {
+    // A known key carrying the wrong JSON type is worth reporting rather than
+    // ignoring: dropping a match criterion makes the entry *less* selective,
+    // so a mistyped "kind" silently turns a narrowly-scoped entry into a
+    // catch-all that matches every contract in the translation unit.  GCC
+    // diagnoses each of these (gcc/c-family/contracts-config.cc); match it.
+    enum ExpectedJSONType { EJT_String = 0, EJT_Bool = 1 };
+    auto reportWrongType = [&](llvm::StringRef Key, ExpectedJSONType Ty) {
+      Diags.Report(diag::err_contract_config_wrong_type)
+          << Key << (unsigned)I << SourceDesc << (unsigned)Ty;
+    };
+
+    if (const auto *SemVal = OutputObj->get("semantic")) {
+      auto SemStr = SemVal->getAsString();
+      if (!SemStr) {
+        reportWrongType("semantic", EJT_String);
+        continue;
+      }
       auto Sem = semanticFromString(*SemStr);
       if (!Sem) {
         Diags.Report(diag::err_contract_config_invalid_semantic)
@@ -271,7 +287,12 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         continue;
       }
 
-      if (auto NameStr = DynObj->getString("name")) {
+      if (const auto *NameVal = DynObj->get("name")) {
+        auto NameStr = NameVal->getAsString();
+        if (!NameStr) {
+          reportWrongType("name", EJT_String);
+          continue;
+        }
         E.DynName = NameStr->str();
       } else {
         Diags.Report(diag::err_contract_config_dynamic_missing_name)
@@ -279,7 +300,12 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         continue;
       }
 
-      if (auto LinkageStr = DynObj->getString("linkage")) {
+      if (const auto *LinkageVal = DynObj->get("linkage")) {
+        auto LinkageStr = LinkageVal->getAsString();
+        if (!LinkageStr) {
+          reportWrongType("linkage", EJT_String);
+          continue;
+        }
         if (*LinkageStr == "C++") {
           E.DynLinkage = 0;
         } else if (*LinkageStr == "C") {
@@ -292,7 +318,12 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
       }
 
       bool ProvideWeakSpecified = false;
-      if (auto PwBool = DynObj->getBoolean("provideweak")) {
+      if (const auto *PwVal = DynObj->get("provideweak")) {
+        auto PwBool = PwVal->getAsBoolean();
+        if (!PwBool) {
+          reportWrongType("provideweak", EJT_Bool);
+          continue;
+        }
         E.DynProvideWeak = *PwBool;
         ProvideWeakSpecified = true;
       }
@@ -331,7 +362,12 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         continue;
       }
 
-      if (auto KindStr = MatchObj->getString("kind")) {
+      if (const auto *KindVal = MatchObj->get("kind")) {
+        auto KindStr = KindVal->getAsString();
+        if (!KindStr) {
+          reportWrongType("kind", EJT_String);
+          continue;
+        }
         auto K = kindFromString(*KindStr);
         if (!K) {
           Diags.Report(diag::err_contract_config_invalid_kind)
@@ -341,19 +377,37 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         E.Kind = static_cast<int>(*K);
       }
 
-      if (auto GroupStr = MatchObj->getString("group"))
+      if (const auto *GroupVal = MatchObj->get("group")) {
+        auto GroupStr = GroupVal->getAsString();
+        if (!GroupStr) {
+          reportWrongType("group", EJT_String);
+          continue;
+        }
         E.Group = GroupStr->str();
+      }
 
       if (const auto *CallerVal = MatchObj->get("caller")) {
         if (auto CallerBool = CallerVal->getAsBoolean()) {
           E.CallerSide = *CallerBool ? 1 : 0;
         } else if (const auto *CallerObj = CallerVal->getAsObject()) {
           E.CallerSide = 1;
-          if (auto LocStr = CallerObj->getString("location"))
+          if (const auto *LocVal = CallerObj->get("location")) {
+            auto LocStr = LocVal->getAsString();
+            if (!LocStr) {
+              reportWrongType("location", EJT_String);
+              continue;
+            }
             parseLocationString(*LocStr, E.CallerLocationFile,
                                 E.CallerLocationLines);
-          if (auto NsStr = CallerObj->getString("namespace"))
+          }
+          if (const auto *NsVal = CallerObj->get("namespace")) {
+            auto NsStr = NsVal->getAsString();
+            if (!NsStr) {
+              reportWrongType("namespace", EJT_String);
+              continue;
+            }
             E.CallerNamespace = NsStr->str();
+          }
           warnUnknownKeys(Diags, *CallerObj, "caller", KnownCallerKeys,
                           SourceDesc);
         } else {
@@ -363,14 +417,32 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         }
       }
 
-      if (auto CEVal = MatchObj->getBoolean("constexpr"))
+      if (const auto *CEValue = MatchObj->get("constexpr")) {
+        auto CEVal = CEValue->getAsBoolean();
+        if (!CEVal) {
+          reportWrongType("constexpr", EJT_Bool);
+          continue;
+        }
         E.ConstexprEval = *CEVal ? 1 : 0;
+      }
 
-      if (auto NsStr = MatchObj->getString("namespace"))
+      if (const auto *NsVal = MatchObj->get("namespace")) {
+        auto NsStr = NsVal->getAsString();
+        if (!NsStr) {
+          reportWrongType("namespace", EJT_String);
+          continue;
+        }
         E.Namespace = NsStr->str();
+      }
 
-      if (auto LocStr = MatchObj->getString("location"))
+      if (const auto *LocVal = MatchObj->get("location")) {
+        auto LocStr = LocVal->getAsString();
+        if (!LocStr) {
+          reportWrongType("location", EJT_String);
+          continue;
+        }
         parseLocationString(*LocStr, E.LocationFile, E.LocationLines);
+      }
 
       warnUnknownKeys(Diags, *MatchObj, "match", KnownMatchKeys, SourceDesc);
     }
