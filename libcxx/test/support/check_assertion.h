@@ -32,16 +32,8 @@
 #include "test_macros.h"
 #include "test_allocator.h"
 
-#if TEST_HAS_BUILTIN_IDENTIFIER(contract_assert)
-#  include <contracts>
-#endif
-
 #if TEST_STD_VER < 11
 #  error "C++11 or greater is required to use this header"
-#endif
-
-#if TEST_HAS_BUILTIN_IDENTIFIER(contract_assert)
-#  define USE_CONTRACTS
 #endif
 
 // When printing the assertion message to `stderr`, delimit it with a marker to make it easier to match the message
@@ -545,11 +537,7 @@ constexpr std::array<DeathCause, 4> AnyDeathCause = {DeathCause::VerboseAbort, D
 #define EXPECT_STD_TERMINATE(...)                 \
     assert(  ExpectDeath(DeathCause::StdTerminate, #__VA_ARGS__, __VA_ARGS__)  )
 
-#if defined(USE_CONTRACTS)
-#undef USE_CONTRACTS
-#define TEST_LIBCPP_ASSERT_FAILURE(expr, message) \
-    assert(( ExpectDeath(::AnyDeathCause, #expr, [&]() { (void)(expr); }, MakeContainsMessageMatcher(message)) ))
-#elif defined(_LIBCPP_ASSERTION_SEMANTIC)
+#if defined(_LIBCPP_ASSERTION_SEMANTIC)
 
 #if _LIBCPP_ASSERTION_SEMANTIC == _LIBCPP_ASSERTION_SEMANTIC_ENFORCE
 #define TEST_LIBCPP_ASSERT_FAILURE(expr, message) \
