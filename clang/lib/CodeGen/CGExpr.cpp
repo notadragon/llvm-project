@@ -2138,6 +2138,16 @@ static bool getRangeForType(CodeGenFunction &CGF, QualType Ty, llvm::APInt &Min,
   return true;
 }
 
+bool CodeGenFunction::getStrictEnumRange(QualType Ty, llvm::APInt &Min,
+                                         llvm::APInt &End) {
+  const EnumDecl *ED = Ty->getAsEnumDecl();
+  if (!(getLangOpts().CPlusPlus && ED && !ED->isFixed()) ||
+      getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, Ty))
+    return false;
+  ED->getValueRange(End, Min);
+  return true;
+}
+
 llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
   llvm::APInt Min, End;
   bool IsBool = Ty->hasBooleanRepresentation() && !Ty->isVectorType();

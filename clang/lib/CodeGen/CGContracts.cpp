@@ -1248,27 +1248,21 @@ CodeGenFunction::EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
   if ((IsBool && SanOpts.has(SanitizerKind::Bool)) ||
       (IsEnum && SanOpts.has(SanitizerKind::Enum)))
     return Loaded;
-  // A single-bit bool cannot be out of range; enums the sanitizer ignores
-  // (e.g. a fixed underlying type covering all bit patterns) cannot either.
+  // A single-bit bool cannot be out of range.
   if (IsBool &&
       cast<llvm::IntegerType>(Loaded->getType())->getBitWidth() == 1)
     return Loaded;
-  if (IsEnum &&
-      getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, Ty))
-    return Loaded;
 
-  // Valid range [Min, End) for the loaded storage value.
+  // Valid range [Min, End) for the loaded storage value.  getStrictEnumRange
+  // also filters out enums the sanitizer ignores (e.g. a fixed underlying type
+  // covering all bit patterns), which cannot be out of range.
   llvm::APInt Min, End;
   if (IsBool) {
     unsigned Bits = getContext().getTypeSize(Ty);
     Min = llvm::APInt(Bits, 0);
     End = llvm::APInt(Bits, 2);
-  } else {
-    const EnumDecl *ED = Ty->getAsEnumDecl();
-    if (!(getLangOpts().CPlusPlus && ED && !ED->isFixed()))
-      return Loaded;
-    ED->getValueRange(End, Min);
-  }
+  } else if (!getStrictEnumRange(Ty, Min, End))
+    return Loaded;
 
   // Resolve the semantic once for this site; assume leaves the raw load (so the
   // caller attaches range metadata, i.e. the optimizer may assume validity).

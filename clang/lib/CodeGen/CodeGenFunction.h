@@ -4755,6 +4755,15 @@ public:
                                  llvm::BasicBlock *ContBB, SourceLocation Loc,
                                  StringRef Msg, const FunctionDecl *FD);
 
+  /// P3100: if \p Ty is a non-fixed-underlying-type C++ enum that the enum
+  /// sanitizer does not ignore, set [\p Min, \p End) to its [dcl.enum] value
+  /// range and return true; otherwise return false.  Shared by the invalid-value
+  /// load guard and the enum-cast guard (the latter lives in ScalarExprEmitter,
+  /// so this must be accessible outside CodeGenFunction).  Distinct from
+  /// getRangeForType, which also covers bool, is gated on StrictEnums, and does
+  /// not apply the sanitizer-ignore filter.
+  bool getStrictEnumRange(QualType Ty, llvm::APInt &Min, llvm::APInt &End);
+
   /// P3100: emit the reaction for control flowing off the end of a coroutine
   /// with no usable return_void ({stmt.return.coroutine.flow.off}) at Loc.  No
   /// return value is substituted (the return object already exists); the
@@ -5736,6 +5745,7 @@ private:
 
 private:
   llvm::MDNode *getRangeForLoadFromType(QualType Ty);
+
   void EmitReturnOfRValue(RValue RV, QualType Ty);
 
   void deferPlaceholderReplacement(llvm::Instruction *Old, llvm::Value *New);

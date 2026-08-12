@@ -1086,16 +1086,12 @@ Value *ScalarExprEmitter::EmitConversionToBool(Value *Src, QualType SrcType) {
 
 llvm::Value *ScalarExprEmitter::EmitEnumCastInRangePredicate(
     Value *Src, QualType SrcType, QualType DstType, llvm::Type *SrcTy) {
-  const EnumDecl *ED = DstType->getAsEnumDecl();
-  if (!(CGF.getLangOpts().CPlusPlus && ED && !ED->isFixed()) ||
-      CGF.getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, DstType))
-    return nullptr;
-
   // Enumeration value range [Min, End); a value outside it is UB.  Compare at a
   // width covering both the source and the range (no truncation) using the
   // unsigned-offset trick, so a below-Min value wraps and is caught too.
   llvm::APInt Min, End;
-  ED->getValueRange(End, Min);
+  if (!CGF.getStrictEnumRange(DstType, Min, End))
+    return nullptr;
   unsigned CmpBits = std::max(
       cast<llvm::IntegerType>(SrcTy)->getBitWidth(), End.getBitWidth());
   llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
