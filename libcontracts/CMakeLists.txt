@@ -65,6 +65,10 @@ else()
   set(LIBCONTRACTS_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
 endif()
 
+# Name an install component so consumers can stage libcontracts on its own --
+# in particular libc++'s test-suite-install prefix, which installs per
+# component and would otherwise ship a libc++ whose libcontracts dependency
+# cannot be resolved at run time.
 install(TARGETS contracts_shared contracts_static
-  LIBRARY DESTINATION ${LIBCONTRACTS_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${LIBCONTRACTS_INSTALL_LIBDIR})
+  LIBRARY DESTINATION ${LIBCONTRACTS_INSTALL_LIBDIR} COMPONENT contracts
+  ARCHIVE DESTINATION ${LIBCONTRACTS_INSTALL_LIBDIR} COMPONENT contracts)
