@@ -1,5 +1,4 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts %libcxx_flags -fsyntax-only
-// REQUIRES: libcxx
 
 // Without -fcontracts-p3290, neither the compiler nor library macro is defined.
 

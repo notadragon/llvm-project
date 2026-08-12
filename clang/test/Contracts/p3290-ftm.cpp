@@ -1,5 +1,4 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3290 %libcxx_flags -fsyntax-only
-// REQUIRES: libcxx
 
 // Compiler-level vendor macro is defined when -fcontracts-p3290 is set.
 
