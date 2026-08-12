@@ -802,6 +802,11 @@ bool CodeGenFunction::EmitImplicitFlowOffReaction(const FunctionDecl *FD) {
 // __cxa_pure_virtual to a semantic-specific terminus.  Returns an empty StringRef
 // for assume/ignore (a pure-virtual call has no defined value to substitute) or
 // when -fcontracts-p3100 is off; the caller then keeps __cxa_pure_virtual.
+//
+// This is a CodeGenModule method (its caller is in CGVTables.cpp), kept here in
+// CGContracts.cpp rather than beside the other CodeGenModule members so it can
+// share the file-static resolveImplicitContractSemantic with the
+// CodeGenFunction EmitImplicit* guards above.
 StringRef
 CodeGenModule::getPureVirtualContractTerminusName(const CXXMethodDecl *MD) {
   using CES = ContractEvaluationSemantic;

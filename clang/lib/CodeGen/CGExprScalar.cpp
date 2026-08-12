@@ -1095,14 +1095,14 @@ llvm::Value *ScalarExprEmitter::EmitEnumCastInRangePredicate(
   unsigned CmpBits = std::max(
       cast<llvm::IntegerType>(SrcTy)->getBitWidth(), End.getBitWidth());
   llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
-  llvm::Value *SrcX = Builder.CreateIntCast(
+  llvm::Value *SrcExt = Builder.CreateIntCast(
       Src, CmpTy, SrcType->isSignedIntegerOrEnumerationType());
-  llvm::APInt MinX = Min.sext(CmpBits);
-  llvm::APInt SpanX = (End - 1).sext(CmpBits) - MinX;
-  llvm::Value *Off = Builder.CreateSub(
-      SrcX, llvm::ConstantInt::get(CGF.getLLVMContext(), MinX));
+  llvm::APInt MinExt = Min.sext(CmpBits);
+  llvm::APInt Span = (End - 1).sext(CmpBits) - MinExt;
+  llvm::Value *Offset = Builder.CreateSub(
+      SrcExt, llvm::ConstantInt::get(CGF.getLLVMContext(), MinExt));
   return Builder.CreateICmpUGT(
-      Off, llvm::ConstantInt::get(CGF.getLLVMContext(), SpanX), "enum.oor");
+      Offset, llvm::ConstantInt::get(CGF.getLLVMContext(), Span), "enum.oor");
 }
 
 llvm::Value *ScalarExprEmitter::EmitFloatCastInRangePredicate(
