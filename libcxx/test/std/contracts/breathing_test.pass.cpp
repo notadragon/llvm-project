@@ -1,4 +1,4 @@
-// ADDITIONAL_COMPILE_FLAGS: -std=c++26 -fcontracts -fcontract-evaluation-semantic=observe -Xclang -fcontract-group-evaluation-semantic=enforce=enforce -fcontract-group-evaluation-semantic=quick_enforce=quick_enforce -fcontract-group-evaluation-semantic=ignore=ignore -fcontract-group-evaluation-semantic=observe=observe
+// ADDITIONAL_COMPILE_FLAGS: -std=c++26 -fcontracts -fcontract-evaluation-semantic=observe -Xclang -fcontracts-group-evaluation-semantic=enforce:enforce -fcontracts-group-evaluation-semantic=quick_enforce:quick_enforce -fcontracts-group-evaluation-semantic=ignore:ignore -fcontracts-group-evaluation-semantic=observe:observe
 #include <cassert>
 #include <contracts>
 #include <iostream>

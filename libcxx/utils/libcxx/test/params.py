@@ -134,7 +134,7 @@ def testClangTidy(cfg, version, executable):
         return None
 
 def hasContractSupport(cfg):
-    return hasCompileFlag(cfg, "-fcontracts") and hasCompileFlag(cfg, "-fcontract-group-evaluation-semantic=std=enforce")
+    return hasCompileFlag(cfg, "-fcontracts") and hasCompileFlag(cfg, "-fcontracts-group-evaluation-semantic=std:enforce")
 
 def getSuitableClangTidy(cfg):
     # If we didn't build the libcxx-tidy plugin via CMake, we can't run the clang-tidy tests.
@@ -488,7 +488,7 @@ DEFAULT_PARAMETERS = [
             AddCompileFlag("-fcontracts"),
             AddCompileFlag('-fcolor-diagnostics'),
             AddFeature("contracts"),
-            AddCompileFlag("-fcontract-group-evaluation-semantic=std=enforce"),
+            AddCompileFlag("-fcontracts-group-evaluation-semantic=std:enforce"),
         ]
     ),
     Parameter(
