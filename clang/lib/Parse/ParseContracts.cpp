@@ -104,11 +104,12 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
   SourceRange ContractRange = SourceRange(ConsumeToken());
 
   // P3400: If there's a '<', cache the label expression tokens before '('.
-  // Cache them even when P3400 is off, so the re-parse can diagnose the
-  // missing flag.  Skipping the label here instead would drop it silently:
-  // the cached stream would start at the predicate and a late-parsed (member
-  // function) contract would compile as if no label had been written, quietly
-  // using the default semantic rather than the one the label selects.
+  // Cache them even when P3400 is off, so the re-parse reaches the proper
+  // err_contract_label_require_flag.  Skipping the label here instead leaves
+  // the cached token stream starting at '<', which the re-parse cannot make
+  // sense of -- a late-parsed (member function) contract then produces the
+  // same cascade of unrelated errors this diagnostic exists to replace
+  // ("expected '(' after 'pre'", "expected ';' at end of declaration list").
   if (Tok.is(tok::less)) {
     Toks.push_back(StartTok);
     Toks.push_back(Tok);
