@@ -35,9 +35,12 @@ using namespace clang;
 std::optional<ContractKind>
 Parser::getContractKeyword(const Token &Token) const {
   // C contracts (D4299): keyword tokens
-  if (Token.is(tok::kw__Pre)) return ContractKind::Pre;
-  if (Token.is(tok::kw__Post)) return ContractKind::Post;
-  if (Token.is(tok::kw__ContractAssert)) return ContractKind::Assert;
+  if (Token.is(tok::kw__Pre))
+    return ContractKind::Pre;
+  if (Token.is(tok::kw__Post))
+    return ContractKind::Post;
+  if (Token.is(tok::kw__ContractAssert))
+    return ContractKind::Assert;
 
   // We offer the reserved keywords as identifiers in C++11 mode.
   if (!getLangOpts().CPlusPlus11 ||
@@ -101,7 +104,12 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
   SourceRange ContractRange = SourceRange(ConsumeToken());
 
   // P3400: If there's a '<', cache the label expression tokens before '('.
-  if (getLangOpts().ContractsP3400 && Tok.is(tok::less)) {
+  // Cache them even when P3400 is off, so the re-parse can diagnose the
+  // missing flag.  Skipping the label here instead would drop it silently:
+  // the cached stream would start at the predicate and a late-parsed (member
+  // function) contract would compile as if no label had been written, quietly
+  // using the default semantic rather than the one the label selects.
+  if (Tok.is(tok::less)) {
     Toks.push_back(StartTok);
     Toks.push_back(Tok);
     ConsumeToken(); // '<'
@@ -173,7 +181,7 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
   }
 
   // Cache any [[attribute]] tokens before captures/paren.
-  Toks.push_back(StartTok);             // contract keyword
+  Toks.push_back(StartTok); // contract keyword
 
   // P4283: cache an optional requires-clause (no label) before the
   // attributes/captures/predicate.
@@ -351,11 +359,11 @@ bool Parser::LateParseContractRequiresClause(CachedTokens &Toks) {
 ///     conditional-expression ')' ';'
 ///
 StmtResult Parser::ParseContractAssertStatement() {
-  assert((Tok.is(tok::kw_contract_assert) ||
-          Tok.is(tok::kw__ContractAssert)) &&
+  assert((Tok.is(tok::kw_contract_assert) || Tok.is(tok::kw__ContractAssert)) &&
          "Not a contract assert statement");
   bool IsInvalidTmp = false;
-  return ParseFunctionContractSpecifierImpl({}, ContractScopeOffset::FunctionContext, IsInvalidTmp);
+  return ParseFunctionContractSpecifierImpl(
+      {}, ContractScopeOffset::FunctionContext, IsInvalidTmp);
 }
 
 /// ParseFunctionContractSpecifierSeq - Parse a series of pre/post contracts on
@@ -413,17 +421,19 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
     }
   }
 
-  InitCXXThisScopeForDeclaratorIfRelevant(DeclarationInfo,
-                                          DeclarationInfo.getDeclSpec(),
-                                          ThisScope);
+  InitCXXThisScopeForDeclaratorIfRelevant(
+      DeclarationInfo, DeclarationInfo.getDeclSpec(), ThisScope);
   bool IsInvalid = false;
   SourceLocation StartLoc = Tok.getLocation();
 
   SmallVector<ContractStmt *, 4> Contracts;
   while (isFunctionContractKeyword(Tok)) {
     bool IsInvalidTmp = false;
-    StmtResult Contract =
-        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, EnterScope ? ContractScopeOffset::ParentContext : ContractScopeOffset::FunctionContext, IsInvalidTmp);
+    StmtResult Contract = ParseFunctionContractSpecifierImpl(
+        ReturnTypeResolver,
+        EnterScope ? ContractScopeOffset::ParentContext
+                   : ContractScopeOffset::FunctionContext,
+        IsInvalidTmp);
     IsInvalid |= IsInvalidTmp;
     if (Contract.isUsable())
       Contracts.push_back(Contract.getAs<ContractStmt>());
@@ -437,12 +447,14 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
 }
 
 StmtResult Parser::ParseFunctionContractSpecifierImpl(
-    llvm::function_ref<QualType()> ReturnTypeResolver, ContractScopeOffset ScopeOffset, bool &IsInvalid) {
+    llvm::function_ref<QualType()> ReturnTypeResolver,
+    ContractScopeOffset ScopeOffset, bool &IsInvalid) {
   assert(isAnyContractKeyword(Tok) && "Not a contract keyword?");
   ContractKind CK = getContractKeyword(Tok).value();
   assert((CK == ContractKind::Assert || ReturnTypeResolver) &&
          "Missing return type resolver for function contract sequence");
-  assert((ScopeOffset == ContractScopeOffset::FunctionContext || CK != ContractKind::Assert) &&
+  assert((ScopeOffset == ContractScopeOffset::FunctionContext ||
+          CK != ContractKind::Assert) &&
          "Incorrect scope offset for contract assert");
   auto SetInvalidOnExit = llvm::scope_exit([&]() { IsInvalid = true; });
 
@@ -559,8 +571,9 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
     if (ReturnTypeResolver)
       ReturnType = ReturnTypeResolver();
 
-    RND = Actions.ActOnResultNameDeclarator(CK, getCurScope(), ReturnType,
-                                            IdLoc, Id, getCurScope()->getFunctionPrototypeDepth());
+    RND = Actions.ActOnResultNameDeclarator(
+        CK, getCurScope(), ReturnType, IdLoc, Id,
+        getCurScope()->getFunctionPrototypeDepth());
 
     if (!RND)
       return StmtError();
@@ -629,12 +642,9 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
     SetInvalidOnExit.release();
   }
 
-  StmtResult Res = Actions.ActOnContractAssert(CK, KeywordLoc, Cond.get(), RND,
-                                               CXX11Attrs,
-                                               MessageExpr.get(),
-                                               LabelExpr.get(),
-                                               CapturesDeclStmt,
-                                               RequiresClauseExpr.get());
+  StmtResult Res = Actions.ActOnContractAssert(
+      CK, KeywordLoc, Cond.get(), RND, CXX11Attrs, MessageExpr.get(),
+      LabelExpr.get(), CapturesDeclStmt, RequiresClauseExpr.get());
   if (Res.isInvalid())
     IsInvalid = true;
   return Res;
@@ -773,8 +783,7 @@ bool Parser::ParseLexedFunctionContracts(
   //   declarator.
   CXXMethodDecl *Method;
   FunctionDecl *FunctionToPush;
-  if (FunctionTemplateDecl *FunTmpl =
-          dyn_cast<FunctionTemplateDecl>(FD))
+  if (FunctionTemplateDecl *FunTmpl = dyn_cast<FunctionTemplateDecl>(FD))
     FunctionToPush = FunTmpl->getTemplatedDecl();
   else
     FunctionToPush = cast<FunctionDecl>(FD);
@@ -819,8 +828,8 @@ bool Parser::ParseLexedFunctionContracts(
   while (isFunctionContractKeyword(Tok)) {
     assert(Actions.CurContext == FunctionToPush);
     bool IsInvalidTmp = false;
-    StmtResult Contract =
-        ParseFunctionContractSpecifierImpl(ReturnTypeResolver, ContractScopeOffset::FunctionContext, IsInvalidTmp);
+    StmtResult Contract = ParseFunctionContractSpecifierImpl(
+        ReturnTypeResolver, ContractScopeOffset::FunctionContext, IsInvalidTmp);
     if (Contract.isUsable())
       Contracts.push_back(Contract.getAs<ContractStmt>());
     IsInvalid |= IsInvalidTmp;
