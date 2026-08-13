@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++2a  -fcontracts %s -fsyntax-only
+// RUN: %clang_cc1 -std=c++26  -fcontracts %s -fsyntax-only
 
 
 int main() {

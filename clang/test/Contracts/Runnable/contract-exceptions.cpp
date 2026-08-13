@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++23  %s -fcontracts -fcontract-evaluation-semantic=enforce
+// RUN: %clang_cc1 -std=c++26  %s -fcontracts -fcontract-evaluation-semantic=enforce
 
 // Initially this caused a crash because we were failing to take into account
 // the cleanups that are required for the contract evaluation.
