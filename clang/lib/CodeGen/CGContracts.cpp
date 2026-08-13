@@ -475,8 +475,9 @@ static bool FunctionCanThrow(const FunctionDecl *D) {
     // Function proto is not found, we conservatively assume throwing.
     return true;
   }
-  return !isNoexceptExceptionSpec(Proto->getExceptionSpecType()) ||
-         Proto->canThrow() != CT_Cannot;
+  // canThrow() already accounts for every exception-specification form,
+  // including the dynamic ones, so it is the whole test.
+  return Proto->canThrow() != CT_Cannot;
 }
 
 static bool StmtCanThrow(const Stmt *S) {
@@ -1666,8 +1667,13 @@ void CodeGenFunction::EmitContractStmtAsFullStmt(const ContractStmt &S) {
 void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
                                            ContractEvaluationSemantic Semantic,
                                            llvm::BasicBlock *ContinueBlock) {
-  // FIXME: I think there's a lot more to do than simply this.
-  // P3100 "assume" emits no check for now, exactly like "ignore".
+  // P3100 "assume" deliberately emits no check today, exactly like "ignore".
+  // GCC does the same (gcc/cp/contracts.cc, contract_semantic_emits_no_check),
+  // so the two implementations agree on the observable behaviour.  Lowering it
+  // to an optimiser hint instead -- llvm.assume, or the UB-preserving form the
+  // implicit checks already use -- is future work, and needs a decision about
+  // whether a user-written predicate is safe to feed the optimiser given it may
+  // have been false all along.
   if (Semantic == Ignore || Semantic == ContractEvaluationSemantic::Assume) {
     if (ContinueBlock)
       Builder.CreateBr(ContinueBlock);

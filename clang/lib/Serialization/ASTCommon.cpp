@@ -404,9 +404,10 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::Empty:
     return true;
 
-  // FIXME: Is this correct?
+  // ContractSpecifierDecl does not inherit Redeclarable, so it never reaches
+  // VisitRedeclarable and this case exists only for switch completeness.
   case Decl::ContractSpecifier:
-    return true;
+    return false;
 
   // Never redeclarable.
   case Decl::ExplicitInstantiation:
