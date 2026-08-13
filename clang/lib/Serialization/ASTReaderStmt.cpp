@@ -13,7 +13,6 @@
 
 #include "clang/AST/ASTConcept.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/Basic/ContractOptions.h"
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclAccessPair.h"
@@ -41,6 +40,7 @@
 #include "clang/AST/UnresolvedSet.h"
 #include "clang/Basic/BuiltinTraits.h"
 #include "clang/Basic/CapturedStmt.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OpenMPKinds.h"

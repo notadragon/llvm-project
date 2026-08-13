@@ -46,61 +46,61 @@ SANITIZER_INTERFACE_WEAK_DEF(const char *, __ubsan_default_suppressions, void) {
 // rich UBSan text lazily via contract_violation::report().
 //
 // Throwing handlers: the handler is invoked from inside the implicitly-noexcept
-// ScopedReport destructor below, so a throwing handler can never propagate -- it
-// would hit "exception escaping a noexcept function" and std::terminate()
+// ScopedReport destructor below, so a throwing handler can never propagate --
+// it would hit "exception escaping a noexcept function" and std::terminate()
 // several frames below any user catch/RAII.  That is why the compiler only ever
-// routes the NON-throwing semantics here: observe/enforce on the wire are really
-// the D4298 noexcept_observe/noexcept_enforce paths (gated on -fcontracts-p4298),
-// and quick_enforce terminates without ever entering the handler.  Same rule and
-// wire encoding as ASan (asan_report.cpp).
+// routes the NON-throwing semantics here: observe/enforce on the wire are
+// really the D4298 noexcept_observe/noexcept_enforce paths (gated on
+// -fcontracts-p4298), and quick_enforce terminates without ever entering the
+// handler.  Same rule and wire encoding as ASan (asan_report.cpp).
 // ---------------------------------------------------------------------------
 namespace {
-// Wire encoding, identical to __asan_contract_semantic (asan_report.cpp) and the
-// compiler side (gcc/cp/decl2.cc emit_ubsan_contract_semantic_descriptor).
+// Wire encoding, identical to __asan_contract_semantic (asan_report.cpp) and
+// the compiler side (gcc/cp/decl2.cc emit_ubsan_contract_semantic_descriptor).
 enum {
-  kUbsanContractStock = 0,    // routing off: stock behavior
-  kUbsanContractObserve = 1,  // noexcept_observe: call handler, then continue
-  kUbsanContractEnforce = 2,  // noexcept_enforce: call handler, then terminate
-  kUbsanContractQuick = 3,    // quick_enforce: terminate WITHOUT the handler
+  kUbsanContractStock = 0,   // routing off: stock behavior
+  kUbsanContractObserve = 1, // noexcept_observe: call handler, then continue
+  kUbsanContractEnforce = 2, // noexcept_enforce: call handler, then terminate
+  kUbsanContractQuick = 3,   // quick_enforce: terminate WITHOUT the handler
 };
 
 // Routed-check ids indexing the per-TU weak table __ubsan_contract_semantic[].
 // KEEP IN SYNC with gcc/cp/decl2.cc (the RUC_* / RUC_COUNT mirror).  Each entry
-// is one -fsanitize= runtime check routed to the contract-violation handler; add
-// a check by appending an id here and a case to ErrorTypeToRoutedId below (and
-// the matching entry in the compiler-side descriptor emitter).
+// is one -fsanitize= runtime check routed to the contract-violation handler;
+// add a check by appending an id here and a case to ErrorTypeToRoutedId below
+// (and the matching entry in the compiler-side descriptor emitter).
 // RUC_FUNCTION is reserved for cross-compiler id alignment with Clang, which
 // routes -fsanitize=function; GCC never emits that check, so on GCC the slot is
 // always stock (but the ErrorType is still folded below, harmlessly).
 enum {
-  RUC_VPTR = 0,  // -fsanitize=vptr (ErrorType::DynamicTypeMismatch)
-  RUC_FUNCTION,  // -fsanitize=function (ErrorType::FunctionTypeMismatch)
-  RUC_ALIGNMENT,  // -fsanitize=alignment
-  RUC_OBJECT_SIZE,  // -fsanitize=object-size
-  RUC_NONNULL_ATTRIBUTE,  // -fsanitize=nonnull-attribute
-  RUC_RETURNS_NONNULL_ATTRIBUTE,  // -fsanitize=returns-nonnull-attribute
-  RUC_POINTER_OVERFLOW,  // -fsanitize=pointer-overflow
-  RUC_NULL,  // -fsanitize=null
-  RUC_SHIFT_BASE,  // -fsanitize=shift-base
-  RUC_SHIFT_EXPONENT,  // -fsanitize=shift-exponent
-  RUC_INTEGER_DIVIDE_BY_ZERO,  // -fsanitize=integer-divide-by-zero
-  RUC_SIGNED_INTEGER_OVERFLOW,  // -fsanitize=signed-integer-overflow
-  RUC_BOOL,  // -fsanitize=bool
-  RUC_ENUM,  // -fsanitize=enum
-  RUC_FLOAT_CAST_OVERFLOW,  // -fsanitize=float-cast-overflow
-  RUC_BOUNDS,  // -fsanitize=bounds / array-bounds
-  RUC_RETURN,  // -fsanitize=return
-  RUC_UNREACHABLE,  // -fsanitize=unreachable
-  RUC_VLA_BOUND,  // -fsanitize=vla-bound
-  RUC_BUILTIN,  // -fsanitize=builtin
-  RUC_FLOAT_DIVIDE_BY_ZERO,  // -fsanitize=float-divide-by-zero
+  RUC_VPTR = 0,    // -fsanitize=vptr (ErrorType::DynamicTypeMismatch)
+  RUC_FUNCTION,    // -fsanitize=function (ErrorType::FunctionTypeMismatch)
+  RUC_ALIGNMENT,   // -fsanitize=alignment
+  RUC_OBJECT_SIZE, // -fsanitize=object-size
+  RUC_NONNULL_ATTRIBUTE,         // -fsanitize=nonnull-attribute
+  RUC_RETURNS_NONNULL_ATTRIBUTE, // -fsanitize=returns-nonnull-attribute
+  RUC_POINTER_OVERFLOW,          // -fsanitize=pointer-overflow
+  RUC_NULL,                      // -fsanitize=null
+  RUC_SHIFT_BASE,                // -fsanitize=shift-base
+  RUC_SHIFT_EXPONENT,            // -fsanitize=shift-exponent
+  RUC_INTEGER_DIVIDE_BY_ZERO,    // -fsanitize=integer-divide-by-zero
+  RUC_SIGNED_INTEGER_OVERFLOW,   // -fsanitize=signed-integer-overflow
+  RUC_BOOL,                      // -fsanitize=bool
+  RUC_ENUM,                      // -fsanitize=enum
+  RUC_FLOAT_CAST_OVERFLOW,       // -fsanitize=float-cast-overflow
+  RUC_BOUNDS,                    // -fsanitize=bounds / array-bounds
+  RUC_RETURN,                    // -fsanitize=return
+  RUC_UNREACHABLE,               // -fsanitize=unreachable
+  RUC_VLA_BOUND,                 // -fsanitize=vla-bound
+  RUC_BUILTIN,                   // -fsanitize=builtin
+  RUC_FLOAT_DIVIDE_BY_ZERO,      // -fsanitize=float-divide-by-zero
   // Clang-only checks (GCC has no -fsanitize= bit for them); reserved for
   // cross-compiler id alignment.  Their ErrorTypes are still folded below, but
   // on GCC their wire slots stay stock since the descriptor never sets them.
-  RUC_UNSIGNED_INTEGER_OVERFLOW,  // -fsanitize=unsigned-integer-overflow
-  RUC_IMPLICIT_CONVERSION,  // -fsanitize=implicit-* conversion checks
-  RUC_LOCAL_BOUNDS,  // -fsanitize=local-bounds
-  RUC_OBJC_CAST,  // -fsanitize=objc-cast
+  RUC_UNSIGNED_INTEGER_OVERFLOW, // -fsanitize=unsigned-integer-overflow
+  RUC_IMPLICIT_CONVERSION,       // -fsanitize=implicit-* conversion checks
+  RUC_LOCAL_BOUNDS,              // -fsanitize=local-bounds
+  RUC_OBJC_CAST,                 // -fsanitize=objc-cast
   RUC_COUNT
 };
 const int RUC_INVALID = -1;
@@ -109,71 +109,71 @@ const int RUC_INVALID = -1;
 // ErrorTypes may map to one -fsanitize= check; list only the routed ones.
 int ErrorTypeToRoutedId(ErrorType Type) {
   switch (Type) {
-    case ErrorType::DynamicTypeMismatch:
-      return RUC_VPTR;
-    case ErrorType::FunctionTypeMismatch:
-      return RUC_FUNCTION;
-    case ErrorType::MisalignedPointerUse:
-    case ErrorType::AlignmentAssumption:
-      return RUC_ALIGNMENT;
-    case ErrorType::InsufficientObjectSize:
-      return RUC_OBJECT_SIZE;
-    case ErrorType::InvalidNullArgument:
-    case ErrorType::InvalidNullArgumentWithNullability:
-      return RUC_NONNULL_ATTRIBUTE;
-    case ErrorType::InvalidNullReturn:
-    case ErrorType::InvalidNullReturnWithNullability:
-      return RUC_RETURNS_NONNULL_ATTRIBUTE;
-    case ErrorType::NullptrWithOffset:
-    case ErrorType::NullptrWithNonZeroOffset:
-    case ErrorType::NullptrAfterNonZeroOffset:
-    case ErrorType::PointerOverflow:
-      return RUC_POINTER_OVERFLOW;
-    case ErrorType::NullPointerUse:
-    case ErrorType::NullPointerUseWithNullability:
-      return RUC_NULL;
-    case ErrorType::InvalidShiftBase:
-      return RUC_SHIFT_BASE;
-    case ErrorType::InvalidShiftExponent:
-      return RUC_SHIFT_EXPONENT;
-    case ErrorType::IntegerDivideByZero:
-      return RUC_INTEGER_DIVIDE_BY_ZERO;
-    case ErrorType::SignedIntegerOverflow:
-      return RUC_SIGNED_INTEGER_OVERFLOW;
-    case ErrorType::InvalidBoolLoad:
-      return RUC_BOOL;
-    case ErrorType::InvalidEnumLoad:
-      return RUC_ENUM;
-    case ErrorType::FloatCastOverflow:
-      return RUC_FLOAT_CAST_OVERFLOW;
-    case ErrorType::OutOfBoundsIndex:
-      return RUC_BOUNDS;
-    case ErrorType::MissingReturn:
-      return RUC_RETURN;
-    case ErrorType::UnreachableCall:
-      return RUC_UNREACHABLE;
-    case ErrorType::NonPositiveVLAIndex:
-      return RUC_VLA_BOUND;
-    case ErrorType::InvalidBuiltin:
-      return RUC_BUILTIN;
-    case ErrorType::FloatDivideByZero:
-      return RUC_FLOAT_DIVIDE_BY_ZERO;
-    case ErrorType::UnsignedIntegerOverflow:
-      return RUC_UNSIGNED_INTEGER_OVERFLOW;
-    case ErrorType::ImplicitUnsignedIntegerTruncation:
-    case ErrorType::ImplicitSignedIntegerTruncation:
-    case ErrorType::ImplicitIntegerSignChange:
-    case ErrorType::ImplicitSignedIntegerTruncationOrSignChange:
-      return RUC_IMPLICIT_CONVERSION;
-    case ErrorType::LocalOutOfBounds:
-      return RUC_LOCAL_BOUNDS;
-    case ErrorType::InvalidObjCCast:
-      return RUC_OBJC_CAST;
-    default:
-      return RUC_INVALID;
+  case ErrorType::DynamicTypeMismatch:
+    return RUC_VPTR;
+  case ErrorType::FunctionTypeMismatch:
+    return RUC_FUNCTION;
+  case ErrorType::MisalignedPointerUse:
+  case ErrorType::AlignmentAssumption:
+    return RUC_ALIGNMENT;
+  case ErrorType::InsufficientObjectSize:
+    return RUC_OBJECT_SIZE;
+  case ErrorType::InvalidNullArgument:
+  case ErrorType::InvalidNullArgumentWithNullability:
+    return RUC_NONNULL_ATTRIBUTE;
+  case ErrorType::InvalidNullReturn:
+  case ErrorType::InvalidNullReturnWithNullability:
+    return RUC_RETURNS_NONNULL_ATTRIBUTE;
+  case ErrorType::NullptrWithOffset:
+  case ErrorType::NullptrWithNonZeroOffset:
+  case ErrorType::NullptrAfterNonZeroOffset:
+  case ErrorType::PointerOverflow:
+    return RUC_POINTER_OVERFLOW;
+  case ErrorType::NullPointerUse:
+  case ErrorType::NullPointerUseWithNullability:
+    return RUC_NULL;
+  case ErrorType::InvalidShiftBase:
+    return RUC_SHIFT_BASE;
+  case ErrorType::InvalidShiftExponent:
+    return RUC_SHIFT_EXPONENT;
+  case ErrorType::IntegerDivideByZero:
+    return RUC_INTEGER_DIVIDE_BY_ZERO;
+  case ErrorType::SignedIntegerOverflow:
+    return RUC_SIGNED_INTEGER_OVERFLOW;
+  case ErrorType::InvalidBoolLoad:
+    return RUC_BOOL;
+  case ErrorType::InvalidEnumLoad:
+    return RUC_ENUM;
+  case ErrorType::FloatCastOverflow:
+    return RUC_FLOAT_CAST_OVERFLOW;
+  case ErrorType::OutOfBoundsIndex:
+    return RUC_BOUNDS;
+  case ErrorType::MissingReturn:
+    return RUC_RETURN;
+  case ErrorType::UnreachableCall:
+    return RUC_UNREACHABLE;
+  case ErrorType::NonPositiveVLAIndex:
+    return RUC_VLA_BOUND;
+  case ErrorType::InvalidBuiltin:
+    return RUC_BUILTIN;
+  case ErrorType::FloatDivideByZero:
+    return RUC_FLOAT_DIVIDE_BY_ZERO;
+  case ErrorType::UnsignedIntegerOverflow:
+    return RUC_UNSIGNED_INTEGER_OVERFLOW;
+  case ErrorType::ImplicitUnsignedIntegerTruncation:
+  case ErrorType::ImplicitSignedIntegerTruncation:
+  case ErrorType::ImplicitIntegerSignChange:
+  case ErrorType::ImplicitSignedIntegerTruncationOrSignChange:
+    return RUC_IMPLICIT_CONVERSION;
+  case ErrorType::LocalOutOfBounds:
+    return RUC_LOCAL_BOUNDS;
+  case ErrorType::InvalidObjCCast:
+    return RUC_OBJC_CAST;
+  default:
+    return RUC_INVALID;
   }
 }
-}  // namespace
+} // namespace
 
 // Per-TU weak table: one wire byte per routed check.  Absent (all reads stock)
 // in a program not built with contract routing.  Declared weak so a non-p3100
@@ -190,15 +190,16 @@ static unsigned char UbsanContractSemantic(int ruc) {
   return __ubsan_contract_semantic[ruc];
 }
 
-// The lazy report populator ABI struct (mirror of __cxa_contract_report_populator
-// in libstdc++ bits/contracts_abi.h and the AsanContractReportPopulator in
-// asan_report.cpp).  Layout must be { const char* (*)(const void*), const void* }.
+// The lazy report populator ABI struct (mirror of
+// __cxa_contract_report_populator in libstdc++ bits/contracts_abi.h and the
+// AsanContractReportPopulator in asan_report.cpp).  Layout must be { const
+// char* (*)(const void*), const void* }.
 struct UbsanContractReportPopulator {
   const char *(*populate)(const void *ctx);
   const void *ctx;
 };
 struct UbsanContractReportCtx {
-  const char *rendered;  // the already-captured NUL-terminated report text
+  const char *rendered; // the already-captured NUL-terminated report text
 };
 
 // The contract-violation report leg, provided by the C++ runtime (libstdc++).
@@ -206,11 +207,13 @@ struct UbsanContractReportCtx {
 // we fall back to emitting the captured diagnostic (see ~ScopedReport).  Builds
 // an implicit contract_violation and invokes the handler; always returns
 // (termination for enforce is performed here).  The final argument is the lazy
-// report populator (CXA_FIELD_REPORT): the handler's contract_violation::report()
-// invokes populate(ctx) on demand.  Same symbol/signature as the ASan path.
-extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
-    const char *comment, const char *file, unsigned line,
-    unsigned char semantic, const UbsanContractReportPopulator *report);
+// report populator (CXA_FIELD_REPORT): the handler's
+// contract_violation::report() invokes populate(ctx) on demand.  Same
+// symbol/signature as the ASan path.
+extern "C" SANITIZER_WEAK_ATTRIBUTE void
+__cxa_contract_violation_sanitizer(const char *comment, const char *file,
+                                   unsigned line, unsigned char semantic,
+                                   const UbsanContractReportPopulator *report);
 
 // Live capture of the rendered UBSan text on the routed path.  Unlike ASan
 // (whose error object is replayable, so it renders on demand), a UBSan Diag
@@ -609,8 +612,8 @@ Diag::~Diag() {
   // P3100: on the contract-routed path capture the rendered line for the
   // handler's contract_violation::report() and emit NOTHING to stderr -- the
   // contract-violation handler owns all output.  (ScopedReport enabled capture
-  // in its constructor, which runs before any Diag here.)  The memory snippet is
-  // likewise suppressed while routing.  Stock behavior is byte-for-byte
+  // in its constructor, which runs before any Diag here.)  The memory snippet
+  // is likewise suppressed while routing.  Stock behavior is byte-for-byte
   // unchanged when routing is off.
   if (g_contract_capturing) {
     ContractCaptureAppend(Buffer.data());
@@ -640,9 +643,10 @@ ScopedReport::ScopedReport(ReportOptions Opts, Location SummaryLoc,
 ScopedReport::~ScopedReport() {
   // P3100 contract routing: when this report's check is routed, the configured
   // semantic ALONE decides behavior (no dependence on UBSAN_OPTIONS/
-  // halt_on_error) -- mirror of ASan's ScopedInErrorReport dtor.  The Diags have
-  // already rendered into g_contract_capture with stderr suppressed; here we
-  // dispatch that to the handler (observe/enforce) or terminate silently (quick).
+  // halt_on_error) -- mirror of ASan's ScopedInErrorReport dtor.  The Diags
+  // have already rendered into g_contract_capture with stderr suppressed; here
+  // we dispatch that to the handler (observe/enforce) or terminate silently
+  // (quick).
   const unsigned char route = contract_wire_;
   if (route != kUbsanContractStock) {
     ContractCaptureEnd();
@@ -658,7 +662,8 @@ ScopedReport::~ScopedReport() {
         handler_linked) {
       // UBSan knows the concrete error and its source location -- pass both so
       // the contract_violation carries a real file:line (better fidelity than
-      // ASan, which supplies none).  The rich text is served lazily via report().
+      // ASan, which supplies none).  The rich text is served lazily via
+      // report().
       const char *comment = ConvertTypeToFlagName(Type);
       const char *file = "";
       unsigned line = 0;
@@ -670,18 +675,20 @@ ScopedReport::~ScopedReport() {
         }
       }
       UbsanContractReportCtx ctx = {/*rendered=*/g_contract_capture};
-      UbsanContractReportPopulator pop = {&ubsan_contract_report_populate, &ctx};
+      UbsanContractReportPopulator pop = {&ubsan_contract_report_populate,
+                                          &ctx};
       __cxa_contract_violation_sanitizer(comment, file, line, route, &pop);
       if (route == kUbsanContractObserve)
-        return;  // noexcept_observe: continue past the violation.
+        return; // noexcept_observe: continue past the violation.
       // noexcept_enforce: terminate.  The handler owns all output on this path,
       // so emit no extra text.
       Die();
     }
 
-    // Routed, but the C++ contracts runtime is not linked (defensive: should not
-    // happen for a -fcontracts-p3100 program).  Don't lose the diagnostic: emit
-    // the captured text, then fall through to the stock termination policy.
+    // Routed, but the C++ contracts runtime is not linked (defensive: should
+    // not happen for a -fcontracts-p3100 program).  Don't lose the diagnostic:
+    // emit the captured text, then fall through to the stock termination
+    // policy.
     if (g_contract_capture[0])
       Printf("%s", g_contract_capture);
   }

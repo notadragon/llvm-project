@@ -177,7 +177,6 @@ public:
   /// constant value.
   bool InConstantContext = false;
 
-
   // Whether we're allowed to evaluate contracts
   bool EvaluateContracts = true;
 
@@ -193,7 +192,6 @@ public:
   /// Note that we still need to evaluate the expression normally when this
   /// is set; this is used when evaluating ICEs in C.
   bool CheckingForUndefinedBehavior = false;
-
 
   // TODO: Use EvalMode instead of EvaluateContracts?
   EvaluationMode EvalMode;

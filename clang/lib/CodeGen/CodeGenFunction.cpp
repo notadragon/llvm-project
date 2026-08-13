@@ -33,11 +33,12 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
-#include "clang/Basic/SourceManager.h"
+#include "clang/Lex/Lexer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Frontend/OpenMP/OMPIRBuilder.h"
@@ -55,7 +56,6 @@
 #include "llvm/Support/xxhash.h"
 #include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
-#include "clang/Lex/Lexer.h"
 #include <optional>
 
 using namespace clang;
@@ -835,15 +835,15 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     }
   }
 
-  // P3100 Task 2.1 (CL2, assume): when -fcontracts-p3100 resolves the user-space
-  // address check to assume, AddressSanitizer must not instrument this function
+  // P3100 Task 2.1 (CL2, assume): when -fcontracts-p3100 resolves the
+  // user-space address check to assume, AddressSanitizer must not instrument
+  // this function
   // -- byte-identical to a build without -fsanitize=address for that check.
-  // Clear the address bit so the SanitizeAddress attribute below is not applied;
-  // the (missing) attribute streams through (Thin)LTO exactly like GCC's
-  // per-function no_sanitize("address"), so the ASan pass honors it under LTO
-  // and non-LTO alike.
-  if (getLangOpts().ContractsP3100 &&
-      SanOpts.has(SanitizerKind::Address) &&
+  // Clear the address bit so the SanitizeAddress attribute below is not
+  // applied; the (missing) attribute streams through (Thin)LTO exactly like
+  // GCC's per-function no_sanitize("address"), so the ASan pass honors it under
+  // LTO and non-LTO alike.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Address) &&
       CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Address) ==
           ContractEvaluationSemantic::Assume)
     SanOpts.set(SanitizerKind::Address, false);
@@ -855,9 +855,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   if (getLangOpts().ContractsP3100)
     for (SanitizerMask Bit :
          {SanitizerKind::PointerCompare, SanitizerKind::PointerSubtract})
-      if (SanOpts.has(Bit) &&
-          CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
-              ContractEvaluationSemantic::Assume)
+      if (SanOpts.has(Bit) && CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
+                                  ContractEvaluationSemantic::Assume)
         SanOpts.set(Bit, false);
 
   // Same for every routed UBSan runtime check: when one resolves to assume, its
@@ -865,31 +864,27 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   // build without that -fsanitize= check).
   if (getLangOpts().ContractsP3100) {
     static const SanitizerMask RoutedUbsanBits[] = {
-        SanitizerKind::Vptr,          SanitizerKind::Function,
-        SanitizerKind::Alignment,     SanitizerKind::ObjectSize,
-        SanitizerKind::NonnullAttribute,
-        SanitizerKind::ReturnsNonnullAttribute,
-        SanitizerKind::PointerOverflow,
-        SanitizerKind::Null,          SanitizerKind::ShiftBase,
+        SanitizerKind::Vptr, SanitizerKind::Function, SanitizerKind::Alignment,
+        SanitizerKind::ObjectSize, SanitizerKind::NonnullAttribute,
+        SanitizerKind::ReturnsNonnullAttribute, SanitizerKind::PointerOverflow,
+        SanitizerKind::Null, SanitizerKind::ShiftBase,
         SanitizerKind::ShiftExponent, SanitizerKind::IntegerDivideByZero,
-        SanitizerKind::SignedIntegerOverflow,
-        SanitizerKind::Bool,          SanitizerKind::Enum,
-        SanitizerKind::FloatCastOverflow,
-        SanitizerKind::ArrayBounds,   SanitizerKind::Return,
-        SanitizerKind::Unreachable,   SanitizerKind::VLABound,
-        SanitizerKind::Builtin,       SanitizerKind::FloatDivideByZero,
+        SanitizerKind::SignedIntegerOverflow, SanitizerKind::Bool,
+        SanitizerKind::Enum, SanitizerKind::FloatCastOverflow,
+        SanitizerKind::ArrayBounds, SanitizerKind::Return,
+        SanitizerKind::Unreachable, SanitizerKind::VLABound,
+        SanitizerKind::Builtin, SanitizerKind::FloatDivideByZero,
         SanitizerKind::UnsignedIntegerOverflow,
         // implicit-conversion is a multi-bit group; list its members
         // individually (SanitizerSet::has requires a single-bit mask).
         SanitizerKind::ImplicitUnsignedIntegerTruncation,
         SanitizerKind::ImplicitSignedIntegerTruncation,
         SanitizerKind::ImplicitIntegerSignChange,
-        SanitizerKind::ImplicitBitfieldConversion,
-        SanitizerKind::LocalBounds,   SanitizerKind::ObjCCast};
+        SanitizerKind::ImplicitBitfieldConversion, SanitizerKind::LocalBounds,
+        SanitizerKind::ObjCCast};
     for (SanitizerMask Bit : RoutedUbsanBits)
-      if (SanOpts.has(Bit) &&
-          CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
-              ContractEvaluationSemantic::Assume)
+      if (SanOpts.has(Bit) && CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
+                                  ContractEvaluationSemantic::Assume)
         SanOpts.set(Bit, false);
   }
 
@@ -1676,7 +1671,8 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       } else if (CS->getContractKind() == ContractKind::Post &&
                  CS->hasCaptures()) {
         ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(
-            getContext(), CurFuncDecl ? CurFuncDecl->getDeclContext() : nullptr);
+            getContext(),
+            CurFuncDecl ? CurFuncDecl->getDeclContext() : nullptr);
         // 'assume' lowers to 'ignore' (no check emitted, see
         // emitCheckForSemantic in CGContracts.cpp): the capture must not be
         // constructed either, since the whole postcondition is gated as a
@@ -1773,7 +1769,8 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     const auto *FnTry = dyn_cast<CXXTryStmt>(Body);
     if (FnTry && getLangOpts().ContractsP3100 && getLangOpts().CPlusPlus &&
         !FD->hasImplicitReturnZero() && !FD->getReturnType()->isVoidType() &&
-        !(CGM.getLangOpts().OpenMPIsTargetDevice && Target.getTriple().isGPU())) {
+        !(CGM.getLangOpts().OpenMPIsTargetDevice &&
+          Target.getTriple().isGPU())) {
       EnterCXXTryStmt(*FnTry);
       EmitStmt(FnTry->getTryBlock());
       if (!SawAsmBlock && Builder.GetInsertBlock())
@@ -1800,24 +1797,24 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     if (getLangOpts().ContractsP3100 && EmitImplicitFlowOffReaction(FD)) {
       // Handled by the implicit contract assertion.
     } else {
-    bool ShouldEmitUnreachable =
-        CGM.getCodeGenOpts().StrictReturn ||
-        !CGM.MayDropFunctionReturn(FD->getASTContext(), FD->getReturnType());
-    if (SanOpts.has(SanitizerKind::Return)) {
-      auto CheckOrdinal = SanitizerKind::SO_Return;
-      auto CheckHandler = SanitizerHandler::MissingReturn;
-      SanitizerDebugLocation SanScope(this, {CheckOrdinal}, CheckHandler);
-      llvm::Value *IsFalse = Builder.getFalse();
-      EmitCheck(std::make_pair(IsFalse, CheckOrdinal), CheckHandler,
-                EmitCheckSourceLocation(FD->getLocation()), {});
-    } else if (ShouldEmitUnreachable) {
-      if (CGM.getCodeGenOpts().OptimizationLevel == 0)
-        EmitTrapCall(llvm::Intrinsic::trap);
-    }
-    if (SanOpts.has(SanitizerKind::Return) || ShouldEmitUnreachable) {
-      Builder.CreateUnreachable();
-      Builder.ClearInsertionPoint();
-    }
+      bool ShouldEmitUnreachable =
+          CGM.getCodeGenOpts().StrictReturn ||
+          !CGM.MayDropFunctionReturn(FD->getASTContext(), FD->getReturnType());
+      if (SanOpts.has(SanitizerKind::Return)) {
+        auto CheckOrdinal = SanitizerKind::SO_Return;
+        auto CheckHandler = SanitizerHandler::MissingReturn;
+        SanitizerDebugLocation SanScope(this, {CheckOrdinal}, CheckHandler);
+        llvm::Value *IsFalse = Builder.getFalse();
+        EmitCheck(std::make_pair(IsFalse, CheckOrdinal), CheckHandler,
+                  EmitCheckSourceLocation(FD->getLocation()), {});
+      } else if (ShouldEmitUnreachable) {
+        if (CGM.getCodeGenOpts().OptimizationLevel == 0)
+          EmitTrapCall(llvm::Intrinsic::trap);
+      }
+      if (SanOpts.has(SanitizerKind::Return) || ShouldEmitUnreachable) {
+        Builder.CreateUnreachable();
+        Builder.ClearInsertionPoint();
+      }
     }
   }
   // Emit the standard function epilogue.

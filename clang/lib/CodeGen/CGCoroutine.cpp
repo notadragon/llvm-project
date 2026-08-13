@@ -911,8 +911,8 @@ static void emitBodyAndFallthrough(CodeGenFunction &CGF,
     bool NoReturnVoid = !OnFallthrough || isa<NullStmt>(OnFallthrough);
     if (NoReturnVoid && CGF.getLangOpts().ContractsP3100)
       CGF.EmitImplicitCoroutineFlowOffReaction(S.getBeginLoc());
-    // An enforcing/quick reaction terminates the block; re-check before emitting
-    // the (return_void) fall-through handler.
+    // An enforcing/quick reaction terminates the block; re-check before
+    // emitting the (return_void) fall-through handler.
     if (CGF.Builder.GetInsertBlock() && OnFallthrough)
       CGF.EmitStmt(OnFallthrough);
   }

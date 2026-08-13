@@ -88,8 +88,8 @@ static unsigned char TsanContractSemantic() {
 // { const char* (*)(const void*), const void* }).  libtsan stays free-standing,
 // so we redeclare rather than include the C++ runtime header.
 struct TsanContractReportPopulator {
-  const char *(*populate)(const void *ctx);
-  const void *ctx;
+  const char* (*populate)(const void* ctx);
+  const void* ctx;
 };
 
 // The contract-violation report leg, provided by the C++ runtime (libstdc++/
@@ -98,8 +98,8 @@ struct TsanContractReportPopulator {
 // an implicit contract_violation and invokes the handler; always returns
 // (termination for enforce is performed here by us).
 extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
-    const char *comment, const char *file, unsigned line,
-    unsigned char semantic, const TsanContractReportPopulator *report);
+    const char* comment, const char* file, unsigned line,
+    unsigned char semantic, const TsanContractReportPopulator* report);
 
 // v1 lazy populator: returns a concise, producer-owned description of the data
 // race on demand (only if the handler calls contract_violation::report()).
@@ -108,12 +108,12 @@ extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
 // documented follow-up.  The routed sanitizer still emits nothing itself -- the
 // handler owns all output and gets this description via report().
 struct TsanContractReportCtx {
-  const ReportDesc *rep;
+  const ReportDesc* rep;
 };
 
-static const char *tsan_contract_report_populate(const void *ctx_v) {
-  const TsanContractReportCtx *ctx =
-      static_cast<const TsanContractReportCtx *>(ctx_v);
+static const char* tsan_contract_report_populate(const void* ctx_v) {
+  const TsanContractReportCtx* ctx =
+      static_cast<const TsanContractReportCtx*>(ctx_v);
   (void)ctx;
   return "ThreadSanitizer: data race";
 }

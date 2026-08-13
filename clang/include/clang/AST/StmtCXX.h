@@ -1132,7 +1132,8 @@ class ContractStmt final
   unsigned numTrailingObjects(OverloadToken<Stmt *>) const {
     return ContractAssertBits.HasResultName + 1 +
            ContractAssertBits.HasMessage + ContractAssertBits.HasLabel +
-           ContractAssertBits.HasCaptures + ContractAssertBits.HasRequiresClause;
+           ContractAssertBits.HasCaptures +
+           ContractAssertBits.HasRequiresClause;
   }
 
   Stmt **getStmtPtr() { return getTrailingObjects<Stmt *>(); }
@@ -1162,13 +1163,14 @@ class ContractStmt final
   // without any Sema machinery of its own.  DynName_ empty means "not dynamic";
   // codegen reads these via the accessors below.
   //
-  // DynName_ points at ASTContext-allocated storage (via ASTContext::backupStr),
-  // like TransformedComment/TransformedMessage above.  It holds the selector
-  // function's name (possibly a qualified C++ name, or a verbatim C symbol).
+  // DynName_ points at ASTContext-allocated storage (via
+  // ASTContext::backupStr), like TransformedComment/TransformedMessage above.
+  // It holds the selector function's name (possibly a qualified C++ name, or a
+  // verbatim C symbol).
   StringRef DynName_;
-  uint8_t DynLinkage_ = 0;        // 0 = "C++", 1 = "C"
+  uint8_t DynLinkage_ = 0; // 0 = "C++", 1 = "C"
   bool DynProvideWeak_ = false;
-  bool DynIsDynamic_ = false;     // true once a dynamic descriptor was resolved
+  bool DynIsDynamic_ = false; // true once a dynamic descriptor was resolved
   // T(R) for R in Ignore..QuickEnforce (1..4), stored at index R-1.  Each entry
   // is a ContractEvaluationSemantic value (1..5) or the sentinel 0 when the
   // transform of R is disallowed (codegen maps 0 to a runtime enforced
@@ -1209,15 +1211,14 @@ class ContractStmt final
   void setCaptures(DeclStmt *D) {
     assert(ContractAssertBits.HasCaptures && "no captures slot");
     getSubStmts()[ContractAssertBits.HasResultName + 1 +
-                  ContractAssertBits.HasMessage +
-                  ContractAssertBits.HasLabel] = D;
+                  ContractAssertBits.HasMessage + ContractAssertBits.HasLabel] =
+        D;
   }
 
   void setRequiresClause(Expr *E) {
     assert(ContractAssertBits.HasRequiresClause && "no requires clause slot");
     getSubStmts()[ContractAssertBits.HasResultName + 1 +
-                  ContractAssertBits.HasMessage +
-                  ContractAssertBits.HasLabel +
+                  ContractAssertBits.HasMessage + ContractAssertBits.HasLabel +
                   ContractAssertBits.HasCaptures] = E;
   }
 
@@ -1233,10 +1234,8 @@ class ContractStmt final
   // HasRequiresClause must be correct before copyAttrs() runs, or the
   // attributes land one slot short of where every later read looks for them.
   ContractStmt(ContractKind CK, SourceLocation KeywordLoc, Expr *Condition,
-               DeclStmt *RN, Expr *Message = nullptr,
-               Expr *Label = nullptr,
-               DeclStmt *Captures = nullptr,
-               ArrayRef<const Attr *> Attrs = {},
+               DeclStmt *RN, Expr *Message = nullptr, Expr *Label = nullptr,
+               DeclStmt *Captures = nullptr, ArrayRef<const Attr *> Attrs = {},
                bool HasRequiresClause = false)
       : Stmt(ContractStmtClass), KeywordLoc(KeywordLoc) {
     ContractAssertBits.ContractKind = static_cast<unsigned>(CK);
@@ -1281,20 +1280,16 @@ class ContractStmt final
   }
 
 public:
-  static ContractStmt *Create(const ASTContext &C, ContractKind Kind,
-                              SourceLocation KeywordLoc, Expr *Condition,
-                              DeclStmt *ResultNameDecl,
-                              Expr *Message = nullptr,
-                              Expr *Label = nullptr,
-                              DeclStmt *Captures = nullptr,
-                              ArrayRef<const Attr *> Attrs = {},
-                              Expr *RequiresClause = nullptr);
+  static ContractStmt *
+  Create(const ASTContext &C, ContractKind Kind, SourceLocation KeywordLoc,
+         Expr *Condition, DeclStmt *ResultNameDecl, Expr *Message = nullptr,
+         Expr *Label = nullptr, DeclStmt *Captures = nullptr,
+         ArrayRef<const Attr *> Attrs = {}, Expr *RequiresClause = nullptr);
 
   static ContractStmt *CreateEmpty(const ASTContext &C, ContractKind Kind,
                                    bool HasResultName, bool HasMessage,
                                    bool HasLabel, bool HasCaptures,
-                                   bool HasRequiresClause,
-                                   unsigned NumAttrs);
+                                   bool HasRequiresClause, unsigned NumAttrs);
 
   bool hasResultName() const { return ContractAssertBits.HasResultName; }
 
@@ -1306,8 +1301,7 @@ public:
   ResultNameDecl *getResultName() const;
 
   Expr *getCond() {
-    return static_cast<Expr *>(
-        getSubStmts()[ContractAssertBits.HasResultName]);
+    return static_cast<Expr *>(getSubStmts()[ContractAssertBits.HasResultName]);
   }
   const Expr *getCond() const {
     return const_cast<ContractStmt *>(this)->getCond();
@@ -1352,35 +1346,33 @@ public:
     return const_cast<ContractStmt *>(this)->getCapturesDeclStmt();
   }
 
-  bool hasRequiresClause() const { return ContractAssertBits.HasRequiresClause; }
+  bool hasRequiresClause() const {
+    return ContractAssertBits.HasRequiresClause;
+  }
 
   Expr *getRequiresClause() {
     if (!hasRequiresClause())
       return nullptr;
-    return static_cast<Expr *>(
-        getSubStmts()[ContractAssertBits.HasResultName + 1 +
-                      ContractAssertBits.HasMessage +
-                      ContractAssertBits.HasLabel +
-                      ContractAssertBits.HasCaptures]);
+    return static_cast<Expr *>(getSubStmts()[ContractAssertBits.HasResultName +
+                                             1 + ContractAssertBits.HasMessage +
+                                             ContractAssertBits.HasLabel +
+                                             ContractAssertBits.HasCaptures]);
   }
   const Expr *getRequiresClause() const {
     return const_cast<ContractStmt *>(this)->getRequiresClause();
   }
 
-  unsigned getAllowedMask() const {
-    return ContractAssertBits.AllowedMask;
-  }
+  unsigned getAllowedMask() const { return ContractAssertBits.AllowedMask; }
   void setAllowedMask(unsigned Mask) {
     // Stores the flag-independent label restriction (may include the assume
     // bit and the D4298 noexcept_enforce/noexcept_observe bits); the
     // -fcontracts-allow-assume / -fcontracts-p4298 gates are applied at
     // query time.
-    ContractAssertBits.AllowedMask = Mask & AllContractSemanticsMaskWithExtensions;
+    ContractAssertBits.AllowedMask =
+        Mask & AllContractSemanticsMaskWithExtensions;
   }
 
-  bool hasTransformedSemantic() const {
-    return CachedRuntimeSemantic_ != 0;
-  }
+  bool hasTransformedSemantic() const { return CachedRuntimeSemantic_ != 0; }
   ContractEvaluationSemantic getTransformedSemantic() const {
     return static_cast<ContractEvaluationSemantic>(CachedRuntimeSemantic_);
   }
@@ -1388,9 +1380,7 @@ public:
     CachedRuntimeSemantic_ = static_cast<uint8_t>(S);
   }
 
-  bool hasCESemantic() const {
-    return CachedCESemantic_ != 0;
-  }
+  bool hasCESemantic() const { return CachedCESemantic_ != 0; }
   ContractEvaluationSemantic getCESemantic() const {
     return static_cast<ContractEvaluationSemantic>(CachedCESemantic_);
   }
@@ -1404,9 +1394,7 @@ public:
   }
 
   bool hasQuery() const { return ContractAssertBits.HasQuery; }
-  void setHasQuery(bool V = true) {
-    ContractAssertBits.HasQuery = V;
-  }
+  void setHasQuery(bool V = true) { ContractAssertBits.HasQuery = V; }
 
   bool hasTransformedComment() const { return !TransformedComment.empty(); }
   void setTransformedComment(StringRef S) { TransformedComment = S; }
@@ -1416,9 +1404,7 @@ public:
   void setTransformedMessage(StringRef S) { TransformedMessage = S; }
   StringRef getTransformedMessage() const { return TransformedMessage; }
 
-  bool hasCallerSemantic() const {
-    return CachedCallerSemantic_ != 0;
-  }
+  bool hasCallerSemantic() const { return CachedCallerSemantic_ != 0; }
   ContractEvaluationSemantic getCallerSemantic() const {
     return static_cast<ContractEvaluationSemantic>(CachedCallerSemantic_);
   }
@@ -1512,17 +1498,15 @@ public:
 
   /// Lazily resolve and cache the runtime callee-side semantic.
   ContractEvaluationSemantic
-  ensureRuntimeSemantic(const ASTContext &Ctx,
-                        const DeclContext *FnCtx) const;
+  ensureRuntimeSemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
 
   /// Lazily resolve and cache the constexpr callee-side semantic.
-  ContractEvaluationSemantic
-  ensureCESemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
+  ContractEvaluationSemantic ensureCESemantic(const ASTContext &Ctx,
+                                              const DeclContext *FnCtx) const;
 
   /// Lazily resolve and cache the caller-side semantic.
   ContractEvaluationSemantic
-  ensureCallerSemantic(const ASTContext &Ctx,
-                       const DeclContext *FnCtx) const;
+  ensureCallerSemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
 
   StringRef getSemanticString(const ASTContext &Ctx) const {
     return ContractStmt::SemanticAsString(getSemantic(Ctx));

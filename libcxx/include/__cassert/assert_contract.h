@@ -40,13 +40,10 @@
 // or an escaping exception).  libstdc++ provides the same symbol.  The
 // source_location is passed from the macro (rather than via a default argument)
 // so this declaration is safe to re-process across repeated inclusions.
-extern "C++" [[noreturn]] void
-__cxa_handle_cassert_violation(const char*, ::std::source_location) noexcept;
+extern "C++" [[noreturn]] void __cxa_handle_cassert_violation(const char*, ::std::source_location) noexcept;
 #    undef assert
-#    define assert(...)                                                         \
-      ((__VA_ARGS__) ? (void)0                                                  \
-                     : __cxa_handle_cassert_violation(                          \
-                           #__VA_ARGS__, ::std::source_location::current()))
+#    define assert(...)                                                                                                \
+      ((__VA_ARGS__) ? (void)0 : __cxa_handle_cassert_violation(#__VA_ARGS__, ::std::source_location::current()))
 #  endif // !NDEBUG && __STDC_WANT_ASSERT_USES_CONTRACTS__
 
 #endif // C++26 && __clang_contracts_p3290

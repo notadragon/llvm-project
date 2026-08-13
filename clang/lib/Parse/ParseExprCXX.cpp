@@ -1487,7 +1487,6 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
   StmtResult Stmt(ParseCompoundStatementBody());
 
-
   BodyScope.Exit();
   TemplateParamScope.Exit();
   LambdaScope.Exit();
@@ -1511,8 +1510,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                   CES_AllScopes);
     }
     assert(LE->getCallOperator() && "LambdaExpr has no call operator");
-    assert(!LE->getCallOperator()->getReturnType().isNull() && "Should not be null");
-
+    assert(!LE->getCallOperator()->getReturnType().isNull() &&
+           "Should not be null");
 
     return Lambda;
   }

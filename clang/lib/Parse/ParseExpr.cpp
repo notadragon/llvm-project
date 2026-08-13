@@ -278,8 +278,8 @@ Parser::ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
 ExprResult
 Parser::ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
                                            bool IsContractRequiresClause) {
-  ExprResult LHS(ParseConstraintLogicalAndExpression(
-      IsTrailingRequiresClause, IsContractRequiresClause));
+  ExprResult LHS(ParseConstraintLogicalAndExpression(IsTrailingRequiresClause,
+                                                     IsContractRequiresClause));
   if (!LHS.isUsable())
     return ExprError();
   while (Tok.is(tok::pipepipe)) {

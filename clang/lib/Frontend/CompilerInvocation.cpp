@@ -12,10 +12,10 @@
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/CommentOptions.h"
+#include "clang/Basic/ContractConfig.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticDriver.h"
 #include "clang/Basic/DiagnosticFrontend.h"
-#include "clang/Basic/ContractConfig.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/LLVM.h"
@@ -3833,7 +3833,6 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
       GenerateArg(Consumer, OPT_fsanitize_ignore_for_ubsan_feature_EQ,
                   Sanitizer);
 
-
     for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
       switch (Src.Kind) {
       case ContractConfigSourceKind::GroupSemantic:
@@ -4834,10 +4833,10 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
         << (int)CGD << GroupName << InvalidChar;
   };
 
-  for (const Arg *A : Args.filtered(
-           options::OPT_fcontract_group_evaluation_semantic_EQ,
-           options::OPT_fcontract_configuration_EQ,
-           options::OPT_fcontract_configuration_file_EQ)) {
+  for (const Arg *A :
+       Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                     options::OPT_fcontract_configuration_EQ,
+                     options::OPT_fcontract_configuration_file_EQ)) {
     switch (A->getOption().getID()) {
     case options::OPT_fcontract_group_evaluation_semantic_EQ:
       for (unsigned I = 0, N = A->getNumValues(); I < N; ++I) {
@@ -4848,12 +4847,12 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       }
       break;
     case options::OPT_fcontract_configuration_EQ:
-      Opts.ContractOpts.addConfigSource(
-          ContractConfigSourceKind::JSONInline, A->getValue());
+      Opts.ContractOpts.addConfigSource(ContractConfigSourceKind::JSONInline,
+                                        A->getValue());
       break;
     case options::OPT_fcontract_configuration_file_EQ:
-      Opts.ContractOpts.addConfigSource(
-          ContractConfigSourceKind::JSONFile, A->getValue());
+      Opts.ContractOpts.addConfigSource(ContractConfigSourceKind::JSONFile,
+                                        A->getValue());
       break;
     }
   }

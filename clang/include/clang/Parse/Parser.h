@@ -946,7 +946,8 @@ private:
   public:
     /// Set the flags for the current scope to ScopeFlags. If ManageFlags is
     /// false, this object does nothing.
-    ParseScopeFlags(Parser *Self, unsigned long ScopeFlags, bool ManageFlags = true);
+    ParseScopeFlags(Parser *Self, unsigned long ScopeFlags,
+                    bool ManageFlags = true);
 
     /// Restore the flags for the current scope to what they were before this
     /// object overrode them.
@@ -2763,8 +2764,7 @@ private:
                                bool IsAmbiguous, bool RequiresArg = false);
   void InitCXXThisScopeForDeclaratorIfRelevant(
       const Declarator &D, const DeclSpec &DS,
-      std::optional<Sema::CXXThisScopeRAII> &ThisScope,
-      bool AddConst = false);
+      std::optional<Sema::CXXThisScopeRAII> &ThisScope, bool AddConst = false);
 
   /// ParseRefQualifier - Parses a member function ref-qualifier. Returns
   /// true if a ref-qualifier is found.
@@ -3806,8 +3806,9 @@ public:
   ///         constraint-logical-and-expression '&&' primary-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
-                                                 bool IsContractRequiresClause = false);
+  ExprResult
+  ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
+                                      bool IsContractRequiresClause = false);
 
   /// \brief Parse a constraint-logical-or-expression.
   ///
@@ -3819,8 +3820,9 @@ public:
   ///             constraint-logical-and-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
-                                                bool IsContractRequiresClause = false);
+  ExprResult
+  ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
+                                     bool IsContractRequiresClause = false);
 
   /// Parse an expr that doesn't include (top-level) commas.
   ExprResult
@@ -9107,7 +9109,7 @@ private:
 
   ///@}
 
-//===--------------------------------------------------------------------===//
+  //===--------------------------------------------------------------------===//
   // C++ Contracts
 public:
   mutable IdentifierInfo *Ident_pre = nullptr;
@@ -9134,7 +9136,7 @@ public:
   }
   bool isFunctionContractKeyword(const Token &Token) const {
     return getContractKeyword(Token).value_or(ContractKind::Assert) !=
-        ContractKind::Assert;
+           ContractKind::Assert;
   }
 
   bool isAnyContractKeyword(const Token &Token) const {
@@ -9149,7 +9151,8 @@ private:
                                       QualType TrailingReturnType = QualType());
 
   StmtResult ParseFunctionContractSpecifierImpl(
-      llvm::function_ref<QualType()> ReturnTypeResolver, ContractScopeOffset ScopeOffset, bool &IsInvalid);
+      llvm::function_ref<QualType()> ReturnTypeResolver,
+      ContractScopeOffset ScopeOffset, bool &IsInvalid);
 
   bool ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures);
 

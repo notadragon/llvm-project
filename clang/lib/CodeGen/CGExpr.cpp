@@ -1727,11 +1727,13 @@ bool CodeGenFunction::IsWrappedCXXThis(const Expr *Obj) {
 
 LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
   LValue LV;
-  if ((SanOpts.has(SanitizerKind::ArrayBounds) || getLangOpts().ContractsP3100) &&
+  if ((SanOpts.has(SanitizerKind::ArrayBounds) ||
+       getLangOpts().ContractsP3100) &&
       isa<ArraySubscriptExpr>(E))
     // Mark the subscript as accessed so the P3100 implicit bounds guard (like
     // the array-bounds sanitizer) treats index == bound as a violation for a
-    // dereference; a one-past address &a[N] is formed elsewhere and stays legal.
+    // dereference; a one-past address &a[N] is formed elsewhere and stays
+    // legal.
     LV = EmitArraySubscriptExpr(cast<ArraySubscriptExpr>(E), /*Accessed*/true);
   else
     LV = EmitLValue(E);

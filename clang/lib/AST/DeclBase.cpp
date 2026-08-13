@@ -925,7 +925,8 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
       return IDNS_Ordinary | IDNS_Tag;
 
     // A result name is a value-like entity (it names the return value in a
-    // postcondition); like a parameter, it lives only in the ordinary namespace.
+    // postcondition); like a parameter, it lives only in the ordinary
+    // namespace.
     case ResultName:
       return IDNS_Ordinary;
 
@@ -1145,8 +1146,7 @@ bool Decl::AccessDeclContextCheck() const {
       isa<StaticAssertDecl>(this) || isa<BlockDecl>(this) ||
       // FIXME: a ParmVarDecl can have ClassTemplateSpecialization
       // as DeclContext (?).
-      isa<ParmVarDecl>(this) ||
-      isa<ResultNameDecl>(this) ||
+      isa<ParmVarDecl>(this) || isa<ResultNameDecl>(this) ||
       // FIXME: a ClassTemplateSpecialization or CXXRecordDecl can have
       // AS_none as access specifier.
       isa<CXXRecordDecl>(this) || isa<LifetimeExtendedTemporaryDecl>(this))

@@ -7829,16 +7829,16 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // FIXME: Find a better way to determine whether we are in C++20.
   bool HaveCxx20 =
       Std &&
-      (HaveCxx26 ||
-       Std->containsValue("c++2a") || Std->containsValue("gnu++2a") ||
-       Std->containsValue("c++20") || Std->containsValue("gnu++20") ||
-       Std->containsValue("c++2b") || Std->containsValue("gnu++2b") ||
-       Std->containsValue("c++23") || Std->containsValue("gnu++23") ||
-       Std->containsValue("c++23preview") || Std->containsValue("c++2c") ||
-       Std->containsValue("gnu++2c") || Std->containsValue("c++26") ||
-       Std->containsValue("gnu++26") || Std->containsValue("c++26preview") ||
-       Std->containsValue("c++2d") || Std->containsValue("gnu++2d") ||
-       Std->containsValue("c++latest") || Std->containsValue("gnu++latest"));
+      (HaveCxx26 || Std->containsValue("c++2a") ||
+       Std->containsValue("gnu++2a") || Std->containsValue("c++20") ||
+       Std->containsValue("gnu++20") || Std->containsValue("c++2b") ||
+       Std->containsValue("gnu++2b") || Std->containsValue("c++23") ||
+       Std->containsValue("gnu++23") || Std->containsValue("c++23preview") ||
+       Std->containsValue("c++2c") || Std->containsValue("gnu++2c") ||
+       Std->containsValue("c++26") || Std->containsValue("gnu++26") ||
+       Std->containsValue("c++26preview") || Std->containsValue("c++2d") ||
+       Std->containsValue("gnu++2d") || Std->containsValue("c++latest") ||
+       Std->containsValue("gnu++latest"));
   bool HaveModules =
       RenderModulesOptions(C, D, Args, Input, Output, HaveCxx20, CmdArgs);
 
@@ -7977,14 +7977,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // with the link decision in Gnu.cpp so the two never disagree.
   if (tools::wantsCxxContracts(Args)) {
     CmdArgs.push_back("-fcontracts");
-    if (Arg *A =
-            Args.getLastArg(options::OPT_fcontract_evaluation_semantic_EQ))
+    if (Arg *A = Args.getLastArg(options::OPT_fcontract_evaluation_semantic_EQ))
       CmdArgs.push_back(Args.MakeArgString(
           Twine("-fcontract-evaluation-semantic=") + A->getValue()));
-    for (const Arg *A : Args.filtered(
-             options::OPT_fcontract_group_evaluation_semantic_EQ,
-             options::OPT_fcontract_configuration_EQ,
-             options::OPT_fcontract_configuration_file_EQ)) {
+    for (const Arg *A :
+         Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                       options::OPT_fcontract_configuration_EQ,
+                       options::OPT_fcontract_configuration_file_EQ)) {
       A->claim();
       A->render(Args, CmdArgs);
     }
@@ -8034,10 +8033,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back(Args.MakeArgString(
           Twine("-fcontract-evaluation-semantic=") + A->getValue()));
     }
-    for (const Arg *A : Args.filtered(
-             options::OPT_fcontract_group_evaluation_semantic_EQ,
-             options::OPT_fcontract_configuration_EQ,
-             options::OPT_fcontract_configuration_file_EQ)) {
+    for (const Arg *A :
+         Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                       options::OPT_fcontract_configuration_EQ,
+                       options::OPT_fcontract_configuration_file_EQ)) {
       A->claim();
       A->render(Args, CmdArgs);
     }

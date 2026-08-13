@@ -140,8 +140,8 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
   case KEYCOROUTINES:
     return LangOpts.Coroutines ? KS_Enabled : KS_Unknown;
   case KEYCONTRACTS:
-    return (LangOpts.Contracts || LangOpts.ContractsP4299)
-               ? KS_Enabled : KS_Unknown;
+    return (LangOpts.Contracts || LangOpts.ContractsP4299) ? KS_Enabled
+                                                           : KS_Unknown;
   case KEYCONTRACTSP3400:
     return LangOpts.ContractsP3400 ? KS_Enabled : KS_Unknown;
   case KEYMODULES:
@@ -218,9 +218,9 @@ static void MarkIdentifierAsKeywordInCpp(IdentifierTable &Table,
 /// AddKeyword - This method is used to associate a token ID with specific
 /// identifiers because they are language keywords.  This causes the lexer to
 /// automatically map matching identifiers to specialized token codes.
-static void AddKeyword(StringRef Keyword,
-                       tok::TokenKind TokenCode, uint64_t Flags,
-                       const LangOptions &LangOpts, IdentifierTable &Table) {
+static void AddKeyword(StringRef Keyword, tok::TokenKind TokenCode,
+                       uint64_t Flags, const LangOptions &LangOpts,
+                       IdentifierTable &Table) {
   KeywordStatus AddResult = getKeywordStatus(LangOpts, Flags);
 
   // Don't add this keyword if disabled in this language and isn't otherwise

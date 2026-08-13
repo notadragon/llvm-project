@@ -1388,9 +1388,9 @@ void CodeGenFunction::ExitCXXTryStmtWithCatchIR(
   if (EHPersonality::get(*this).isWasmPersonality()) {
     auto *CatchSwitch =
         cast<llvm::CatchSwitchInst>(DispatchBlock->getFirstNonPHIIt());
-    llvm::BasicBlock *WasmCatchStartBlock =
-        CatchSwitch->hasUnwindDest() ? CatchSwitch->getSuccessor(1)
-                                     : CatchSwitch->getSuccessor(0);
+    llvm::BasicBlock *WasmCatchStartBlock = CatchSwitch->hasUnwindDest()
+                                                ? CatchSwitch->getSuccessor(1)
+                                                : CatchSwitch->getSuccessor(0);
     auto *CPI =
         cast<llvm::CatchPadInst>(WasmCatchStartBlock->getFirstNonPHIIt());
     CurrentFuncletPad = CPI;

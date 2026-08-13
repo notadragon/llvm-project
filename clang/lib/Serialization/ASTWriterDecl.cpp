@@ -948,9 +948,9 @@ void ASTDeclWriter::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
   assert(!CSD->hasInventedPlaceholdersTypes() &&
          "Cannot have invented placeholders on a serializable declaration");
 
-  // Record the number of contracts first to simplify deserialization: it is read
-  // in ReadDeclRecord (before the decl is created, to size the trailing storage),
-  // so it must precede the fields written by VisitDecl.
+  // Record the number of contracts first to simplify deserialization: it is
+  // read in ReadDeclRecord (before the decl is created, to size the trailing
+  // storage), so it must precede the fields written by VisitDecl.
   Record.push_back(CSD->NumContracts);
   VisitDecl(CSD);
   for (auto *C : CSD->contracts())
@@ -1923,8 +1923,7 @@ void ASTDeclWriter::VisitConceptDecl(ConceptDecl *D) {
   Code = serialization::DECL_CONCEPT;
 }
 
-void ASTDeclWriter::VisitPostconditionCaptureDecl(
-    PostconditionCaptureDecl *D) {
+void ASTDeclWriter::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
   VisitVarDecl(D);
   Record.push_back(D->isParameterCapture());
   Record.push_back(D->isPackExpansion());

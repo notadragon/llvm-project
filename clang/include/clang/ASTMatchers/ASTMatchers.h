@@ -2907,8 +2907,6 @@ extern const internal::VariadicDynCastAllOfMatcher<Stmt, PredefinedExpr>
 extern const internal::VariadicDynCastAllOfMatcher<Stmt, DesignatedInitExpr>
     designatedInitExpr;
 
-
-
 /// Matches C++ contract statements.
 ///
 /// Example matches pre(x), post(x), and contract_assert(x)
@@ -3013,7 +3011,8 @@ AST_MATCHER(ContractStmt, isPrecondition) {
 
 /// Matches a contract postcondition.
 ///
-/// Example matches post(x) but not pre(x) or contract_assert(x) (matcher = contractStmt(isPostcondition()))
+/// Example matches post(x) but not pre(x) or contract_assert(x) (matcher =
+/// contractStmt(isPostcondition()))
 /// \code
 /// auto f = [x=3]() { return x; };
 /// \endcode
@@ -3023,7 +3022,8 @@ AST_MATCHER(ContractStmt, isPostcondition) {
 
 /// Matches a contract postcondition.
 ///
-/// Example matches contract_assert(x) but not pre(x) or post(x) (matcher = contractStmt(isContractAssert()))
+/// Example matches contract_assert(x) but not pre(x) or post(x) (matcher =
+/// contractStmt(isContractAssert()))
 /// \code
 /// int f(int x) pre(x) post(x) { contract_assert(x); }
 /// \endcode
@@ -3034,7 +3034,8 @@ AST_MATCHER(ContractStmt, isContractAssert) {
 /// Matches a function declaration that contains either pre or post conditions.
 /// It does not match functions whos body contain `contract_assert` statements.
 ///
-/// Example matches 'f' but not 'g' (matcher = functionDecl(hasFunctionContracts()))
+/// Example matches 'f' but not 'g' (matcher =
+/// functionDecl(hasFunctionContracts()))
 ///
 /// \code
 ///   void f(int x) pre(x) post(x) { }
@@ -3052,7 +3053,6 @@ AST_MATCHER(FunctionDecl, hasFunctionContracts) {
 /// \endcode
 extern const internal::VariadicDynCastAllOfMatcher<Decl, ResultNameDecl>
     resultNameDecl;
-
 
 /// Matches designated initializer expressions that contain
 /// a specific number of designators.
@@ -5858,7 +5858,6 @@ AST_POLYMORPHIC_MATCHER_P(hasInitStatement,
   const Stmt *Init = Node.getInit();
   return Init != nullptr && InnerMatcher.matches(*Init, Finder, Builder);
 }
-
 
 /// Matches the condition expression of an if statement, for loop, while loop,
 /// do-while loop, switch statement, conditional operator, or contract.

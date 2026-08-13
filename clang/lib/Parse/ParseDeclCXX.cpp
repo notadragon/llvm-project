@@ -586,9 +586,8 @@ Decl *Parser::ParseContractControlUsingDirective(SourceLocation UsingLoc,
   if (ExpectAndConsume(tok::semi, diag::err_expected_semi_after_namespace_name))
     SkipUntil(tok::semi);
 
-  return Actions.ActOnContractControlUsingDirective(getCurScope(), UsingLoc,
-                                                    NamespcLoc, SS,
-                                                    IdentLoc, NamespcName);
+  return Actions.ActOnContractControlUsingDirective(
+      getCurScope(), UsingLoc, NamespcLoc, SS, IdentLoc, NamespcName);
 }
 
 bool Parser::ParseUsingDeclarator(DeclaratorContext Context,
@@ -4222,7 +4221,6 @@ ExceptionSpecificationType Parser::ParseDynamicExceptionSpecification(
                                         Exceptions.empty());
   return Exceptions.empty() ? EST_DynamicNone : EST_Dynamic;
 }
-
 
 /// ParseTrailingReturnType - Parse a trailing return type on a new-style
 /// function declaration.

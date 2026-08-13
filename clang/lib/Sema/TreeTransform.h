@@ -1636,12 +1636,11 @@ public:
   //
   StmtResult RebuildContractStmt(ContractKind K, SourceLocation KeywordLoc,
                                  Expr *Cond, DeclStmt *ResultName,
-                                 Expr *Message, Expr *Label,
-                                 DeclStmt *Captures,
+                                 Expr *Message, Expr *Label, DeclStmt *Captures,
                                  ArrayRef<const Attr *> Attrs,
                                  Expr *RequiresClause = nullptr) {
     return getSema().BuildContractStmt(K, KeywordLoc, Cond, ResultName, Message,
-                                      Label, Captures, Attrs, RequiresClause);
+                                       Label, Captures, Attrs, RequiresClause);
   }
 
   DeclResult RebuildContractSpecifierDecl(ArrayRef<ContractStmt *> Stmts,
@@ -9231,7 +9230,9 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
 
   assert(getSema().getFunctionLevelDeclContext(true)->isFunctionOrMethod());
 
-  Sema::ContractScopeRAII ContractScope(getSema(), S->getContractKind(), ContractScopeOffset::FunctionContext, S->getKeywordLoc());
+  Sema::ContractScopeRAII ContractScope(getSema(), S->getContractKind(),
+                                        ContractScopeOffset::FunctionContext,
+                                        S->getKeywordLoc());
 
   StmtResult NewResultName;
   if (S->hasResultName()) {
@@ -9302,8 +9303,8 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
         }
 
         if (ShouldExpand && NumExpansions) {
-          getSema().CurrentInstantiationScope
-              ->MakeInstantiatedLocalArgPack(Cap);
+          getSema().CurrentInstantiationScope->MakeInstantiatedLocalArgPack(
+              Cap);
 
           // Get the pattern type (strip PackExpansionType).
           QualType PatternType = Cap->getType();
@@ -9318,26 +9319,25 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
               Invalid = true;
               continue;
             }
-            TypeSourceInfo *NewTInfo = getSema().Context
-                .getTrivialTypeSourceInfo(NewType, Cap->getLocation());
+            TypeSourceInfo *NewTInfo =
+                getSema().Context.getTrivialTypeSourceInfo(NewType,
+                                                           Cap->getLocation());
 
             auto *ExpandedCap = PostconditionCaptureDecl::Create(
-                getSema().Context, getSema().CurContext,
-                Cap->getBeginLoc(), Cap->getLocation(),
-                Cap->getIdentifier(), NewType, NewTInfo,
+                getSema().Context, getSema().CurContext, Cap->getBeginLoc(),
+                Cap->getLocation(), Cap->getIdentifier(), NewType, NewTInfo,
                 Cap->getStorageClass());
             ExpandedCap->setIsParameterCapture(Cap->isParameterCapture());
             ExpandedCap->setIsPackExpansion(false);
 
             if (Cap->hasInit()) {
-              ExprResult NewInit =
-                  getDerived().TransformExpr(Cap->getInit());
+              ExprResult NewInit = getDerived().TransformExpr(Cap->getInit());
               if (!NewInit.isInvalid())
                 ExpandedCap->setInit(NewInit.get());
             }
 
-            getSema().CurrentInstantiationScope
-                ->InstantiatedLocalPackArg(Cap, ExpandedCap);
+            getSema().CurrentInstantiationScope->InstantiatedLocalPackArg(
+                Cap, ExpandedCap);
             ExpandedCaptures.push_back(ExpandedCap);
           }
         }
@@ -9357,7 +9357,8 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
   }
 
   Expr *Cond = S->getCond();
-  Sema::ConditionResult CondRes = getDerived().TransformCondition(Cond->getExprLoc(), /*Var=*/nullptr, Cond, Sema::ConditionKind::Boolean);
+  Sema::ConditionResult CondRes = getDerived().TransformCondition(
+      Cond->getExprLoc(), /*Var=*/nullptr, Cond, Sema::ConditionKind::Boolean);
   if (CondRes.isInvalid())
     return StmtError();
 
@@ -9377,8 +9378,8 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
     // allowed_semantics / compute_* members are queried at compile time), never
     // code-generated.  Transform it in a constant-evaluated context so that
     // referencing the label object does not leave a deferred odr-use in the
-    // enclosing function's MaybeODRUseExprs -- which, at template instantiation,
-    // would trip the assert in ActOnFinishFunctionBody.
+    // enclosing function's MaybeODRUseExprs -- which, at template
+    // instantiation, would trip the assert in ActOnFinishFunctionBody.
     EnterExpressionEvaluationContext ConstCtx(
         SemaRef, Sema::ExpressionEvaluationContext::ConstantEvaluated);
     ExprResult LabelRes = getDerived().TransformExpr(S->getLabelExpr());
@@ -9400,11 +9401,9 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
       if (auto *CSE = dyn_cast<ConceptSpecializationExpr>(RequiresClause))
         Satisfied = CSE->isSatisfied();
       else
-        RequiresClause->EvaluateAsBooleanCondition(Satisfied,
-                                                    SemaRef.Context);
+        RequiresClause->EvaluateAsBooleanCondition(Satisfied, SemaRef.Context);
       if (!Satisfied)
-        return new (SemaRef.Context)
-            NullStmt(S->getKeywordLoc());
+        return new (SemaRef.Context) NullStmt(S->getKeywordLoc());
     }
   }
 
@@ -16669,8 +16668,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
           }
 
           // Capture the transformed variable.
-          getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind, SourceLocation(),
-            C->isCapturedAcrossContract() ? ContractTag::Yes : ContractTag::No);
+          getSema().tryCaptureVariable(
+              CapturedVar, C->getLocation(), Kind, SourceLocation(),
+              C->isCapturedAcrossContract() ? ContractTag::Yes
+                                            : ContractTag::No);
         }
 
         // FIXME: Retain a pack expansion if RetainExpansion is true.
@@ -16695,8 +16696,9 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
       LSI->ContainsUnexpandedParameterPack |= VD->isParameterPack();
 
     // Capture the transformed variable.
-    getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind,
-                                 EllipsisLoc, C->isCapturedAcrossContract() ? ContractTag::Yes : ContractTag::No);
+    getSema().tryCaptureVariable(
+        CapturedVar, C->getLocation(), Kind, EllipsisLoc,
+        C->isCapturedAcrossContract() ? ContractTag::Yes : ContractTag::No);
   }
   getSema().finishLambdaExplicitCaptures(LSI);
 

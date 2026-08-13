@@ -2507,7 +2507,7 @@ CXXMethodDecl::Create(ASTContext &C, CXXRecordDecl *RD, SourceLocation StartLoc,
                       bool isInline, ConstexprSpecKind ConstexprKind,
                       SourceLocation EndLocation,
                       const AssociatedConstraint &TrailingRequiresClause,
-                          ContractSpecifierDecl *Contracts) {
+                      ContractSpecifierDecl *Contracts) {
   return new (C, RD) CXXMethodDecl(
       CXXMethod, C, RD, StartLoc, NameInfo, T, TInfo, SC, UsesFPIntrin,
       isInline, ConstexprKind, EndLocation, TrailingRequiresClause, Contracts);
@@ -3160,7 +3160,6 @@ CXXDestructorDecl *CXXDestructorDecl::CreateDeserialized(ASTContext &C,
       false, false, false, ConstexprSpecKind::Unspecified,
       /*TrailingRequiresClause=*/{},
       /*Contracts=*/{});
-
 }
 
 CXXDestructorDecl *CXXDestructorDecl::Create(
@@ -3296,7 +3295,7 @@ CXXConversionDecl *CXXConversionDecl::Create(
     bool UsesFPIntrin, bool isInline, ExplicitSpecifier ES,
     ConstexprSpecKind ConstexprKind, SourceLocation EndLocation,
     const AssociatedConstraint &TrailingRequiresClause,
-        ContractSpecifierDecl *Contracts) {
+    ContractSpecifierDecl *Contracts) {
 
   assert(NameInfo.getName().getNameKind()
          == DeclarationName::CXXConversionFunctionName &&
@@ -3955,31 +3954,35 @@ const StreamingDiagnostic &clang::operator<<(const StreamingDiagnostic &DB,
   return DB << getAccessName(AS);
 }
 
-PostconditionCaptureDecl *PostconditionCaptureDecl::Create(
-    ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
-    SourceLocation IdLoc, const IdentifierInfo *Id, QualType T,
-    TypeSourceInfo *TInfo, StorageClass SC) {
+PostconditionCaptureDecl *
+PostconditionCaptureDecl::Create(ASTContext &C, DeclContext *DC,
+                                 SourceLocation StartLoc, SourceLocation IdLoc,
+                                 const IdentifierInfo *Id, QualType T,
+                                 TypeSourceInfo *TInfo, StorageClass SC) {
   return new (C, DC)
       PostconditionCaptureDecl(C, DC, StartLoc, IdLoc, Id, T, TInfo, SC);
 }
 
 PostconditionCaptureDecl *
 PostconditionCaptureDecl::CreateDeserialized(ASTContext &C, GlobalDeclID ID) {
-  return new (C, ID) PostconditionCaptureDecl(
-      C, nullptr, SourceLocation(), SourceLocation(), nullptr, QualType(),
-      nullptr, SC_None);
+  return new (C, ID)
+      PostconditionCaptureDecl(C, nullptr, SourceLocation(), SourceLocation(),
+                               nullptr, QualType(), nullptr, SC_None);
 }
 
 ResultNameDecl *ResultNameDecl::Create(ASTContext &C, DeclContext *DC,
                                        SourceLocation IdLoc, IdentifierInfo *Id,
                                        QualType T,
-                                       bool HasInventedPlaceholderType, unsigned FunctionScopeDepth) {
-  return new (C, DC) ResultNameDecl(DC, IdLoc, Id, T,
-                                    HasInventedPlaceholderType, FunctionScopeDepth);
+                                       bool HasInventedPlaceholderType,
+                                       unsigned FunctionScopeDepth) {
+  return new (C, DC) ResultNameDecl(
+      DC, IdLoc, Id, T, HasInventedPlaceholderType, FunctionScopeDepth);
 }
 
-ResultNameDecl *ResultNameDecl::CreateDeserialized(ASTContext &C, GlobalDeclID ID) {
-  return new (C, ID) ResultNameDecl(nullptr, SourceLocation(), nullptr, QualType());
+ResultNameDecl *ResultNameDecl::CreateDeserialized(ASTContext &C,
+                                                   GlobalDeclID ID) {
+  return new (C, ID)
+      ResultNameDecl(nullptr, SourceLocation(), nullptr, QualType());
 }
 
 void ResultNameDecl::anchor() {}
@@ -4062,10 +4065,9 @@ void ContractSpecifierDecl::setContracts(ArrayRef<ContractStmt *> Contracts) {
   assert((Contracts.size() > 0 || isInvalidDecl()) &&
          "ContractSpecifierDecl must have at least one contract");
   assert(Contracts.size() == NumContracts &&
-      "ContractSpecifierDecl must have at least one contract");
+         "ContractSpecifierDecl must have at least one contract");
 
-  std::copy(Contracts.begin(), Contracts.end(),
-            getTrailingObjects());
+  std::copy(Contracts.begin(), Contracts.end(), getTrailingObjects());
   auto *DC = getDeclContext();
   // Update the result names to point to the correct canonical result name.
   ResultNameDecl *CanonicalResultName = nullptr;

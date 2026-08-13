@@ -3157,8 +3157,7 @@ class UsingDirectiveDecl : public NamedDecl {
   UsingDirectiveDecl(DeclContext *DC, SourceLocation UsingLoc,
                      SourceLocation NamespcLoc,
                      NestedNameSpecifierLoc QualifierLoc,
-                     SourceLocation IdentLoc,
-                     NamedDecl *Nominated,
+                     SourceLocation IdentLoc, NamedDecl *Nominated,
                      DeclContext *CommonAncestor)
       : NamedDecl(UsingDirective, DC, IdentLoc, getName()), UsingLoc(UsingLoc),
         NamespaceLoc(NamespcLoc), QualifierLoc(QualifierLoc),
@@ -4501,7 +4500,8 @@ public:
 /// uniquified by value within a translation unit.
 ///
 /// These is currently only used to back the LValue returned by
-/// __builtin_source_location, as well as for emitting parts of contracts violations.
+/// __builtin_source_location, as well as for emitting parts of contracts
+/// violations.
 class UnnamedGlobalConstantDecl : public ValueDecl,
                                   public Mergeable<UnnamedGlobalConstantDecl>,
                                   public llvm::FoldingSetNode {
@@ -4629,8 +4629,7 @@ class ResultNameDecl : public ValueDecl {
   // place that can see the whole postcondition sequence, and on
   // deserialization by ASTDeclReader.
   ResultNameDecl(DeclContext *DC, SourceLocation IdLoc, IdentifierInfo *Id,
-                 QualType T,
-                 bool HasInventedPlaceholderType = false,
+                 QualType T, bool HasInventedPlaceholderType = false,
                  unsigned FunctionScopeDepth = InvalidFunctionScopeDepth)
       : ValueDecl(Decl::ResultName, DC, IdLoc, Id, T),
         HasInventedPlaceholderType(HasInventedPlaceholderType),
@@ -4647,19 +4646,19 @@ class ResultNameDecl : public ValueDecl {
 public:
   friend class ASTDeclReader;
 
-  static ResultNameDecl *Create(ASTContext &C, DeclContext *DC,
-                                SourceLocation IdLoc, IdentifierInfo *Id,
-                                QualType T,
-                                bool HasInventedPlaceholderType = false,
-                                unsigned FunctionScopeDepth = InvalidFunctionScopeDepth);
+  static ResultNameDecl *
+  Create(ASTContext &C, DeclContext *DC, SourceLocation IdLoc,
+         IdentifierInfo *Id, QualType T,
+         bool HasInventedPlaceholderType = false,
+         unsigned FunctionScopeDepth = InvalidFunctionScopeDepth);
   static ResultNameDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
 
   using ValueDecl::getDeclName;
   using ValueDecl::setType;
 
-  /// A result name is "canonical" across all result names on a particular declaration,
-  /// but not "canonical" across re-declarations. The canonical result name always returns a result name attached
-  /// to the same declaration.
+  /// A result name is "canonical" across all result names on a particular
+  /// declaration, but not "canonical" across re-declarations. The canonical
+  /// result name always returns a result name attached to the same declaration.
   ///
   /// Returns true if this declaration is the canonical result name declaration
   /// (This is true if it doesn't reference another result name).
@@ -4726,8 +4725,7 @@ class ContractSpecifierDecl final
       : Decl(Decl::ContractSpecifier, DC, Loc),
         IsUninstantiated(DC && DC->isDependentContext()),
         NumContracts(NumContracts) {
-    std::uninitialized_fill_n(getTrailingObjects(),
-                              NumContracts, nullptr);
+    std::uninitialized_fill_n(getTrailingObjects(), NumContracts, nullptr);
   }
 
   ContractSpecifierDecl(DeclContext *DC, SourceLocation Loc,
@@ -4738,9 +4736,7 @@ class ContractSpecifierDecl final
   using FilterRangeT = llvm::iterator_range<llvm::filter_iterator<
       ArrayRef<ContractStmt *>::iterator, bool (*)(const ContractStmt *)>>;
 
-
   LLVM_DECLARE_VIRTUAL_ANCHOR_FUNCTION();
-
 
 public:
   static ContractSpecifierDecl *Create(ASTContext &C, DeclContext *DC,
@@ -4791,7 +4787,8 @@ public:
   /// Returns the canonical result name for this contract sequence.
   const ResultNameDecl *getCanonicalResultName() const;
 
-  /// Update the declaration context of this contract sequence and of any result name declarations contained within it.
+  /// Update the declaration context of this contract sequence and of any result
+  /// name declarations contained within it.
   void setOwningFunction(DeclContext *FD);
 
   SourceRange getSourceRange() const override LLVM_READONLY;

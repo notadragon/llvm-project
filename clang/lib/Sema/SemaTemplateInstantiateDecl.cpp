@@ -2269,7 +2269,6 @@ Decl *TemplateDeclInstantiator::VisitFriendDecl(FriendDecl *D) {
   return FD;
 }
 
-
 Decl *TemplateDeclInstantiator::VisitStaticAssertDecl(StaticAssertDecl *D) {
   Expr *AssertExpr = D->getAssertExpr();
 
@@ -3037,7 +3036,6 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(
       SemaRef.CheckDependentFriend(D->getLocation(), QualifierLoc,
                                    /*TPLs=*/{}, /*IsInstantiation=*/true))
     return nullptr;
-
 
   // For function template specializations, don't copy the pattern's contracts.
   // If this becomes an implicit instantiation, InstantiateContractSpecifier
@@ -4791,18 +4789,17 @@ Decl *TemplateDeclInstantiator::VisitPostconditionCaptureDecl(
   if (NewType.isNull())
     return nullptr;
 
-  TypeSourceInfo *NewTInfo = SemaRef.SubstType(D->getTypeSourceInfo(),
-                                                TemplateArgs,
-                                                D->getLocation(),
-                                                D->getDeclName());
+  TypeSourceInfo *NewTInfo = SemaRef.SubstType(
+      D->getTypeSourceInfo(), TemplateArgs, D->getLocation(), D->getDeclName());
 
   // A postcondition init-capture written with a type-dependent initializer --
   // e.g. [c = x.val] on a dependent parameter x -- carries the <dependent type>
   // placeholder as its parse-time type (ActOnPostconditionCapture deduces the
   // type from the initializer, which is dependent here).  SubstType leaves that
   // placeholder unchanged, so recompute the capture type from the substituted
-  // initializer, mirroring the non-dependent deduction ActOnPostconditionCapture
-  // performs.  Without this the placeholder reaches CodeGen and asserts
+  // initializer, mirroring the non-dependent deduction
+  // ActOnPostconditionCapture performs.  Without this the placeholder reaches
+  // CodeGen and asserts
   // ("Unknown builtin type" in getTypeInfoImpl).  Parameter captures are
   // unaffected: their type is a template parameter that SubstType resolves.
   if (!D->isParameterCapture() && NewInit.isUsable() &&
@@ -4831,9 +4828,9 @@ Decl *TemplateDeclInstantiator::VisitResultNameDecl(ResultNameDecl *D) {
   if (NewType.isNull())
     NewType = D->getType();
 
-  ResultNameDecl *NewRND =
-      SemaRef.ActOnResultNameDeclarator(ContractKind::Post, nullptr, NewType,
-                                        D->getLocation(), D->getIdentifier(), D->getFunctionScopeDepth());
+  ResultNameDecl *NewRND = SemaRef.ActOnResultNameDeclarator(
+      ContractKind::Post, nullptr, NewType, D->getLocation(),
+      D->getIdentifier(), D->getFunctionScopeDepth());
   NewRND->setDeclContext(Owner);
 
   return NewRND;
@@ -5615,7 +5612,6 @@ TypeSourceInfo *TemplateDeclInstantiator::SubstFunctionType(
   return NewTInfo;
 }
 
-
 void Sema::addInstantiatedLocalVarsToScope(FunctionDecl *Function,
                                            const FunctionDecl *PatternDecl,
                                            LocalInstantiationScope &Scope) {
@@ -5637,7 +5633,6 @@ void Sema::addInstantiatedLocalVarsToScope(FunctionDecl *Function,
 
     if (it == Function->decls().end())
       continue;
-
 
     Scope.InstantiatedLocal(VD, *it);
     LSI->addCapture(cast<VarDecl>(*it), /*isBlock=*/false, /*isByref=*/false,
@@ -7386,8 +7381,7 @@ NamedDecl *Sema::FindInstantiatedDecl(SourceLocation Loc, NamedDecl *D,
     return D;
   if (isa<ParmVarDecl>(D) || isa<NonTypeTemplateParmDecl>(D) ||
       isa<ResultNameDecl>(D) || isa<PostconditionCaptureDecl>(D) ||
-      isa<TemplateTypeParmDecl>(D) ||
-      isa<TemplateTemplateParmDecl>(D) ||
+      isa<TemplateTypeParmDecl>(D) || isa<TemplateTemplateParmDecl>(D) ||
       (ParentDependsOnArgs && (ParentDC->isFunctionOrMethod() ||
                                isa<OMPDeclareReductionDecl>(ParentDC) ||
                                isa<OMPDeclareMapperDecl>(ParentDC))) ||

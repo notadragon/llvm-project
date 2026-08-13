@@ -451,8 +451,8 @@ void Parser::ExitScope() {
 }
 
 Parser::ParseScopeFlags::ParseScopeFlags(Parser *Self, unsigned long ScopeFlags,
-                                 bool ManageFlags)
-  : CurScope(ManageFlags ? Self->getCurScope() : nullptr) {
+                                         bool ManageFlags)
+    : CurScope(ManageFlags ? Self->getCurScope() : nullptr) {
   if (CurScope) {
     OldFlags = CurScope->getFlags();
     CurScope->setFlags(ScopeFlags);

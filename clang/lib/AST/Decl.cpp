@@ -2590,7 +2590,6 @@ VarDecl::evaluateValueImpl(SmallVectorImpl<PartialDiagnosticAt> *Notes,
       Ctx, this, EStatus, IsConstantInitialization, EnableContracts);
   Eval->Evaluated = std::move(EStatus.Val);
 
-
   // In C++, or in C23 if we're initialising a 'constexpr' variable, this isn't
   // a constant initializer if we produced notes. In that case, we can't keep
   // the result, because it may only be correct under the assumption that the
@@ -3824,10 +3823,9 @@ FunctionDecl::setPreviousDeclaration(FunctionDecl *PrevDecl) {
 
 FunctionDecl *FunctionDecl::getCanonicalDecl() { return getFirstDecl(); }
 
-
 FunctionDecl *FunctionDecl::getDeclForContracts() {
-  // Try getting the contracts from the defining decl, and if those aren't present
-  // use the contracts on the first declaration.
+  // Try getting the contracts from the defining decl, and if those aren't
+  // present use the contracts on the first declaration.
   if (auto *Def = getDefinition(); Def && Def->getContracts())
     return Def;
   return getCanonicalDecl();
@@ -5759,7 +5757,6 @@ ImplicitParamDecl *ImplicitParamDecl::CreateDeserialized(ASTContext &C,
                                                          GlobalDeclID ID) {
   return new (C, ID) ImplicitParamDecl(C, QualType(), ImplicitParamKind::Other);
 }
-
 
 FunctionDecl *
 FunctionDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,

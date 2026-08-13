@@ -44,23 +44,23 @@ struct ContractLineRange {
 
 /// One rule in the P3595 ordered contract configuration list.
 struct ContractConfigEntry {
-  int Kind = -1;           // ContractKind (Pre/Post/Assert) or -1 (any)
-  int CallerSide = -1;     // 1=caller, 0=callee, -1=any
-  int ConstexprEval = -1;  // 1=CE-only, 0=runtime-only, -1=both (default)
-  std::string Group;       // Group prefix to match, or empty (any)
-  std::string Namespace;   // Namespace prefix to match, or empty (any)
+  int Kind = -1;            // ContractKind (Pre/Post/Assert) or -1 (any)
+  int CallerSide = -1;      // 1=caller, 0=callee, -1=any
+  int ConstexprEval = -1;   // 1=CE-only, 0=runtime-only, -1=both (default)
+  std::string Group;        // Group prefix to match, or empty (any)
+  std::string Namespace;    // Namespace prefix to match, or empty (any)
   std::string LocationFile; // Filename suffix to match, or empty (any)
   llvm::SmallVector<ContractLineRange> LocationLines; // Line ranges
-  std::string CallerNamespace;   // Caller-context namespace prefix, or empty
+  std::string CallerNamespace;    // Caller-context namespace prefix, or empty
   std::string CallerLocationFile; // Caller-context filename suffix, or empty
   llvm::SmallVector<ContractLineRange> CallerLocationLines; // Line ranges
   ContractEvaluationSemantic Semantic = ContractEvaluationSemantic::Enforce;
 
   // output.dynamic descriptor.  DynName empty means no dynamic selection.
   std::string DynName;
-  int DynLinkage = 0;         // 0 = "C++", 1 = "C"
+  int DynLinkage = 0; // 0 = "C++", 1 = "C"
   bool DynProvideWeak = true;
-  bool HasSemantic = false;   // was "semantic" explicitly given?
+  bool HasSemantic = false; // was "semantic" explicitly given?
 };
 
 /// The parsed P3595 configuration for a translation unit: the ordered command

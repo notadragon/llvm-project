@@ -95,13 +95,14 @@ enum class ContractAssertionKind {
 /// Contract evaluation mode. Determines whether to check contracts, and
 /// whether contract failures cause compile errors.
 ///
-/// Values match std::contracts::evaluation_semantic per [support.contract.enum].
+/// Values match std::contracts::evaluation_semantic per
+/// [support.contract.enum].
 enum class ContractEvaluationSemantic {
   Ignore = 1,
   Observe = 2,
   Enforce = 3,
   QuickEnforce = 4,
-  Assume = 5, // P3100 "assume" evaluation semantic
+  Assume = 5,          // P3100 "assume" evaluation semantic
   NoexceptObserve = 6, // D4298
   NoexceptEnforce = 7, // D4298
 };
@@ -140,12 +141,14 @@ inline constexpr unsigned AllContractSemanticsMaskWithExtensions =
 /// restriction is intersected with this at query construction, so "assume"
 /// can never be present when the flag is off -- a label cannot re-add it.
 inline constexpr unsigned gatedContractSemanticsMask(bool AllowAssume,
-                                                      bool EnableP4298) {
+                                                     bool EnableP4298) {
   unsigned Mask = AllowAssume ? AllContractSemanticsMaskWithAssume
                               : AllContractSemanticsMask;
   if (EnableP4298)
-    Mask |= (1u << static_cast<unsigned>(ContractEvaluationSemantic::NoexceptEnforce)) |
-            (1u << static_cast<unsigned>(ContractEvaluationSemantic::NoexceptObserve));
+    Mask |= (1u << static_cast<unsigned>(
+                 ContractEvaluationSemantic::NoexceptEnforce)) |
+            (1u << static_cast<unsigned>(
+                 ContractEvaluationSemantic::NoexceptObserve));
   return Mask;
 }
 
@@ -217,10 +220,7 @@ enum class ContractEmissionStyle {
 /// Indicates whether the contract-scope information was pushed before the
 /// function's declaration context was available (and so needs special handling
 /// when adjusting the context).
-enum class ContractScopeOffset {
-  ParentContext,
-  FunctionContext
-};
+enum class ContractScopeOffset { ParentContext, FunctionContext };
 
 /// Source type for a contract configuration entry.
 enum class ContractConfigSourceKind {
@@ -247,7 +247,7 @@ struct ContractConfigSource;
 /// resolveContractSemantic's implementation).
 struct ContractDynamicResult {
   std::string Name;
-  int Linkage = 0;       // 0 = "C++", 1 = "C"; meaningful only when Found
+  int Linkage = 0; // 0 = "C++", 1 = "C"; meaningful only when Found
   bool ProvideWeak = false;
   bool Found = false;
 };

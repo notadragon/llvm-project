@@ -271,7 +271,6 @@ private:
   /// available for this variable in the current scope.
   llvm::SmallPtrSet<VarDecl *, 8> ReturnSlots;
 
-
   /// If this scope belongs to a loop or switch statement, the label that
   /// directly precedes it, if any.
   LabelDecl *PrecedingLabel;
@@ -327,12 +326,9 @@ public:
   void setIsConditionVarScope(bool InConditionVarScope) {
     Flags = (Flags & ~ConditionVarScope) |
             (InConditionVarScope ? ConditionVarScope : NoScope);
-
   }
 
-  bool isConditionVarScope() const {
-    return Flags & ConditionVarScope;
-  }
+  bool isConditionVarScope() const { return Flags & ConditionVarScope; }
 
   void setIsContractScope(bool InContractScope) {
     Flags = (Flags & ~ContractAssertScope) |

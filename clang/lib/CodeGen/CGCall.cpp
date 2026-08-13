@@ -4385,7 +4385,6 @@ void CodeGenFunction::EmitFunctionEpilog(
     return;
   }
 
-
   // Functions with no result always return void.
   if (!ReturnValue.isValid()) {
     if (!PostContractsHandledByPrologueCleanup)

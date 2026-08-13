@@ -865,7 +865,7 @@ void CodeGenVTables::addVTableComponent(ConstantArrayBuilder &builder,
         fnPtr = PureVirtualFn;
       }
 
-    // Deleted virtual member functions.
+      // Deleted virtual member functions.
     } else if (MD->isDeleted()) {
       if (!DeletedVirtualFn)
         DeletedVirtualFn =

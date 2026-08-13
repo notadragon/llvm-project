@@ -5090,10 +5090,10 @@ enum class SourceLocIdentKind {
 // We use 3 bits to represent this in the AST
 static_assert(static_cast<int>(SourceLocIdentKind::SourceLocStruct) < 8);
 
-
 /// Represents a function call to one of __builtin_LINE(), __builtin_COLUMN(),
 /// __builtin_FUNCTION(), __builtin_FUNCSIG(), __builtin_FILE(),
-/// __builtin_FILE_NAME(), __builtin_source_location(), or __builtin_source_location()2.
+/// __builtin_FILE_NAME(), __builtin_source_location(), or
+/// __builtin_source_location()2.
 class SourceLocExpr final : public Expr {
   SourceLocation BuiltinLoc, RParenLoc;
   DeclContext *ParentContext;

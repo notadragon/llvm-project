@@ -139,7 +139,10 @@ public:
 
   bool isCapturedAcrossContract() const { return CapturedAcrossContract; }
   SourceLocation getContractLoc() const { return ContractLoc; }
-  void setCapturedAcrossContract(bool Value, SourceLocation CLoc) { CapturedAcrossContract = Value; ContractLoc = CLoc; }
+  void setCapturedAcrossContract(bool Value, SourceLocation CLoc) {
+    CapturedAcrossContract = Value;
+    ContractLoc = CLoc;
+  }
 };
 
 } // end namespace clang

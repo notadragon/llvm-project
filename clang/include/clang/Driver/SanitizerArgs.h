@@ -193,10 +193,10 @@ public:
 
   /// P3100 Task 4.1: TRUE iff a check whose flag mask includes Bit is ROUTED
   /// to the C++ contract-violation handler at run time (today only the address
-  /// check).  A routed check's handler runs inside libasan's implicitly-noexcept
-  /// error-report path, so a throwing handler can never propagate; its allowed
-  /// set is the non-throwing one (assume / quick_enforce / the D4298
-  /// noexcept_* semantics).
+  /// check).  A routed check's handler runs inside libasan's
+  /// implicitly-noexcept error-report path, so a throwing handler can never
+  /// propagate; its allowed set is the non-throwing one (assume / quick_enforce
+  /// / the D4298 noexcept_* semantics).
   static bool isRoutedSanitizerCheck(SanitizerMask Bit);
 
   /// P3100 Task 1.1: the contract evaluation semantic explicitly requested for

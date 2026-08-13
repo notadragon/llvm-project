@@ -928,7 +928,6 @@ struct EvaluatedStmt {
   LLVM_PREFERRED_TYPE(bool)
   unsigned CheckedForSideEffects : 1;
 
-
   LazyDeclStmtPtr Value;
   APValue Evaluated;
 
@@ -936,8 +935,8 @@ struct EvaluatedStmt {
       : WasEvaluated(false), IsEvaluating(false),
         HasConstantInitialization(false), HasConstantDestruction(false),
         HasICEInit(false), CheckedForICEInit(false),
-        RegisteredForDestruction(false), HasSideEffects(false), CheckedForSideEffects(false) {}
-
+        RegisteredForDestruction(false), HasSideEffects(false),
+        CheckedForSideEffects(false) {}
 };
 
 /// Represents a variable declaration or definition.
@@ -2344,8 +2343,8 @@ public:
          const DeclarationNameInfo &NameInfo, QualType T, TypeSourceInfo *TInfo,
          StorageClass SC, bool UsesFPIntrin, bool isInlineSpecified,
          bool hasWrittenPrototype, ConstexprSpecKind ConstexprKind,
-         const AssociatedConstraint &TrailingRequiresClause, ContractSpecifierDecl *Contracts);
-
+         const AssociatedConstraint &TrailingRequiresClause,
+         ContractSpecifierDecl *Contracts);
 
   static FunctionDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
 
@@ -2925,7 +2924,6 @@ public:
   const FunctionDecl *getCanonicalDecl() const {
     return const_cast<FunctionDecl*>(this)->getCanonicalDecl();
   }
-
 
   FunctionDecl *getDeclForContracts();
   const FunctionDecl *getDeclForContracts() const;

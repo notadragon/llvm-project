@@ -2075,6 +2075,5 @@ void DeclPrinter::VisitOpenACCRoutineDecl(OpenACCRoutineDecl *D) {
       OpenACCClausePrinter Printer(Out, Policy);
       Printer.VisitClauseList(D->clauses());
     }
-
   }
 }

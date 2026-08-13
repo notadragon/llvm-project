@@ -593,7 +593,6 @@ public:
 
   std::vector<std::string> OverflowPatternExclusionValues;
 
-
   /// The seed used by the randomize structure layout feature.
   std::string RandstructSeed;
 

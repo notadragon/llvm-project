@@ -2266,7 +2266,6 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc,
     if (From.isInvalid())
       return ExprError();
 
-
     assert(!From.isBlockCapture() && "Cannot capture __block variables");
     bool IsImplicit = I >= LSI->NumExplicitCaptures;
     SourceLocation ImplicitCaptureLoc =
@@ -2297,7 +2296,6 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc,
         IsCaptureUsed =
             !DiagnoseUnusedLambdaCapture(CaptureRange, FixItRange, From);
       }
-
     }
 
     if (CaptureRange.isValid()) {
@@ -2327,14 +2325,12 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc,
         ValueDecl *Var = From.getVariable();
         LambdaCaptureKind Kind = From.isCopyCapture() ? LCK_ByCopy : LCK_ByRef;
 
-
         LambdaCapture Cap(From.getLocation(), IsImplicit, Kind, Var,
-                             From.getEllipsisLoc());
+                          From.getEllipsisLoc());
         if (From.isCapturedAcrossContract() && !From.isCopyCapture())
           Cap.setCapturedAcrossContract(true, From.getContractLoc());
 
         return Cap;
-
       }
     }();
 

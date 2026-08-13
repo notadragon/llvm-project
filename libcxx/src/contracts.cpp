@@ -9,8 +9,7 @@
 using namespace std::contracts;
 using namespace __cxxabiv1;
 
-extern "C" __attribute__((weak))
-void __handle_contract_violation(const std::contracts::contract_violation&);
+extern "C" __attribute__((weak)) void __handle_contract_violation(const std::contracts::contract_violation&);
 
 namespace {
 
@@ -72,9 +71,9 @@ void __run_violation_handler(const std::contracts::contract_violation& violation
 
 void __run_nothrow_violation_handler(const std::contracts::contract_violation& violation) noexcept {
 #if _LIBCPP_HAS_EXCEPTIONS
-try {
+  try {
 #endif
-  __run_violation_handler(violation);
+    __run_violation_handler(violation);
 #if _LIBCPP_HAS_EXCEPTIONS
   } catch (...) {
     // A handler that exits via an exception at a noexcept entry point
@@ -97,8 +96,7 @@ void std::contracts::invoke_default_contract_violation_handler(const contract_vi
 // no user handler (__handle_contract_violation) is present, and C violation
 // handlers can call it to emit the default diagnostics.  The argument is a
 // pointer to a contract_violation object (ABI-identical to a const reference).
-extern "C" _LIBCPP_EXPORTED_FROM_ABI void
-__contract_invoke_default_handler(const std::contracts::contract_violation&);
+extern "C" _LIBCPP_EXPORTED_FROM_ABI void __contract_invoke_default_handler(const std::contracts::contract_violation&);
 
 extern "C" _LIBCPP_EXPORTED_FROM_ABI void
 __contract_invoke_default_handler(const std::contracts::contract_violation& __violation) {
@@ -129,44 +127,42 @@ struct __p3290_desc_t {
 };
 
 static const __p3290_desc_t __p3290_desc = {
-  static_cast<__UINT8_TYPE__>((1u << 4) | CXA_VENDOR_CLANG),
-  5,
-  { CXA_FIELD_SOURCE_LOCATION, CXA_FIELD_COMMENT,
-    CXA_FIELD_ASSERTION_KIND, CXA_FIELD_EVALUATION_SEMANTIC,
-    CXA_FIELD_DETECTION_MODE },
-  { 0 },
-  {
-    { offsetof(__p3290_data_block_t, location) },
-    { offsetof(__p3290_data_block_t, comment) },
-    { offsetof(__p3290_data_block_t, kind) },
-    { offsetof(__p3290_data_block_t, semantic) },
-    { offsetof(__p3290_data_block_t, mode) },
-  }
-};
+    static_cast<__UINT8_TYPE__>((1u << 4) | CXA_VENDOR_CLANG),
+    5,
+    {CXA_FIELD_SOURCE_LOCATION,
+     CXA_FIELD_COMMENT,
+     CXA_FIELD_ASSERTION_KIND,
+     CXA_FIELD_EVALUATION_SEMANTIC,
+     CXA_FIELD_DETECTION_MODE},
+    {0},
+    {
+        {offsetof(__p3290_data_block_t, location)},
+        {offsetof(__p3290_data_block_t, comment)},
+        {offsetof(__p3290_data_block_t, kind)},
+        {offsetof(__p3290_data_block_t, semantic)},
+        {offsetof(__p3290_data_block_t, mode)},
+    }};
 
 } // anonymous namespace
 
 void std::contracts::__handle_manual_contract_violation(
-  assertion_kind __kind,
-  evaluation_semantic __semantic,
-  detection_mode __mode,
-  const char* __comment,
-  std::source_location __loc,
-  bool __can_throw
-) {
+    assertion_kind __kind,
+    evaluation_semantic __semantic,
+    detection_mode __mode,
+    const char* __comment,
+    std::source_location __loc,
+    bool __can_throw) {
   __p3290_data_block_t __data = {
-    reinterpret_cast<const __cxa_descriptor_table_t*>(&__p3290_desc),
-    nullptr,
-    { __loc.file_name(), __loc.function_name(),
-      __loc.line(), __loc.column() },
-    __comment ? __comment : "",
-    static_cast<__UINT8_TYPE__>(__kind),
-    static_cast<__UINT8_TYPE__>(__semantic),
-    static_cast<__UINT8_TYPE__>(__mode),
+      reinterpret_cast<const __cxa_descriptor_table_t*>(&__p3290_desc),
+      nullptr,
+      {__loc.file_name(), __loc.function_name(), __loc.line(), __loc.column()},
+      __comment ? __comment : "",
+      static_cast<__UINT8_TYPE__>(__kind),
+      static_cast<__UINT8_TYPE__>(__semantic),
+      static_cast<__UINT8_TYPE__>(__mode),
   };
 
-  contract_violation __cv{
-    reinterpret_cast<const __cxa_contract_data_block*>(&__data)};
+  contract_violation __cv{reinterpret_cast<const __cxa_contract_data_block*>(&__data)};
 
   if (!__can_throw)
     __run_nothrow_violation_handler(__cv);
@@ -188,23 +184,20 @@ extern "C++" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
 __cxa_handle_cassert_violation(const char*, std::source_location) noexcept;
 
 extern "C++" [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void
-__cxa_handle_cassert_violation(const char* __comment,
-                               std::source_location __loc) noexcept {
+__cxa_handle_cassert_violation(const char* __comment, std::source_location __loc) noexcept {
   __p3290_data_block_t __data = {
-    reinterpret_cast<const __cxa_descriptor_table_t*>(&__p3290_desc),
-    nullptr,
-    { __loc.file_name(), __loc.function_name(),
-      __loc.line(), __loc.column() },
-    __comment ? __comment : "",
-    CXA_AK_CASSERT,
-    CXA_ES_ENFORCE,
-    CXA_DM_PREDICATE_FALSE,
+      reinterpret_cast<const __cxa_descriptor_table_t*>(&__p3290_desc),
+      nullptr,
+      {__loc.file_name(), __loc.function_name(), __loc.line(), __loc.column()},
+      __comment ? __comment : "",
+      CXA_AK_CASSERT,
+      CXA_ES_ENFORCE,
+      CXA_DM_PREDICATE_FALSE,
   };
 #if _LIBCPP_HAS_EXCEPTIONS
   try {
 #endif
-    __cxa_contract_violation(
-        const_cast<void*>(static_cast<const void*>(&__data)));
+    __cxa_contract_violation(const_cast<void*>(static_cast<const void*>(&__data)));
 #if _LIBCPP_HAS_EXCEPTIONS
   } catch (...) {
     std::abort();

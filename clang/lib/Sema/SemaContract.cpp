@@ -14,9 +14,7 @@
 #include "TypeLocBuilder.h"
 #include "clang/AST/ASTConcept.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ASTDiagnostic.h"
-#include "clang/Basic/ContractOptions.h"
 #include "clang/AST/ASTLambda.h"
 #include "clang/AST/ASTStructuralEquivalence.h"
 #include "clang/AST/CXXInheritance.h"
@@ -24,6 +22,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/IgnoreExpr.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -31,6 +30,7 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/TypeOrdering.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/EnterExpressionEvaluationContext.h"
@@ -152,14 +152,16 @@ public:
 
 } // namespace
 
-ExprResult Sema::ActOnContractAssertCondition(Expr *Cond)  {
+ExprResult Sema::ActOnContractAssertCondition(Expr *Cond) {
   assert(currentEvaluationContext().isContractAssertionContext() &&
          "Wrong context for statement");
 
   if (Cond->isTypeDependent())
     return Cond;
 
-  ConditionResult Res = ActOnCondition(getCurScope(), Cond->getExprLoc(), Cond, Sema::ConditionKind::Boolean, /*MissingOK=*/false);
+  ConditionResult Res =
+      ActOnCondition(getCurScope(), Cond->getExprLoc(), Cond,
+                     Sema::ConditionKind::Boolean, /*MissingOK=*/false);
   if (Res.isInvalid())
     return ExprError();
   Cond = Res.get().second;
@@ -170,8 +172,7 @@ ExprResult Sema::ActOnContractAssertCondition(Expr *Cond)  {
 // Try to call label.member_name(semantic_arg) and constant-evaluate.
 // Returns the integer result, or -1 on failure.
 static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
-                               const CXXRecordDecl *RD,
-                               StringRef MethodName,
+                               const CXXRecordDecl *RD, StringRef MethodName,
                                unsigned SemVal, SourceLocation Loc) {
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
@@ -185,11 +186,11 @@ static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
   Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
 
-  ExprResult MemberRef = S.BuildMemberReferenceExpr(
-      LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
-      /*TemplateKWLoc=*/SourceLocation(),
-      /*FirstQualifierInScope=*/nullptr, R,
-      /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  ExprResult MemberRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
   if (MemberRef.isInvalid())
     return -1;
 
@@ -205,8 +206,8 @@ static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
   else
     ParamTy = S.Context.UnsignedCharTy;
 
-  Expr *Arg = IntegerLiteral::Create(
-      S.Context, llvm::APInt(8, SemVal), S.Context.UnsignedCharTy, Loc);
+  Expr *Arg = IntegerLiteral::Create(S.Context, llvm::APInt(8, SemVal),
+                                     S.Context.UnsignedCharTy, Loc);
   Arg = ImplicitCastExpr::Create(S.Context, ParamTy, CK_IntegralCast, Arg,
                                  nullptr, VK_PRValue, FPOptionsOverride());
 
@@ -224,13 +225,10 @@ static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
 
 // Call label.method_name(const char* arg) and constant-evaluate the result.
 // Returns the resulting string, or empty StringRef on failure or null result.
-static StringRef callLabelStringMethod(Sema &S, Expr *LabelExpr,
-                                       QualType LabelTy,
-                                       const CXXRecordDecl *RD,
-                                       StringRef MethodName,
-                                       StringRef CurrentVal,
-                                       bool IsNull,
-                                       SourceLocation Loc) {
+static StringRef
+callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                      const CXXRecordDecl *RD, StringRef MethodName,
+                      StringRef CurrentVal, bool IsNull, SourceLocation Loc) {
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
   if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
@@ -243,11 +241,11 @@ static StringRef callLabelStringMethod(Sema &S, Expr *LabelExpr,
   Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
 
-  ExprResult MemberRef = S.BuildMemberReferenceExpr(
-      LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
-      /*TemplateKWLoc=*/SourceLocation(),
-      /*FirstQualifierInScope=*/nullptr, R,
-      /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  ExprResult MemberRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
   if (MemberRef.isInvalid())
     return {};
 
@@ -256,24 +254,24 @@ static StringRef callLabelStringMethod(Sema &S, Expr *LabelExpr,
 
   Expr *Arg;
   if (IsNull) {
-    Arg = ImplicitCastExpr::Create(
-        S.Context, ConstCharPtrTy, CK_NullToPointer,
-        IntegerLiteral::Create(S.Context, llvm::APInt(32, 0),
-                               S.Context.IntTy, Loc),
-        nullptr, VK_PRValue, FPOptionsOverride());
+    Arg = ImplicitCastExpr::Create(S.Context, ConstCharPtrTy, CK_NullToPointer,
+                                   IntegerLiteral::Create(S.Context,
+                                                          llvm::APInt(32, 0),
+                                                          S.Context.IntTy, Loc),
+                                   nullptr, VK_PRValue, FPOptionsOverride());
   } else {
-    QualType ArrTy = S.Context.getStringLiteralArrayType(
-        S.Context.CharTy, CurrentVal.size());
-    StringLiteral *SL = StringLiteral::Create(
-        S.Context, CurrentVal, StringLiteralKind::Ordinary,
-        /*Pascal=*/false, ArrTy, {Loc});
-    Arg = ImplicitCastExpr::Create(
-        S.Context, ConstCharPtrTy, CK_ArrayToPointerDecay, SL,
-        nullptr, VK_PRValue, FPOptionsOverride());
+    QualType ArrTy = S.Context.getStringLiteralArrayType(S.Context.CharTy,
+                                                         CurrentVal.size());
+    StringLiteral *SL = StringLiteral::Create(S.Context, CurrentVal,
+                                              StringLiteralKind::Ordinary,
+                                              /*Pascal=*/false, ArrTy, {Loc});
+    Arg = ImplicitCastExpr::Create(S.Context, ConstCharPtrTy,
+                                   CK_ArrayToPointerDecay, SL, nullptr,
+                                   VK_PRValue, FPOptionsOverride());
   }
 
-  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MemberRef.get(),
-                                    Loc, {Arg}, Loc, /*ExecConfig=*/nullptr);
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc,
+                                    {Arg}, Loc, /*ExecConfig=*/nullptr);
   if (Call.isInvalid())
     return {};
 
@@ -318,11 +316,11 @@ static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
   Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
 
-  ExprResult ASRef = S.BuildMemberReferenceExpr(
-      LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
-      /*TemplateKWLoc=*/SourceLocation(),
-      /*FirstQualifierInScope=*/nullptr, R,
-      /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  ExprResult ASRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
   if (ASRef.isInvalid())
     return AllContractSemanticsMaskWithExtensions;
 
@@ -369,13 +367,13 @@ static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
     else
       ParamTy = S.Context.UnsignedCharTy;
 
-    Expr *Arg = IntegerLiteral::Create(
-        S.Context, llvm::APInt(8, Sem), S.Context.UnsignedCharTy, Loc);
+    Expr *Arg = IntegerLiteral::Create(S.Context, llvm::APInt(8, Sem),
+                                       S.Context.UnsignedCharTy, Loc);
     Arg = ImplicitCastExpr::Create(S.Context, ParamTy, CK_IntegralCast, Arg,
                                    nullptr, VK_PRValue, FPOptionsOverride());
 
-    ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, ContainsRef.get(),
-                                      Loc, {Arg}, Loc, /*ExecConfig=*/nullptr);
+    ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, ContainsRef.get(), Loc,
+                                      {Arg}, Loc, /*ExecConfig=*/nullptr);
     if (Call.isInvalid())
       return AllContractSemanticsMaskWithExtensions;
 
@@ -397,9 +395,8 @@ static std::string extractStringFromAPValue(const APValue &Val) {
     return Str;
   unsigned InitElts = Val.getArrayInitializedElts();
   for (unsigned I = 0, N = Val.getArraySize(); I < N; ++I) {
-    const APValue &Ch = (I < InitElts)
-        ? Val.getArrayInitializedElt(I)
-        : Val.getArrayFiller();
+    const APValue &Ch =
+        (I < InitElts) ? Val.getArrayInitializedElt(I) : Val.getArrayFiller();
     if (Ch.isInt()) {
       char C = static_cast<char>(Ch.getInt().getExtValue());
       if (C == '\0')
@@ -412,9 +409,10 @@ static std::string extractStringFromAPValue(const APValue &Val) {
 
 // Extract group names from label's group_names member (identification_label).
 // Returns a vector of group name strings; empty if no group_names member.
-static SmallVector<std::string>
-extractGroupNames(Sema &S, Expr *LabelExpr, QualType LabelTy,
-                  const CXXRecordDecl *RD, SourceLocation Loc) {
+static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
+                                                  QualType LabelTy,
+                                                  const CXXRecordDecl *RD,
+                                                  SourceLocation Loc) {
   DeclarationName GNName = &S.Context.Idents.get("group_names");
   LookupResult R(S, GNName, Loc, Sema::LookupMemberName);
   if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
@@ -522,9 +520,8 @@ extractGroupNames(Sema &S, Expr *LabelExpr, QualType LabelTy,
   SmallVector<std::string> Groups;
   unsigned InitElts = FieldVal->getArrayInitializedElts();
   for (unsigned I = 0, N = FieldVal->getArraySize(); I < N; ++I) {
-    const APValue &Elt = (I < InitElts)
-        ? FieldVal->getArrayInitializedElt(I)
-        : FieldVal->getArrayFiller();
+    const APValue &Elt = (I < InitElts) ? FieldVal->getArrayInitializedElt(I)
+                                        : FieldVal->getArrayFiller();
     std::string Str = extractStringFromAPValue(Elt);
     if (!Str.empty())
       Groups.push_back(std::move(Str));
@@ -562,8 +559,9 @@ static void resolveContractConfig(Sema &S, ContractStmt *CS,
   ContractQuery CQ;
   CQ.Kind = CS->getContractKind();
   CQ.CallerSide = true;
-  CQ.AllowedMask = AllowedMask | (1u << static_cast<unsigned>(
-      ContractEvaluationSemantic::Ignore));
+  CQ.AllowedMask =
+      AllowedMask |
+      (1u << static_cast<unsigned>(ContractEvaluationSemantic::Ignore));
   CQ.Groups = Groups;
   CQ.FnContext = S.CurContext;
   CQ.Loc = CS->getKeywordLoc();
@@ -577,14 +575,14 @@ static void resolveContractConfig(Sema &S, ContractStmt *CS,
 // a config entry carrying an "output.dynamic" descriptor, precompute the per-
 // return-value transform table T(R) = compute_semantic(clamp_to_allowed(R)) for
 // R in Ignore..QuickEnforce (1..4) and cache it (plus the descriptor) on the
-// stmt.  Codegen (T4) turns this into a dispatch switch; it does no Sema work of
-// its own.
+// stmt.  Codegen (T4) turns this into a dispatch switch; it does no Sema work
+// of its own.
 //
-// This mirrors the eagerly-resolved scalar path (steps 3-5 below) but differs in
-// ONE way per P3595 design section 4: a compute_semantic result that lands
-// outside the allowed set records the sentinel 0 for that R (-> runtime enforced
-// violation in codegen) instead of emitting the compile error.  The scalar
-// compile-error path (applyLabelFacets step 5) is unchanged for the
+// This mirrors the eagerly-resolved scalar path (steps 3-5 below) but differs
+// in ONE way per P3595 design section 4: a compute_semantic result that lands
+// outside the allowed set records the sentinel 0 for that R (-> runtime
+// enforced violation in codegen) instead of emitting the compile error.  The
+// scalar compile-error path (applyLabelFacets step 5) is unchanged for the
 // eagerly-resolved default.
 //
 // LabelExpr/LabelTy/RD may be null for a dynamic contract with no label facets
@@ -594,7 +592,8 @@ static void precomputeDynamicTable(Sema &S, ContractStmt *CS,
                                    unsigned AllowedMask,
                                    ArrayRef<std::string> Groups,
                                    Expr *LabelExpr, QualType LabelTy,
-                                   const CXXRecordDecl *RD, SourceLocation Loc) {
+                                   const CXXRecordDecl *RD,
+                                   SourceLocation Loc) {
   // Match resolveContractConfig's group resolution: if no groups were supplied
   // (labeled via group_names, or unlabeled), fall back to the
   // [[clang::contract_group]] attribute so the dynamic scan matches the same
@@ -690,8 +689,8 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
   if (RD) {
     DeclarationName ACOName = &S.Context.Idents.get("assertion_control_object");
     LookupResult ACO(S, ACOName, Loc, Sema::LookupOrdinaryName);
-    if (S.LookupQualifiedName(ACO, const_cast<CXXRecordDecl *>(RD))
-        && !ACO.isAmbiguous() && ACO.getAsSingle<TypeDecl>())
+    if (S.LookupQualifiedName(ACO, const_cast<CXXRecordDecl *>(RD)) &&
+        !ACO.isAmbiguous() && ACO.getAsSingle<TypeDecl>())
       IsValidLabel = true;
     ACO.suppressDiagnostics();
   }
@@ -732,9 +731,9 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
   // Step 4: Apply compute_semantic transformation if present.  It may return
   // any valid semantic, including assume and the D4298 noexcept_* variants
   // (1..7); a result outside the allowed set is diagnosed in Step 5.
-  int64_t ComputeResult = callLabelMethod(
-      S, LabelExpr, LabelTy, RD, "compute_semantic",
-      static_cast<unsigned>(EffectiveSem), Loc);
+  int64_t ComputeResult =
+      callLabelMethod(S, LabelExpr, LabelTy, RD, "compute_semantic",
+                      static_cast<unsigned>(EffectiveSem), Loc);
   if (ComputeResult >= 1 && ComputeResult <= 7)
     EffectiveSem = static_cast<ContractEvaluationSemantic>(ComputeResult);
 
@@ -757,8 +756,8 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
   // above remains the compile-time default (weak-def value + constant
   // evaluation); this is a separate, per-return-value computation whose
   // disallowed results become the runtime sentinel rather than a compile error.
-  precomputeDynamicTable(S, CS, AllowedMask, LabelGroups, LabelExpr, LabelTy, RD,
-                         Loc);
+  precomputeDynamicTable(S, CS, AllowedMask, LabelGroups, LabelExpr, LabelTy,
+                         RD, Loc);
 
   // Also eagerly resolve CE semantic for labeled contracts.
   {
@@ -776,9 +775,9 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
     ContractEvaluationSemantic CESem = Opts.resolveContractSemantic(CEQ);
 
     if (ComputeResult >= 0) {
-      int64_t CECompute = callLabelMethod(
-          S, LabelExpr, LabelTy, RD, "compute_semantic",
-          static_cast<unsigned>(CESem), Loc);
+      int64_t CECompute =
+          callLabelMethod(S, LabelExpr, LabelTy, RD, "compute_semantic",
+                          static_cast<unsigned>(CESem), Loc);
       if (CECompute >= 1 && CECompute <= 7 &&
           (AllowedMask & (1u << static_cast<unsigned>(CECompute))))
         CESem = static_cast<ContractEvaluationSemantic>(CECompute);
@@ -825,10 +824,9 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         OpaqueValueExpr KeyArg(Loc, S.Context.VoidPtrTy, VK_PRValue);
         OpaqueValueExpr IdxArg(Loc, S.Context.getSizeType(), VK_PRValue);
         Expr *ArgExprs[] = {&KeyArg, &IdxArg};
-        ExprResult Call = S.BuildCallToMemberFunction(
-            nullptr, QueryMember, Loc, ArgExprs, Loc);
-        if (!Call.isInvalid() &&
-            Call.get()->getType()->isVoidPointerType())
+        ExprResult Call = S.BuildCallToMemberFunction(nullptr, QueryMember, Loc,
+                                                      ArgExprs, Loc);
+        if (!Call.isInvalid() && Call.get()->getType()->isVoidPointerType())
           CS->setHasQuery(true);
       }
     } else {
@@ -839,9 +837,9 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
   // Step 7: Apply compute_comment facet.
   {
     std::string Comment = CS->getSourceText(S.Context);
-    StringRef Result = callLabelStringMethod(
-        S, LabelExpr, LabelTy, RD, "compute_comment", Comment,
-        /*IsNull=*/false, Loc);
+    StringRef Result = callLabelStringMethod(S, LabelExpr, LabelTy, RD,
+                                             "compute_comment", Comment,
+                                             /*IsNull=*/false, Loc);
     if (!Result.empty())
       CS->setTransformedComment(S.Context.backupStr(Result));
   }
@@ -887,8 +885,8 @@ Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
 
     QualType T = PVD->getType().getNonReferenceType();
     TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(T, IdLoc);
-    auto *Cap = PostconditionCaptureDecl::Create(
-        Context, DC, IdLoc, IdLoc, Id, T, TInfo, CaptureSC);
+    auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                                 T, TInfo, CaptureSC);
     Cap->setIsParameterCapture(true);
     Cap->setIsPackExpansion(IsPackExpansion);
     if (InClassContext)
@@ -902,8 +900,7 @@ Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
         Cap->setInit(CopyInit.get());
       } else {
         ExprResult InitExpr = PerformCopyInitialization(
-            InitializedEntity::InitializeVariable(Cap),
-            IdLoc, CopyInit.get());
+            InitializedEntity::InitializeVariable(Cap), IdLoc, CopyInit.get());
         if (!InitExpr.isInvalid())
           Cap->setInit(InitExpr.get());
       }
@@ -927,8 +924,8 @@ Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
   }
 
   TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(DeducedType, IdLoc);
-  auto *Cap = PostconditionCaptureDecl::Create(
-      Context, DC, IdLoc, IdLoc, Id, DeducedType, TInfo, CaptureSC);
+  auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                               DeducedType, TInfo, CaptureSC);
   Cap->setIsParameterCapture(false);
   Cap->setIsPackExpansion(IsPackExpansion);
   if (InClassContext)
@@ -958,14 +955,13 @@ void Sema::ActOnFinishPostconditionCaptures(Scope *S,
 }
 
 StmtResult Sema::BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
-                                   Expr *Cond, DeclStmt *RND,
-                                   Expr *Message, Expr *Label,
-                                   DeclStmt *Captures,
+                                   Expr *Cond, DeclStmt *RND, Expr *Message,
+                                   Expr *Label, DeclStmt *Captures,
                                    ArrayRef<const Attr *> Attrs,
                                    Expr *RequiresClause) {
-  StmtResult Res = ContractStmt::Create(Context, CK, KeywordLoc, Cond, RND,
-                                        Message, Label, Captures, Attrs,
-                                        RequiresClause);
+  StmtResult Res =
+      ContractStmt::Create(Context, CK, KeywordLoc, Cond, RND, Message, Label,
+                           Captures, Attrs, RequiresClause);
 
   // Populate the dynamic descriptor + label facets here, on the shared hook
   // that BOTH the primary parse (via ActOnContractAssert) and every template
@@ -991,13 +987,13 @@ StmtResult Sema::BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
   // (TreeTransform::RebuildContractStmt -> BuildContractStmt) never runs that
   // check, and a requires-clause is perfectly legal on a templated contract.
   // At instantiation the substituted clause is non-dependent (and satisfied, or
-  // the contract would already have been discarded in InstantiateContractSpecifier),
-  // so without the !inTemplateInstantiation() guard below WillBeRejectedByP4283
-  // would be spuriously true and we would skip population for a VALID
-  // instantiated contract -- leaving isDynamic() false and falling back to the
-  // static semantic (the T6 bug).  Restricting the skip to the primary parse
-  // keeps instantiations always populating.  The predicate otherwise mirrors the
-  // P4283 check in ActOnContractAssert.
+  // the contract would already have been discarded in
+  // InstantiateContractSpecifier), so without the !inTemplateInstantiation()
+  // guard below WillBeRejectedByP4283 would be spuriously true and we would
+  // skip population for a VALID instantiated contract -- leaving isDynamic()
+  // false and falling back to the static semantic (the T6 bug).  Restricting
+  // the skip to the primary parse keeps instantiations always populating.  The
+  // predicate otherwise mirrors the P4283 check in ActOnContractAssert.
   if (auto *CS = Res.getAs<ContractStmt>()) {
     // Normalize a non-literal (user-generated, P2741-style) diagnostic message
     // to its evaluated string -- getUserMessage() otherwise only understands a
@@ -1007,8 +1003,8 @@ StmtResult Sema::BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
     // (in populateContractSemanticState) runs.  Only for a non-dependent
     // message: a dependent one is normalized when the template is instantiated.
     if (Expr *ME = CS->getMessageExpr())
-      if (!isa<StringLiteral>(ME) && !ME->isTypeDependent()
-          && !ME->isValueDependent() && !CS->hasTransformedMessage()) {
+      if (!isa<StringLiteral>(ME) && !ME->isTypeDependent() &&
+          !ME->isValueDependent() && !CS->hasTransformedMessage()) {
         std::string Str;
         if (EvaluateAsString(ME, Str, Context,
                              StringEvaluationContext::StaticAssert,
@@ -1050,11 +1046,10 @@ void Sema::populateContractSemanticState(ContractStmt *CS) {
     // over the full gated set).  precomputeDynamicTable is null-RD-safe and no-
     // ops when the contract does not resolve to a dynamic entry, so
     // non-dynamic contracts are left untouched (isDynamic() stays false).
-    unsigned AllowedMask =
-        CS->getAllowedMask() &
-        gatedContractSemanticsMask(
-            Context.getLangOpts().ContractOpts.AllowAssume,
-            Context.getLangOpts().ContractsP4298);
+    unsigned AllowedMask = CS->getAllowedMask() &
+                           gatedContractSemanticsMask(
+                               Context.getLangOpts().ContractOpts.AllowAssume,
+                               Context.getLangOpts().ContractsP4298);
     // Empty Groups: precomputeDynamicTable falls back to the
     // [[clang::contract_group]] attribute, matching resolveContractConfig.
     precomputeDynamicTable(*this, CS, AllowedMask, /*Groups=*/{},
@@ -1067,8 +1062,7 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
                                      Expr *Cond, ResultNameDecl *RND,
                                      ParsedAttributes &ContractAttrs,
                                      Expr *MessageExpr, Expr *LabelExpr,
-                                     DeclStmt *Captures,
-                                     Expr *RequiresClause) {
+                                     DeclStmt *Captures, Expr *RequiresClause) {
 
   // A contract condition is a full-expression and, like any other, must not
   // contain an unexpanded parameter pack.  Diagnose this here on the primary
@@ -1119,8 +1113,7 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
     // population for exactly this condition (see WillBeRejectedByP4283 there),
     // so no populated state is discarded on this error path.  Keep the two
     // predicates in sync.
-    if (CS->hasRequiresClause() &&
-        !CurContext->isDependentContext() &&
+    if (CS->hasRequiresClause() && !CurContext->isDependentContext() &&
         !CS->getRequiresClause()->isInstantiationDependent()) {
       Diag(CS->getRequiresClause()->getBeginLoc(),
            diag::err_contract_requires_clause_non_template);
@@ -1180,8 +1173,9 @@ ResultNameDecl *Sema::ActOnResultNameDeclarator(ContractKind CK, Scope *S,
   if (HasInventedPlaceholderTypes)
     RetType = Context.getAutoType(DeducedKind::DeducedAsDependent, QualType(),
                                   AutoTypeKeyword::Auto);
-  auto *New = ResultNameDecl::Create(Context, CurContext, IDLoc, II, RetType,
-                                     HasInventedPlaceholderTypes, FunctionScopeDepth);
+  auto *New =
+      ResultNameDecl::Create(Context, CurContext, IDLoc, II, RetType,
+                             HasInventedPlaceholderTypes, FunctionScopeDepth);
 
   if (IsInvalid)
     New->setInvalidDecl();
@@ -1234,10 +1228,9 @@ struct ScopeEntry {
   const ContractScopeRecord *CSR = nullptr;
 
   ScopeEntry(const DeclContext *DC, unsigned FSII, const FunctionScopeInfo *FSI,
-             unsigned CSII, const ContractScopeRecord *CSR) :
-        Ctx(DC), FunctionScopeIndex(FSII), FSI(FSI),
-        ContractScopeIndex(CSII), CSR(CSR) {
-  }
+             unsigned CSII, const ContractScopeRecord *CSR)
+      : Ctx(DC), FunctionScopeIndex(FSII), FSI(FSI), ContractScopeIndex(CSII),
+        CSR(CSR) {}
 
   bool capturesVariable(const ValueDecl *VD) const {
     return getCaptureIfCaptured(VD).has_value();
@@ -1253,7 +1246,6 @@ struct ScopeEntry {
       return CSI->getCapture(const_cast<ValueDecl *>(VD));
     return std::nullopt;
   }
-
 };
 
 struct ScopeWalker {
@@ -1300,7 +1292,6 @@ struct ScopeWalker {
         break;
       }
 
-
       CurCtx =
           getLambdaAwareParentOfDeclContext(const_cast<DeclContext *>(CurCtx));
       if (!CurCtx || !CurCtx->isFunctionOrMethod())
@@ -1325,7 +1316,7 @@ struct ScopeWalker {
   SmallVector<FunctionScopeInfo *, 4> FunctionScopes;
   unsigned FunctionScopeIndex;
 
-  SmallVector<const ContractScopeRecord*> ContractScopes;
+  SmallVector<const ContractScopeRecord *> ContractScopes;
   unsigned ContractScopeIndex;
 
   SmallVector<ScopeEntry> Scopes;
@@ -1417,7 +1408,8 @@ bool Sema::CheckEquivalentContractSequence(FunctionDecl *OldDecl,
     // contracts (i.e., contracts whose DeclContext matches the declaration).
     // Skip the implicit instantiation which won't have contracts.
     for (auto *Redecl : OldDecl->redecls()) {
-      if (Redecl->getTemplateSpecializationKind() == TSK_ExplicitSpecialization &&
+      if (Redecl->getTemplateSpecializationKind() ==
+              TSK_ExplicitSpecialization &&
           Redecl->hasContracts() &&
           Redecl->getContracts()->getDeclContext() == Redecl) {
         OrigDecl = Redecl;
@@ -1577,13 +1569,11 @@ bool Sema::CheckEquivalentContractSequence(FunctionDecl *OldDecl,
     case DK_Cond:
       return CS->getCond()->getSourceRange();
     case DK_Captures:
-      return CS->hasCaptures()
-                 ? CS->getCapturesDeclStmt()->getSourceRange()
-                 : CS->getCond()->getSourceRange();
+      return CS->hasCaptures() ? CS->getCapturesDeclStmt()->getSourceRange()
+                               : CS->getCond()->getSourceRange();
     case DK_RequiresClause:
-      return CS->hasRequiresClause()
-                 ? CS->getRequiresClause()->getSourceRange()
-                 : CS->getCond()->getSourceRange();
+      return CS->hasRequiresClause() ? CS->getRequiresClause()->getSourceRange()
+                                     : CS->getCond()->getSourceRange();
     case DK_Message:
       return CS->hasMessage() ? CS->getMessageExpr()->getSourceRange()
                               : CS->getCond()->getSourceRange();
@@ -1748,7 +1738,8 @@ static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
     Checker.TraverseContractStmt(CS);
 }
 
-void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition, bool IsInstantiation) {
+void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
+                                  bool IsInstantiation) {
   assert(FD && FD->hasContracts());
 
   if (auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
@@ -1846,7 +1837,8 @@ void Sema::InstantiateContractSpecifier(
 
   Instantiation->setContracts(NewCSD);
   if (!Instantiation->isDependentContext())
-    CheckFunctionContracts(Instantiation, /*IsDefinition=*/false, /*IsInstantiation=*/true);
+    CheckFunctionContracts(Instantiation, /*IsDefinition=*/false,
+                           /*IsInstantiation=*/true);
 }
 
 ContractSpecifierDecl *
@@ -1884,24 +1876,25 @@ void Sema::ActOnContractsOnFinishFunctionDecl(FunctionDecl *D,
   // ... and function-contract-specifier appearing in the declaration of a
   // template have no effect on an explicit specialization of
   // that template.
-  const bool IsTemplateSpecialization = FD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization;
+  const bool IsTemplateSpecialization =
+      FD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization;
 
   auto *First = FD->getFirstDecl();
 
-  // If the new declaration/definition doesn't have contracts, and it's previous declarations didn't have
-  // contracts or it's a specialiazation which doesn't inherit the contracts, then there's nothing to do.
+  // If the new declaration/definition doesn't have contracts, and it's previous
+  // declarations didn't have contracts or it's a specialiazation which doesn't
+  // inherit the contracts, then there's nothing to do.
 
   if (!FD->hasContracts() && !First->hasContracts()) {
     return;
   }
 
-
-
   // If the definition has omitted the contracts, but the first declaration has
   // them, we need to rebuild the contracts to refer to the parameters of the
   // definition.
   //
-  // For function templates, we'll create a copy when we instantiate the definition.
+  // For function templates, we'll create a copy when we instantiate the
+  // definition.
   if (First->hasContracts() && !FD->hasContracts() && IsDefinition &&
       !FD->isTemplateInstantiation() && !IsTemplateSpecialization) {
     // Note: This case is mutually exclusive with the NonDependentPlaceholders
@@ -1910,7 +1903,8 @@ void Sema::ActOnContractsOnFinishFunctionDecl(FunctionDecl *D,
 
     // TODO: Revisit whether the contract specifier needs rebuilding in this
     // case rather than reusing the pattern's.
-    assert(FD->getTemplatedKind() != FunctionDecl::TK_FunctionTemplateSpecialization);
+    assert(FD->getTemplatedKind() !=
+           FunctionDecl::TK_FunctionTemplateSpecialization);
     assert(FD->getTemplatedKind() != FunctionDecl::TK_MemberSpecialization);
 
     ContractSpecifierDecl *NewCSD = RebuildContractSpecifierForDecl(First, FD);
@@ -1926,8 +1920,9 @@ void Sema::ActOnContractsOnFinishFunctionDecl(FunctionDecl *D,
   ContractSpecifierDecl *CSD = FD->getContracts();
 
   if (!D->isTemplateInstantiation()) {
-    // Note: IsInstantiation here means whether we're calling during the instantiation of the contract specifier,
-    // rather than whether the FD declares a function instantiation.
+    // Note: IsInstantiation here means whether we're calling during the
+    // instantiation of the contract specifier, rather than whether the FD
+    // declares a function instantiation.
     CheckFunctionContracts(FD, IsDefinition, /*IsInstantiation=*/false);
   }
 
@@ -1983,8 +1978,7 @@ Sema::RebuildContractSpecifierForDecl(FunctionDecl *First, FunctionDecl *Def) {
     Qualifiers MethodQuals = CXXMethod->getMethodQualifiers();
     if (LangOpts.ContractConstification)
       MethodQuals.addConst();
-    ThisScope.emplace(*this, CXXMethod->getParent(),
-                      MethodQuals,
+    ThisScope.emplace(*this, CXXMethod->getParent(), MethodQuals,
                       /*IsLambda*/ false);
   }
   RebuildFunctionContracts Rebuilder(*this, true);
@@ -1994,10 +1988,9 @@ Sema::RebuildContractSpecifierForDecl(FunctionDecl *First, FunctionDecl *Def) {
   }
   for (auto *RND : First->getContracts()->result_names()) {
     QualType Replacement = Def->getReturnType();
-    auto *NewRND =
-        ActOnResultNameDeclarator(ContractKind::Post, nullptr, Replacement,
-                                  RND->getLocation(), RND->getIdentifier(),
-                                  RND->getFunctionScopeDepth());
+    auto *NewRND = ActOnResultNameDeclarator(
+        ContractKind::Post, nullptr, Replacement, RND->getLocation(),
+        RND->getIdentifier(), RND->getFunctionScopeDepth());
     Rebuilder.transformedLocalDecl(RND, NewRND);
   }
   for (auto *CS : First->getContracts()->contracts()) {
@@ -2081,9 +2074,9 @@ DeclResult Sema::RebuildContractsWithPlaceholderReturnType(FunctionDecl *FD) {
       }
     }
     assert(!Replacement.isNull());
-    auto *NewRND =
-        ActOnResultNameDeclarator(ContractKind::Post, nullptr, Replacement,
-                                  RND->getLocation(), RND->getIdentifier(), RND->getFunctionScopeDepth());
+    auto *NewRND = ActOnResultNameDeclarator(
+        ContractKind::Post, nullptr, Replacement, RND->getLocation(),
+        RND->getIdentifier(), RND->getFunctionScopeDepth());
     Transformed.emplace_back(RND, NewRND);
   }
 
@@ -2187,7 +2180,8 @@ bool Sema::isUsageAcrossContract(const ValueDecl *VD) {
   if (!getCurrentContractEntry())
     return false;
 
-  // Fast Path: We're in an immediate contract assertion expression evaluation context.
+  // Fast Path: We're in an immediate contract assertion expression evaluation
+  // context.
   if (isContractAssertionContext())
     return true;
 
@@ -2202,7 +2196,7 @@ bool Sema::isUsageAcrossContract(const ValueDecl *VD) {
 /// Within the predicate of a contract assertion, id-expressions referring to
 /// variables with automatic storage duration are const ([expr.prim.id.unqual])
 ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
-  //WalkUpContractScopesTest();
+  // WalkUpContractScopesTest();
   auto &S = *this;
   if (!S.LangOpts.ContractConstification)
     return CC_None;
@@ -2228,7 +2222,8 @@ ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
                !CSR->ContextAtPush->Equals(VD->getDeclContext())))
     return CC_None;
 
-  // If there is no contract scope that encloses the current context, then we don't need to constify the variable.
+  // If there is no contract scope that encloses the current context, then we
+  // don't need to constify the variable.
   if (getLastEnclosingContractScopeForContext(CurContext) == nullptr)
     return CC_None;
 
@@ -2285,7 +2280,8 @@ ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
   return CC_None;
 }
 
-static const DeclContext* walkUpDeclContextToFunction(const DeclContext *DC, bool AllowLambda = false) {
+static const DeclContext *
+walkUpDeclContextToFunction(const DeclContext *DC, bool AllowLambda = false) {
   while (true) {
     assert(DC);
     if (isa<BlockDecl>(DC) || isa<EnumDecl>(DC) || isa<CapturedDecl>(DC) ||
@@ -2315,12 +2311,12 @@ QualType Sema::adjustCXXThisTypeForContracts(QualType QT) {
   if (!getCurrentContractEntry() || !LangOpts.ContractConstification)
     return QT;
 
-  // 'this' is constified any time the `this` object that is captured by a lambda which exists fully
-  // within a contract.
+  // 'this' is constified any time the `this` object that is captured by a
+  // lambda which exists fully within a contract.
   //
-  // We need to ensure that we haven't entered a nested member function context, because in that case we
-  // don't want to constify the `this` object.
-  // For example:
+  // We need to ensure that we haven't entered a nested member function context,
+  // because in that case we don't want to constify the `this` object. For
+  // example:
   // ```
   // struct A {
   //   void f() {
@@ -2336,7 +2332,7 @@ QualType Sema::adjustCXXThisTypeForContracts(QualType QT) {
       walkUpDeclContextToFunction(getCurrentContractEntry()->ContextAtPush);
   if (!ContractContext)
     return QT;
-  const DeclContext *QTContext = walkUpDeclContextToFunction(CurContext );
+  const DeclContext *QTContext = walkUpDeclContextToFunction(CurContext);
   if (!QTContext)
     return QT;
   if (!ContractContext->Equals(QTContext))
@@ -2366,18 +2362,17 @@ struct LambdaCaptureChecker : RecursiveASTVisitor<LambdaCaptureChecker> {
   const LambdaExpr *const CurLambda = nullptr;
   const ContractStmt *CurContract = nullptr;
 
-
   // Note: The value `nullptr` is used to denote a capture of CXXThis.
   DenseMap<const ValueDecl *, CaptureUsage> Captures;
-
 
   void observeUsage(const ValueDecl *VD, const Expr *E, SourceLocation Loc) {
     if (auto Pos = Captures.find(VD); Pos != Captures.end()) {
       if (!CurContract)
         Captures.erase(VD);
       else {
-        auto& Usage = Pos->second;
-        if (Usage.UsageExpr == nullptr || (isa<LambdaExpr>(Usage.UsageExpr) && !isa<LambdaExpr>(E))) {
+        auto &Usage = Pos->second;
+        if (Usage.UsageExpr == nullptr ||
+            (isa<LambdaExpr>(Usage.UsageExpr) && !isa<LambdaExpr>(E))) {
           Usage.UsedInContract = CurContract;
           Usage.UsageExpr = E;
           Usage.UsageLoc = Loc;
@@ -2387,41 +2382,44 @@ struct LambdaCaptureChecker : RecursiveASTVisitor<LambdaCaptureChecker> {
   }
 
 private:
-  LambdaCaptureChecker(Sema &S, LambdaExpr *LE) : Actions(S), CurLambda(LE) { Init(); }
-
+  LambdaCaptureChecker(Sema &S, LambdaExpr *LE) : Actions(S), CurLambda(LE) {
+    Init();
+  }
 
   void Run() {
-    // Traverse the lambdas function-level contracts and body to find the bad captures.
+    // Traverse the lambdas function-level contracts and body to find the bad
+    // captures.
     FunctionDecl *FD = CurLambda->getCallOperator();
     assert(FD->getBody());
     if (FD->hasContracts())
       TraverseDecl(FD->getContracts());
     TraverseStmt(CurLambda->getBody());
 
-    // Finally, diagnose any captures that still remain, since they do not have any non-contrac
-    // usages.
-    for (auto& [Var, Bad] : Captures) {
-      // We likely didn't see the usage because there was a intervening lambda that captured by copy.
+    // Finally, diagnose any captures that still remain, since they do not have
+    // any non-contrac usages.
+    for (auto &[Var, Bad] : Captures) {
+      // We likely didn't see the usage because there was a intervening lambda
+      // that captured by copy.
       if (Bad.UsedInContract == nullptr)
         continue;
       Actions.Diag(CurLambda->getCaptureDefaultLoc(),
                    diag::err_lambda_implicit_capture_in_contracts_only)
           << (int)Bad.Capture.capturesThis() << cast_or_null<NamedDecl>(Var);
       SourceLocation UsageLoc = Bad.UsageLoc;
-      Actions.Diag(UsageLoc, diag::note_lambda_implicit_capture_in_contract_usage)
-            << (int)Bad.Capture.capturesThis() << cast_or_null<NamedDecl>(Var);
+      Actions.Diag(UsageLoc,
+                   diag::note_lambda_implicit_capture_in_contract_usage)
+          << (int)Bad.Capture.capturesThis() << cast_or_null<NamedDecl>(Var);
       if (Bad.UsedInContract)
         Actions.Diag(Bad.UsedInContract->getBeginLoc(),
-                    diag::note_contract_context);
-
+                     diag::note_contract_context);
     }
   }
 
   void Init() {
     // Collect all of the implicit captures of the lambda.
     // If the lambda capture hasn't been removed after traversing the tree then
-    // that lambda capture is bad, and must be diagnosed as only being used inside
-    // of a contract.
+    // that lambda capture is bad, and must be diagnosed as only being used
+    // inside of a contract.
     for (auto C : CurLambda->captures()) {
       if (C.capturesThis() && C.isImplicit())
         Captures.insert({nullptr, {C}});
@@ -2452,22 +2450,25 @@ public:
 
   bool TraverseLambdaExpr(LambdaExpr *LE) {
     assert(LE != CurLambda && "Revisiting the root lambda?");
-    // Iterate over the captures of the nested lambda, and mark any of our captures as having been seen
-    // outside of a contract. This assumes that the inner lambda has a valid usage of the capture.
-    // If it doesn't, we'll diagnose that separately.
+    // Iterate over the captures of the nested lambda, and mark any of our
+    // captures as having been seen outside of a contract. This assumes that the
+    // inner lambda has a valid usage of the capture. If it doesn't, we'll
+    // diagnose that separately.
     for (auto C : LE->captures()) {
       // FIXME: Figure out how to deal with VLA captures here
       if (C.capturesVLAType())
         continue;
 
       assert(C.capturesThis() || C.capturesVariable());
-      observeUsage(C.capturesThis() ? nullptr : C.getCapturedVar(), LE, C.getLocation());
+      observeUsage(C.capturesThis() ? nullptr : C.getCapturedVar(), LE,
+                   C.getLocation());
     }
     return true;
   }
 
   bool VisitDeclRefExpr(DeclRefExpr *E) {
-    if (auto *VD = dyn_cast<ValueDecl>(E->getDecl()); VD && E->isNonOdrUse() != NOUR_Unevaluated)
+    if (auto *VD = dyn_cast<ValueDecl>(E->getDecl());
+        VD && E->isNonOdrUse() != NOUR_Unevaluated)
       observeUsage(VD, E, E->getExprLoc());
     return true;
   }
@@ -2573,15 +2574,14 @@ Sema::getInterveningContractScopes(const ValueDecl *ValueD) const {
     return {};
 
   auto CScopes = [](auto CL) -> SmallVector<const ContractScopeRecord *> {
-    SmallVector<const ContractScopeRecord*> Out;
-    for (auto & CS : CL) {
+    SmallVector<const ContractScopeRecord *> Out;
+    for (auto &CS : CL) {
       Out.push_back(&CS);
     }
     return Out;
   }(getContractScopes());
   if (CScopes.empty())
     return {};
-
 
   VD = VD->getCanonicalDecl();
   assert(VD && VD->getDeclContext());
@@ -2590,13 +2590,12 @@ Sema::getInterveningContractScopes(const ValueDecl *ValueD) const {
   auto Pos = CScopes.end();
   auto LastPos = CScopes.end();
 
-
   auto ReturnRef = [&](auto Start) -> ArrayRef<ContractScopeRecord> {
     if (Start == CScopes.end())
       return {};
     unsigned StartIdx = (*Start)->Index;
-    return llvm::ArrayRef(ContractScopeStack.begin() + StartIdx, ContractScopeStack.end());
-
+    return llvm::ArrayRef(ContractScopeStack.begin() + StartIdx,
+                          ContractScopeStack.end());
   };
 
   while (Pos != CScopes.begin()) {
@@ -2647,19 +2646,18 @@ void Sema::WalkUpContractScopesTest() const {
   ((void)Scopes);
 }
 
-
-Sema::ContractScopeRAII::ContractScopeRAII(Sema &S, ContractKind CK, ContractScopeOffset ScopeOffset, SourceLocation Loc)
+Sema::ContractScopeRAII::ContractScopeRAII(Sema &S, ContractKind CK,
+                                           ContractScopeOffset ScopeOffset,
+                                           SourceLocation Loc)
     : S(S) {
   S.PushContractScope(CK, ScopeOffset, Loc);
 }
 
-Sema::ContractScopeRAII::~ContractScopeRAII() {
-  S.PopContractScope();
-}
+Sema::ContractScopeRAII::~ContractScopeRAII() { S.PopContractScope(); }
 
-
-void Sema::PushContractScope(ContractKind Kind, ContractScopeOffset ScopeOffset, SourceLocation Loc) {
-//  assert(!FunctionScopes.empty());
+void Sema::PushContractScope(ContractKind Kind, ContractScopeOffset ScopeOffset,
+                             SourceLocation Loc) {
+  //  assert(!FunctionScopes.empty());
 
   ContractScopeRecord Record{};
   Record.Index = static_cast<unsigned>(ContractScopeStack.size());
@@ -2677,35 +2675,34 @@ void Sema::PushContractScope(ContractKind Kind, ContractScopeOffset ScopeOffset,
   Record.HadNoFunctionScope = FunctionScopes.empty();
   Record.FunctionScopeStartAtPush = FunctionScopesStart;
 
-    // Setup the constification context when building declref expressions.
-    ExprEvalContexts.back().InContractAssertion = true;
+  // Setup the constification context when building declref expressions.
+  ExprEvalContexts.back().InContractAssertion = true;
   assert(CurContext);
 
   assert(ContractScopeIndexMap.find(CurContext) == ContractScopeIndexMap.end());
 
-    ContractScopeIndexMap[CurContext] = Record.Index;
-    // P2900R8 [expr.prim.this]p2
-    //   If the expression 'this' appears ... in a contract assertion
-    //     (including as the result of the implicit transformation in the body of
-    //     a non-static member function and including in the bodies of nested
-    //     lambda-expressions),
-    // ...
-    //  const is combined with the cv-qualifier-seq used to generate the resulting
-    //  type (see below
-    if (!CXXThisTypeOverride.isNull()) {
-      assert(CXXThisTypeOverride->isPointerType());
-      QualType ClassType = CXXThisTypeOverride->getPointeeType();
-      if ((not ClassType.isConstQualified()) && LangOpts.ContractConstification) {
-        // If the 'this' object is const-qualified, we need to remove the
-        // const-qualification for the contract check.
-        ClassType.addConst();
-        Record.AddedConstToCXXThis = true;
-        CXXThisTypeOverride = Context.getPointerType(ClassType);
-      }
+  ContractScopeIndexMap[CurContext] = Record.Index;
+  // P2900R8 [expr.prim.this]p2
+  //   If the expression 'this' appears ... in a contract assertion
+  //     (including as the result of the implicit transformation in the body of
+  //     a non-static member function and including in the bodies of nested
+  //     lambda-expressions),
+  // ...
+  //  const is combined with the cv-qualifier-seq used to generate the resulting
+  //  type (see below
+  if (!CXXThisTypeOverride.isNull()) {
+    assert(CXXThisTypeOverride->isPointerType());
+    QualType ClassType = CXXThisTypeOverride->getPointeeType();
+    if ((not ClassType.isConstQualified()) && LangOpts.ContractConstification) {
+      // If the 'this' object is const-qualified, we need to remove the
+      // const-qualification for the contract check.
+      ClassType.addConst();
+      Record.AddedConstToCXXThis = true;
+      CXXThisTypeOverride = Context.getPointerType(ClassType);
     }
+  }
 
-    //assert(!S.FunctionScopes.empty());
-
+  // assert(!S.FunctionScopes.empty());
 
   if (Record.FunctionScopeAtPush) {
     auto *LastScope = Record.FunctionScopeAtPush;
@@ -2714,7 +2711,7 @@ void Sema::PushContractScope(ContractKind Kind, ContractScopeOffset ScopeOffset,
     LastScope->ContractScopeIndex = Record.Index;
   }
 
-    ContractScopeStack.push_back(Record);
+  ContractScopeStack.push_back(Record);
 }
 
 ContractScopeRecord Sema::PopContractScope() {
@@ -2723,14 +2720,13 @@ ContractScopeRecord Sema::PopContractScope() {
   auto Record = ContractScopeStack.back();
   ContractScopeStack.pop_back();
 
-  assert(ContractScopeIndexMap.contains(Record.ContextAtPush) && ContractScopeIndexMap[Record.ContextAtPush]  == Record.Index);
+  assert(ContractScopeIndexMap.contains(Record.ContextAtPush) &&
+         ContractScopeIndexMap[Record.ContextAtPush] == Record.Index);
   ContractScopeIndexMap.erase(Record.ContextAtPush);
-
 
   assert(ExprEvalContexts.back().InContractAssertion == true);
   ExprEvalContexts.back().InContractAssertion = Record.WasInContractContext;
   CXXThisTypeOverride = Record.PreviousCXXThisType;
-
 
   if (Record.FunctionScopeAtPush) {
 
@@ -2738,14 +2734,16 @@ ContractScopeRecord Sema::PopContractScope() {
       assert(FunctionScopes.back()->ContractScopeIndex != unsigned(-1));
       FunctionScopes.back()->ContractScopeIndex = -1;
     } else {
-      assert(getFunctionScopes().empty() || FunctionScopes.size() < Record.FunctionIndex);
+      assert(getFunctionScopes().empty() ||
+             FunctionScopes.size() < Record.FunctionIndex);
     }
   }
 
   return Record;
 }
 
-const ContractScopeRecord *Sema::getContractScopeForContext(const DeclContext *DC) const {
+const ContractScopeRecord *
+Sema::getContractScopeForContext(const DeclContext *DC) const {
   auto Pos = ContractScopeIndexMap.find(DC);
   if (Pos == ContractScopeIndexMap.end())
     return nullptr;
@@ -2754,20 +2752,20 @@ const ContractScopeRecord *Sema::getContractScopeForContext(const DeclContext *D
   return &ContractScopeStack[Idx];
 }
 
-const ContractScopeRecord *Sema::getFirstEnclosingContractScopeForContext(const DeclContext *DC) const {
-  for (unsigned I=0; I < ContractScopeStack.size(); ++I) {
+const ContractScopeRecord *
+Sema::getFirstEnclosingContractScopeForContext(const DeclContext *DC) const {
+  for (unsigned I = 0; I < ContractScopeStack.size(); ++I) {
     if (ContractScopeStack[I].ContextAtPush->Encloses(DC)) {
       return &ContractScopeStack[I];
     }
   }
   return nullptr;
-
 }
 
-
-const ContractScopeRecord *Sema::getLastEnclosingContractScopeForContext(const DeclContext *DC) const {
+const ContractScopeRecord *
+Sema::getLastEnclosingContractScopeForContext(const DeclContext *DC) const {
   unsigned LastEnclosingIdx = unsigned(-1);
-  for (unsigned I=0; I < ContractScopeStack.size(); ++I) {
+  for (unsigned I = 0; I < ContractScopeStack.size(); ++I) {
     if (ContractScopeStack[I].ContextAtPush->Encloses(DC)) {
       LastEnclosingIdx = I;
     }
@@ -2776,23 +2774,24 @@ const ContractScopeRecord *Sema::getLastEnclosingContractScopeForContext(const D
     return nullptr;
   assert(ContractScopeStack.size() > LastEnclosingIdx);
   return &ContractScopeStack[LastEnclosingIdx];
-
 }
 
-
-const ContractScopeRecord *Sema::getFirstEnclosedContractScopeForContext(const DeclContext *DC) const {
-  for (unsigned I=0; I < ContractScopeStack.size(); ++I) {
-    if (DC->Encloses(ContractScopeStack[I].ContextAtPush) || DC->Equals(ContractScopeStack[I].ContextAtPush))
+const ContractScopeRecord *
+Sema::getFirstEnclosedContractScopeForContext(const DeclContext *DC) const {
+  for (unsigned I = 0; I < ContractScopeStack.size(); ++I) {
+    if (DC->Encloses(ContractScopeStack[I].ContextAtPush) ||
+        DC->Equals(ContractScopeStack[I].ContextAtPush))
       return &ContractScopeStack[I];
   }
   return nullptr;
 }
 
-
-const ContractScopeRecord *Sema::getLastEnclosedContractScopeForContext(const DeclContext *DC) const {
+const ContractScopeRecord *
+Sema::getLastEnclosedContractScopeForContext(const DeclContext *DC) const {
   unsigned LastIdx = unsigned(-1);
-  for (unsigned I=0; I < ContractScopeStack.size(); ++I) {
-    if (DC->Encloses(ContractScopeStack[I].ContextAtPush) || DC->Equals(ContractScopeStack[I].ContextAtPush)) {
+  for (unsigned I = 0; I < ContractScopeStack.size(); ++I) {
+    if (DC->Encloses(ContractScopeStack[I].ContextAtPush) ||
+        DC->Equals(ContractScopeStack[I].ContextAtPush)) {
       if (I > LastIdx || LastIdx == unsigned(-1))
         LastIdx = I;
     }
@@ -2801,10 +2800,10 @@ const ContractScopeRecord *Sema::getLastEnclosedContractScopeForContext(const De
     return nullptr;
   assert(LastIdx < ContractScopeStack.size());
   return &ContractScopeStack[LastIdx];
-
 }
 
-SourceLocation Sema::getContractLocForFunctionScope(const sema::FunctionScopeInfo *FSI) const {
+SourceLocation
+Sema::getContractLocForFunctionScope(const sema::FunctionScopeInfo *FSI) const {
   assert(FSI->isInContract());
   assert(FSI->ContractScopeIndex < ContractScopeStack.size());
   return ContractScopeStack[FSI->ContractScopeIndex].KeywordLoc;

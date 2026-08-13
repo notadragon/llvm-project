@@ -11,10 +11,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Basic/ContractOptions.h"
+#include "clang/AST/Decl.h"
+#include "clang/AST/DeclBase.h"
 #include "clang/Basic/ContractConfig.h"
 #include "clang/Basic/Diagnostic.h"
-#include "clang/AST/DeclBase.h"
-#include "clang/AST/Decl.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
@@ -143,8 +143,7 @@ static bool namespaceMatches(llvm::StringRef EntryNS, llvm::StringRef QueryNS) {
   if (QueryNS.size() == EntryNS.size())
     return true;
   return QueryNS.size() > EntryNS.size() + 1 &&
-         QueryNS[EntryNS.size()] == ':' &&
-         QueryNS[EntryNS.size() + 1] == ':';
+         QueryNS[EntryNS.size()] == ':' && QueryNS[EntryNS.size() + 1] == ':';
 }
 
 // Filename suffix matching.
@@ -159,9 +158,9 @@ static bool filenameSuffixMatches(llvm::StringRef EntryFile,
 }
 
 // Parse a location string: "file" or "file:N-M,P-Q".
-static void parseLocationString(llvm::StringRef LocStr,
-                                std::string &OutFile,
-                                llvm::SmallVector<ContractLineRange> &OutRanges) {
+static void
+parseLocationString(llvm::StringRef LocStr, std::string &OutFile,
+                    llvm::SmallVector<ContractLineRange> &OutRanges) {
   auto ColonPos = LocStr.rfind(':');
   if (ColonPos == llvm::StringRef::npos || ColonPos == 0) {
     OutFile = LocStr.str();
@@ -187,13 +186,12 @@ static void parseLocationString(llvm::StringRef LocStr,
   }
 }
 
-static const llvm::StringRef KnownMatchKeys[] = {"kind", "group", "caller",
-                                                  "constexpr", "namespace",
-                                                  "location"};
+static const llvm::StringRef KnownMatchKeys[] = {
+    "kind", "group", "caller", "constexpr", "namespace", "location"};
 static const llvm::StringRef KnownOutputKeys[] = {"semantic", "dynamic"};
 static const llvm::StringRef KnownCallerKeys[] = {"location", "namespace"};
 static const llvm::StringRef KnownDynamicKeys[] = {"linkage", "name",
-                                                    "provideweak"};
+                                                   "provideweak"};
 
 static void warnUnknownKeys(DiagnosticsEngine &Diags,
                             const llvm::json::Object &Obj,
@@ -342,8 +340,7 @@ void ContractOptions::parseConfigJSON(DiagnosticsEngine &Diags,
         E.DynProvideWeak = false;
       }
 
-      warnUnknownKeys(Diags, *DynObj, "dynamic", KnownDynamicKeys,
-                      SourceDesc);
+      warnUnknownKeys(Diags, *DynObj, "dynamic", KnownDynamicKeys, SourceDesc);
     }
 
     if (!E.HasSemantic && E.DynName.empty()) {
@@ -502,8 +499,8 @@ void ContractOptions::initConfig(DiagnosticsEngine *Diags,
       break;
     }
     case ContractConfigSourceKind::JSONInline:
-      const_cast<ContractOptions *>(this)->parseConfigJSON(
-          *Diags, Src.Arg, "<command-line>");
+      const_cast<ContractOptions *>(this)->parseConfigJSON(*Diags, Src.Arg,
+                                                           "<command-line>");
       break;
     case ContractConfigSourceKind::JSONFile:
       assert(VFS && "contract configuration file read without a VFS");
@@ -517,10 +514,10 @@ void ContractOptions::initConfig(DiagnosticsEngine *Diags,
   // the "assume" semantic (today's behaviour: no check, the UB is preserved).
   // This builtin entry is placed after any user-provided sources (so a user
   // config can still override it, first-match-wins) but before the global
-  // default catch-all, so implicit assertions do not pick up the global default.
-  // It is injected unconditionally: it can only ever match a Kind=Implicit
-  // query, which the compiler emits only under -fcontracts-p3100, so it is inert
-  // otherwise.  Like GCC, implicit "assume" is not gated on
+  // default catch-all, so implicit assertions do not pick up the global
+  // default. It is injected unconditionally: it can only ever match a
+  // Kind=Implicit query, which the compiler emits only under -fcontracts-p3100,
+  // so it is inert otherwise.  Like GCC, implicit "assume" is not gated on
   // -fcontracts-allow-assume: it introduces no new UB.
   {
     ContractConfigEntry ImplicitEntry;
@@ -573,8 +570,7 @@ static bool groupMatches(StringRef EntryGroup, StringRef QueryGroup) {
 
 static bool configEntryMatches(const ContractConfigEntry &Entry,
                                const ContractQuery &Query) {
-  if (Entry.Kind != -1 &&
-      Entry.Kind != static_cast<int>(Query.Kind))
+  if (Entry.Kind != -1 && Entry.Kind != static_cast<int>(Query.Kind))
     return false;
 
   if (Entry.CallerSide == -1) {
@@ -664,8 +660,8 @@ static int semanticLevel(ContractEvaluationSemantic S) {
 // variants (levels 2 and 3) in an order that prefers the throwing variant when
 // PreferThrowing, else the noexcept one.  Value 0 (not a valid semantic) means
 // the level has nothing in Mask.
-static ContractEvaluationSemantic
-semanticAtLevel(int Lvl, unsigned Mask, bool PreferThrowing) {
+static ContractEvaluationSemantic semanticAtLevel(int Lvl, unsigned Mask,
+                                                  bool PreferThrowing) {
   using CES = ContractEvaluationSemantic;
   CES A = static_cast<CES>(0), B = static_cast<CES>(0);
   switch (Lvl) {
@@ -702,15 +698,16 @@ ContractOptions::clampToAllowed(ContractEvaluationSemantic Candidate,
   // Walk the safety levels outward from Candidate's own level -- same level,
   // then upward (nearest safer), then downward (safest available) -- returning
   // the first semantic present in AllowedMask, preferring at each two-variant
-  // level the variant matching Candidate's throwing-ness (a potentially-throwing
-  // Candidate prefers observe/enforce; a non-throwing one prefers the noexcept_
-  // variant).  This subsumes the old assume->ignore special case (assume is
-  // level 0, so the upward walk reaches ignore first).
+  // level the variant matching Candidate's throwing-ness (a
+  // potentially-throwing Candidate prefers observe/enforce; a non-throwing one
+  // prefers the noexcept_ variant).  This subsumes the old assume->ignore
+  // special case (assume is level 0, so the upward walk reaches ignore first).
   using CES = ContractEvaluationSemantic;
   int L = semanticLevel(Candidate);
   if (L < 0)
     return Candidate;
-  bool PreferThrowing = (Candidate == CES::Observe || Candidate == CES::Enforce);
+  bool PreferThrowing =
+      (Candidate == CES::Observe || Candidate == CES::Enforce);
   const CES None = static_cast<CES>(0);
 
   if (CES R = semanticAtLevel(L, AllowedMask, PreferThrowing); R != None)

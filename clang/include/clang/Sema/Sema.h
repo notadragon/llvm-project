@@ -3266,14 +3266,14 @@ public:
 
   ResultNameDecl *ActOnResultNameDeclarator(ContractKind CK, Scope *S,
                                             QualType T, SourceLocation IDLoc,
-                                            IdentifierInfo *II, unsigned FunctionScopeDepth);
+                                            IdentifierInfo *II,
+                                            unsigned FunctionScopeDepth);
 
   ExprResult ActOnContractAssertCondition(Expr *Cond);
 
   StmtResult BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
-                               Expr *Cond, DeclStmt *ResultName,
-                               Expr *Message, Expr *Label,
-                               DeclStmt *Captures,
+                               Expr *Cond, DeclStmt *ResultName, Expr *Message,
+                               Expr *Label, DeclStmt *Captures,
                                ArrayRef<const Attr *> Attrs,
                                Expr *RequiresClause = nullptr);
 
@@ -3294,11 +3294,11 @@ public:
 
   void CheckLambdaCapturesForContracts(LambdaExpr *LE);
 
-  /// Perform semantic analysis for a contract specifier on the specified function.
-  /// For function templates, these checks should be performed with the instantiation of
-  /// the body, and not the declaration.
+  /// Perform semantic analysis for a contract specifier on the specified
+  /// function. For function templates, these checks should be performed with
+  /// the instantiation of the body, and not the declaration.
   void CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
-    bool IsInstantiation);
+                              bool IsInstantiation);
 
   ContractSpecifierDecl *
   ActOnFinishContractSpecifierSequence(ArrayRef<ContractStmt *> ContractStmts,
@@ -3329,8 +3329,9 @@ public:
   /// that is only ever called polymorphically).  When such a function is
   /// odr-used, instantiate just its contract specifier (not its body) if it is
   /// still carrying the dependent pattern copy.  Idempotent.
-  void InstantiateVirtualFunctionContractsOnUse(
-      SourceLocation PointOfInstantiation, CXXMethodDecl *Function);
+  void
+  InstantiateVirtualFunctionContractsOnUse(SourceLocation PointOfInstantiation,
+                                           CXXMethodDecl *Function);
 
   std::optional<unsigned>
   getFunctionScopeIndexForDeclaration(const ValueDecl *VD);
@@ -5495,12 +5496,9 @@ public:
 
   void PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir);
 
-  Decl *ActOnContractControlUsingDirective(Scope *CurScope,
-                                           SourceLocation UsingLoc,
-                                           SourceLocation NamespcLoc,
-                                           CXXScopeSpec &SS,
-                                           SourceLocation IdentLoc,
-                                           IdentifierInfo *NamespcName);
+  Decl *ActOnContractControlUsingDirective(
+      Scope *CurScope, SourceLocation UsingLoc, SourceLocation NamespcLoc,
+      CXXScopeSpec &SS, SourceLocation IdentLoc, IdentifierInfo *NamespcName);
 
   Decl *ActOnNamespaceAliasDef(Scope *CurScope, SourceLocation NamespaceLoc,
                                SourceLocation AliasLoc, IdentifierInfo *Alias,
@@ -6991,7 +6989,6 @@ public:
     /// example, in a for-range initializer).
     bool InLifetimeExtendingContext = false;
 
-
     /// Whether we're currently evaluating the predicate of a contract assertion
     bool InContractAssertion = false;
     bool IsContainedWithinContract = false;
@@ -7001,7 +6998,6 @@ public:
 
     /// Whether we should rebuild CXXDefaultArgExpr and CXXDefaultInitExpr.
     bool RebuildDefaultArgOrDefaultInit = false;
-
 
     // When evaluating immediate functions in the initializer of a default
     // argument or default member initializer, this is the declaration whose
@@ -7130,29 +7126,34 @@ public:
     bool HadNoFunctionScope = false;
     unsigned FunctionScopeStartAtPush = 0;
     const DeclContext *getFunctionContext(bool AllowLambda = true) const;
-
   };
 
   SmallVector<ContractScopeRecord, 4> ContractScopeStack;
-  llvm::DenseMap<const DeclContext*, unsigned> ContractScopeIndexMap;
+  llvm::DenseMap<const DeclContext *, unsigned> ContractScopeIndexMap;
 
   bool InAssertionControlExpression = false;
 
-  const ContractScopeRecord *getFirstEnclosingContractScopeForContext(const DeclContext *DC) const;
-  const ContractScopeRecord *getLastEnclosingContractScopeForContext(const DeclContext *DC) const;
-  const ContractScopeRecord *getFirstEnclosedContractScopeForContext(const DeclContext *DC) const;
-  const ContractScopeRecord *getLastEnclosedContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getFirstEnclosingContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getLastEnclosingContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getFirstEnclosedContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getLastEnclosedContractScopeForContext(const DeclContext *DC) const;
 
-  SourceLocation getContractLocForFunctionScope(const sema::FunctionScopeInfo *FSI) const;
+  SourceLocation
+  getContractLocForFunctionScope(const sema::FunctionScopeInfo *FSI) const;
 
-  void PushContractScope(ContractKind CK, ContractScopeOffset ScopeOffset, SourceLocation Loc);
+  void PushContractScope(ContractKind CK, ContractScopeOffset ScopeOffset,
+                         SourceLocation Loc);
   ContractScopeRecord PopContractScope();
 
-  const ContractScopeRecord *getContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getContractScopeForContext(const DeclContext *DC) const;
 
   ArrayRef<ContractScopeRecord> getContractScopes() const;
   ArrayRef<ContractScopeRecord> getAllContractScopes() const;
-
 
   ArrayRef<ContractScopeRecord>
   getInterveningContractScopes(const ValueDecl *VD) const;
@@ -7160,7 +7161,8 @@ public:
   getInterveningFunctionScopesForContracts(const ValueDecl *VD) const;
 
   struct ContractScopeRAII {
-    ContractScopeRAII(Sema &S, ContractKind CK, ContractScopeOffset Offset, SourceLocation ContractLoc);
+    ContractScopeRAII(Sema &S, ContractKind CK, ContractScopeOffset Offset,
+                      SourceLocation ContractLoc);
     ~ContractScopeRAII();
 
   private:
@@ -7182,12 +7184,13 @@ public:
   // Return whether to constify the specified variable in the current context.
   ContractConstification getContractConstification(const ValueDecl *VD);
 
-  /// Return true if the usage of this variable in the current context would "cross" a contract boundary.
-  /// Meaning the variable is declared above the contract scope and used below it.
+  /// Return true if the usage of this variable in the current context would
+  /// "cross" a contract boundary. Meaning the variable is declared above the
+  /// contract scope and used below it.
   bool isUsageAcrossContract(const ValueDecl *VD);
 
-  /// Return the correctly constified 'this' type, accounting for any constification contexts
-  /// that may be in effect.
+  /// Return the correctly constified 'this' type, accounting for any
+  /// constification contexts that may be in effect.
   QualType adjustCXXThisTypeForContracts(QualType QT);
 
   /// Increment when we find a reference; decrement when we find an ignored
@@ -7349,12 +7352,12 @@ public:
   ///
   /// \returns true if an error occurred (i.e., the variable cannot be
   /// captured) and false if the capture succeeded.
-  bool tryCaptureVariable(ValueDecl *Var, SourceLocation Loc,
-                          TryCaptureKind Kind, SourceLocation EllipsisLoc,
-                          bool BuildAndDiagnose, QualType &CaptureType,
-                          QualType &DeclRefType,
-                          const unsigned *const FunctionScopeIndexToStopAt,
-                          std::optional<ContractTag> IsConstified = std::nullopt);
+  bool
+  tryCaptureVariable(ValueDecl *Var, SourceLocation Loc, TryCaptureKind Kind,
+                     SourceLocation EllipsisLoc, bool BuildAndDiagnose,
+                     QualType &CaptureType, QualType &DeclRefType,
+                     const unsigned *const FunctionScopeIndexToStopAt,
+                     std::optional<ContractTag> IsConstified = std::nullopt);
 
   /// Try to capture the given variable.
   bool tryCaptureVariable(ValueDecl *Var, SourceLocation Loc,

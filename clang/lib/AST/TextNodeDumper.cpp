@@ -3432,7 +3432,6 @@ void TextNodeDumper::VisitEmbedExpr(const EmbedExpr *S) {
   AddChild("number of elements", [=] { OS << S->getDataElementCount(); });
 }
 
-
 void TextNodeDumper::VisitContractStmt(const ContractStmt *S) {
   VisitStmt(S);
   switch (S->getContractKind()) {

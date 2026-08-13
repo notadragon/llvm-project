@@ -4651,8 +4651,8 @@ public:
   void EmitDeclRefExprDbgValue(const DeclRefExpr *E, const APValue &Init);
 
   llvm::BasicBlock *GetSharedContractViolationTrapBlock(bool Create = true);
-  llvm::BasicBlock *
-  GetSharedContractViolationEnforceBlock(ContractKind Kind, bool Create = true);
+  llvm::BasicBlock *GetSharedContractViolationEnforceBlock(ContractKind Kind,
+                                                           bool Create = true);
 
   void EmitContractStmt(const ContractStmt &S);
 
@@ -4699,8 +4699,7 @@ public:
   void EmitCxaContractViolationCall(ContractKind Kind,
                                     ContractEvaluationSemantic Semantic,
                                     ContractDetectionMode Mode,
-                                    llvm::Value *DataBlockPtr,
-                                    bool IsNoExcept,
+                                    llvm::Value *DataBlockPtr, bool IsNoExcept,
                                     bool IsPostCapture);
 
   /// P3100: emit the implicit contract-assertion reaction for a value-returning
@@ -4716,10 +4715,11 @@ public:
   /// UB operation is skipped on the violation path (ignore/observe produce a
   /// defined zero; enforce/quick_enforce do not return).  COMMENT is the
   /// contract-violation comment.
-  llvm::Value *EmitImplicitIntOpGuard(
-      QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
-      StringRef GroupName, StringRef Comment,
-      llvm::function_ref<llvm::Value *()> EmitOp);
+  llvm::Value *
+  EmitImplicitIntOpGuard(QualType Ty, llvm::Value *IsViolation,
+                         SourceLocation Loc, StringRef GroupName,
+                         StringRef Comment,
+                         llvm::function_ref<llvm::Value *()> EmitOp);
 
   /// P3100: guard a null-pointer dereference
   /// (ub:expr.unary.dereference.nullptr) at a
@@ -4730,22 +4730,23 @@ public:
   /// emits nothing (caller performs the raw access).  Otherwise emits
   /// `if (Ptr == null) <reaction>` and leaves the insertion point at the
   /// non-null continuation, returning true: quick_enforce traps;
-  /// enforce/noexcept_enforce call the noreturn handler; observe/noexcept_observe
-  /// call the handler and fall through to the real dereference (report then
-  /// proceed).
+  /// enforce/noexcept_enforce call the noreturn handler;
+  /// observe/noexcept_observe call the handler and fall through to the real
+  /// dereference (report then proceed).
   bool EmitImplicitNullDerefGuard(llvm::Value *Ptr, SourceLocation Loc);
 
   /// P3100: guard a possibly-misaligned data access (Ptr, required alignment
-  /// Align) with an implicit ub:basic.align.object.alignment contract assertion.
-  /// Like the null guard, a misaligned access is an lvalue with no defined
-  /// substitute: assume/ignore emit nothing (caller performs the raw access);
-  /// otherwise emits `if ((Ptr & (Align-1)) != 0) <reaction>` and continues at
-  /// the aligned (and, for observe, post-handler) path, returning true.
+  /// Align) with an implicit ub:basic.align.object.alignment contract
+  /// assertion. Like the null guard, a misaligned access is an lvalue with no
+  /// defined substitute: assume/ignore emit nothing (caller performs the raw
+  /// access); otherwise emits `if ((Ptr & (Align-1)) != 0) <reaction>` and
+  /// continues at the aligned (and, for observe, post-handler) path, returning
+  /// true.
   bool EmitImplicitMisalignedGuard(llvm::Value *Ptr, llvm::Align Align,
                                    SourceLocation Loc);
 
-  /// P3100: emit the reaction for an implicit guard that has already branched to
-  /// ViolBB on its violating condition and continues at ContBB.  Traps
+  /// P3100: emit the reaction for an implicit guard that has already branched
+  /// to ViolBB on its violating condition and continues at ContBB.  Traps
   /// (quick_enforce) or reports through the CAK_IMPLICIT entry point (enforce
   /// terminates the block; observe reports and branches to ContBB).  Msg is the
   /// violation comment; FD the enclosing function.  Leaves the insertion point
@@ -4757,11 +4758,11 @@ public:
 
   /// P3100: if \p Ty is a non-fixed-underlying-type C++ enum that the enum
   /// sanitizer does not ignore, set [\p Min, \p End) to its [dcl.enum] value
-  /// range and return true; otherwise return false.  Shared by the invalid-value
-  /// load guard and the enum-cast guard (the latter lives in ScalarExprEmitter,
-  /// so this must be accessible outside CodeGenFunction).  Distinct from
-  /// getRangeForType, which also covers bool, is gated on StrictEnums, and does
-  /// not apply the sanitizer-ignore filter.
+  /// range and return true; otherwise return false.  Shared by the
+  /// invalid-value load guard and the enum-cast guard (the latter lives in
+  /// ScalarExprEmitter, so this must be accessible outside CodeGenFunction).
+  /// Distinct from getRangeForType, which also covers bool, is gated on
+  /// StrictEnums, and does not apply the sanitizer-ignore filter.
   bool getStrictEnumRange(QualType Ty, llvm::APInt &Min, llvm::APInt &End);
 
   /// P3100: emit the reaction for control flowing off the end of a coroutine
@@ -4782,8 +4783,8 @@ public:
   void EmitCXXAssumeAttr(const CXXAssumeAttr *AA);
 
   /// P3100: emit `if (!Cond) <reaction>` for a configured [[assume]] resolving
-  /// to a checking semantic Sem, then, for the enforcing family (where Cond then
-  /// provably holds), keep the optimizer assume hint.  Cond is the assumed
+  /// to a checking semantic Sem, then, for the enforcing family (where Cond
+  /// then provably holds), keep the optimizer assume hint.  Cond is the assumed
   /// predicate, known side-effect-free so it is safe to evaluate here.
   void EmitCXXAssumeCheck(const Expr *Cond, ContractEvaluationSemantic Sem,
                           SourceLocation Loc, const FunctionDecl *FD);
@@ -4831,11 +4832,11 @@ public:
   /// source type, Bound the array size (a non-negative constant), Accessed true
   /// for an element access (valid range [0,Bound)) and false for a one-past
   /// address (Bound allowed).  Resolves the semantic; returns Idx unchanged for
-  /// assume.  Otherwise redirects an out-of-range subscript to the defined valid
-  /// index 0 (returned via a select) and, for a checking semantic, branches to
-  /// the reaction: quick_enforce traps; enforce/noexcept_enforce call the
-  /// noreturn handler; observe/noexcept_observe call the handler and continue
-  /// with index 0.
+  /// assume.  Otherwise redirects an out-of-range subscript to the defined
+  /// valid index 0 (returned via a select) and, for a checking semantic,
+  /// branches to the reaction: quick_enforce traps; enforce/noexcept_enforce
+  /// call the noreturn handler; observe/noexcept_observe call the handler and
+  /// continue with index 0.
   llvm::Value *EmitImplicitArrayBoundsGuard(llvm::Value *Idx, QualType IdxTy,
                                             llvm::Value *Bound, bool Accessed,
                                             SourceLocation Loc);

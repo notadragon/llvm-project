@@ -1009,8 +1009,8 @@ void tools::addSeparateSectionFlags(const llvm::Triple &Triple,
 bool tools::wantsCxxContracts(const ArgList &Args) {
   // An explicit -fno-contracts (as the last of the -f(no-)contracts pair)
   // suppresses contracts regardless of any implying flag.
-  if (Arg *A = Args.getLastArg(options::OPT_fcontracts,
-                               options::OPT_fno_contracts);
+  if (Arg *A =
+          Args.getLastArg(options::OPT_fcontracts, options::OPT_fno_contracts);
       A && A->getOption().matches(options::OPT_fno_contracts))
     return false;
   if (Args.hasArg(options::OPT_fcontracts))

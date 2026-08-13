@@ -457,7 +457,6 @@ public:
   void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
   void VisitResultNameDecl(ResultNameDecl *RND);
   void VisitContractSpecifierDecl(ContractSpecifierDecl *CSD);
-
 };
 } // namespace clang
 
@@ -896,8 +895,7 @@ void ASTDeclReader::VisitValueDecl(ValueDecl *VD) {
     VD->setType(Record.readType());
 }
 
-void ASTDeclReader::VisitPostconditionCaptureDecl(
-    PostconditionCaptureDecl *D) {
+void ASTDeclReader::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
   VisitVarDecl(D);
   D->setIsParameterCapture(Record.readInt());
   D->setIsPackExpansion(Record.readInt());
@@ -1104,7 +1102,6 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   FD->setIsDestroyingOperatorDelete(FunctionDeclBits.getNextBit());
   FD->setIsTypeAwareOperatorNewOrDelete(FunctionDeclBits.getNextBit());
 
-
   FD->EndRangeLoc = readSourceLocation();
   if (FD->isExplicitlyDefaulted())
     FD->setDefaultLoc(readSourceLocation());
@@ -1179,7 +1176,7 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     FD->setContracts(CSD);
   }
 
-    // If the declaration is a SYCL kernel entry point function as indicated by
+  // If the declaration is a SYCL kernel entry point function as indicated by
   // the presence of a sycl_kernel_entry_point attribute, register it so that
   // associated metadata is recreated.
   if (FD->hasAttr<SYCLKernelEntryPointAttr>()) {

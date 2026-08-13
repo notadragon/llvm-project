@@ -2589,7 +2589,6 @@ public:
                        std::optional<StringRef> Message,
                        const FunctionDecl *CurDecl = nullptr);
 
-
   /// Retrieve the implicitly-predeclared 'struct type_info' declaration.
   TagDecl *getMSTypeInfoTagDecl() const {
     // Lazily create this type on demand - it's only needed for MS builds.

@@ -15,8 +15,8 @@
 #include <contracts.h>
 
 #ifndef __cplusplus
-#define pre             _Pre
-#define post            _Post
+#define pre _Pre
+#define post _Post
 #define contract_assert _ContractAssert
 #endif
 

@@ -556,7 +556,6 @@ public:
 
   bool isInContract() const { return ContractScopeIndex != unsigned(-1); }
 
-
   /// Clear out the information in this function scope, making it
   /// suitable for reuse.
   void Clear();
@@ -771,8 +770,8 @@ public:
                   SourceLocation ContractLoc, bool Invalid) {
     Capture Cap(Var, isBlock, isByref, isNested, Loc, EllipsisLoc, CaptureType,
                 AcrossContract, ContractLoc, Invalid);
-      Captures.push_back(Cap);
-      CaptureMap[Var] = Captures.size();
+    Captures.push_back(Cap);
+    CaptureMap[Var] = Captures.size();
   }
 
   void addVLATypeCapture(SourceLocation Loc, const VariableArrayType *VLAType,
@@ -922,11 +921,14 @@ public:
   }
 };
 
-/// Information about where the expressions that caused a variable to be captured in a lambda
-/// occurred. Specifically, if they occured across a contract.
+/// Information about where the expressions that caused a variable to be
+/// captured in a lambda occurred. Specifically, if they occured across a
+/// contract.
 struct ContractCaptureInfo {
-  ContractCaptureInfo(SourceLocation ContractLocation, const Expr *E, SourceLocation RefLoc = SourceLocation())
-      : ContractLoc(ContractLocation), CapturingExpr(E), ReferenceLoc(RefLoc.isInvalid() ? E->getExprLoc() : RefLoc) {}
+  ContractCaptureInfo(SourceLocation ContractLocation, const Expr *E,
+                      SourceLocation RefLoc = SourceLocation())
+      : ContractLoc(ContractLocation), CapturingExpr(E),
+        ReferenceLoc(RefLoc.isInvalid() ? E->getExprLoc() : RefLoc) {}
 
   void setReferencedOutsideContract() {
     CapturingExpr = nullptr;

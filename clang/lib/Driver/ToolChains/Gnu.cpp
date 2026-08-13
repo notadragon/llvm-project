@@ -523,8 +523,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       // forwarding); the C-only -fcontracts-p4299 independently needs
       // libcontracts too.  Placed before the runtime libs and -lc so
       // libcontracts' own libc references resolve.
-      if (wantsCxxContracts(Args) ||
-          Args.hasArg(options::OPT_fcontracts_p4299))
+      if (wantsCxxContracts(Args) || Args.hasArg(options::OPT_fcontracts_p4299))
         CmdArgs.push_back("-lcontracts");
 
       AddRunTimeLibs(ToolChain, D, CmdArgs, Args);

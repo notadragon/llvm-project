@@ -5969,14 +5969,14 @@ static bool EvaluateContract(const ContractStmt *S, EvalInfo &Info,
   if (!Info.EvaluateContracts)
     return true;
 
-  CES Sem = S->ensureCESemantic(Ctx,
-      Callee ? Callee->getDeclContext() : nullptr);
+  CES Sem =
+      S->ensureCESemantic(Ctx, Callee ? Callee->getDeclContext() : nullptr);
   if (Sem == CES::Ignore)
     return true;
 
   const Expr *E = S->getCond();
   bool Result;
-  if (!EvaluateCond(Info,nullptr, E, Result))
+  if (!EvaluateCond(Info, nullptr, E, Result))
     return false;
   if (!Result) {
     std::string UserMsg = S->getUserMessage(Ctx);
@@ -6250,8 +6250,8 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
     return Scope.destroy() ? ESR_Succeeded : ESR_Failed;
   }
   case Stmt::ContractStmtClass: {
-    const FunctionDecl *FD = Info.CurrentCall
-        ? Info.CurrentCall->Callee : nullptr;
+    const FunctionDecl *FD =
+        Info.CurrentCall ? Info.CurrentCall->Callee : nullptr;
     if (EvaluateContract(cast<ContractStmt>(S), Info, FD))
       return ESR_Succeeded;
     return ESR_Failed;
@@ -7283,8 +7283,7 @@ static bool EvaluatePostconditionCaptures(EvalInfo &Info,
       auto *Cap = cast<PostconditionCaptureDecl>(D);
       LValue Result;
       APValue &Val = Info.CurrentCall->createTemporary(Cap, Cap->getType(),
-                                                        ScopeKind::Call,
-                                                        Result);
+                                                       ScopeKind::Call, Result);
       const Expr *InitE = Cap->getInit();
       if (!InitE || !EvaluateInPlace(Val, Info, Result, InitE)) {
         Val = APValue();

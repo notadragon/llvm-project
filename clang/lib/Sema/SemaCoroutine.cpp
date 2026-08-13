@@ -822,7 +822,6 @@ static bool checkSuspensionContext(Sema &S, SourceLocation Loc,
     return false;
   }
 
-
   return true;
 }
 

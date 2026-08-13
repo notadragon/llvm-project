@@ -820,8 +820,8 @@ void CodeGenFunction::EmitAttributedStmt(const AttributedStmt &S) {
     } break;
     case attr::CXXAssume:
       // P3100: [[assume]] is a configurable implicit contract assertion; the
-      // helper resolves the semantic (status-quo llvm.assume, drop, or a runtime
-      // check for a side-effect-free predicate).
+      // helper resolves the semantic (status-quo llvm.assume, drop, or a
+      // runtime check for a side-effect-free predicate).
       EmitCXXAssumeAttr(cast<CXXAssumeAttr>(A));
       break;
     case attr::Atomic:
@@ -1611,7 +1611,6 @@ static bool isSwiftAsyncCallee(const CallExpr *CE) {
   }
   return calleeType->getCallConv() == CallingConv::CC_SwiftAsync;
 }
-
 
 /// EmitReturnStmt - Note that due to GCC extensions, this can have an operand
 /// if the function returns void, or may be missing one if the function returns

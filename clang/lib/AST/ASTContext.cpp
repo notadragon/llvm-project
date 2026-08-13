@@ -10473,19 +10473,16 @@ CreateBuiltinContractViolationRecordDecl(const ASTContext *Context) {
       Context->getPointerType(Context->getConstType(Context->VoidTy));
   using Pt = std::pair<QualType, const char *>;
   std::array<std::pair<QualType, const char *>, 8> FieldInfo = {
-      Pt{ConstVoidPtrTy, "__descriptor_"},
-      Pt{ConstVoidPtrTy, "__next_"},
+      Pt{ConstVoidPtrTy, "__descriptor_"}, Pt{ConstVoidPtrTy, "__next_"},
 
       // The {file, function, line, column} prefix matches the layout of
       // the source_location::__impl struct and __cxa_source_location.
       // The descriptor's source_location field ID points here.
-      Pt{ConstStrLiteralTy, "__file_"},
-      Pt{ConstStrLiteralTy, "__function_"},
+      Pt{ConstStrLiteralTy, "__file_"}, Pt{ConstStrLiteralTy, "__function_"},
       Pt{Context->UnsignedIntTy, "__line_"},
       Pt{Context->UnsignedIntTy, "__column_"},
 
-      Pt{ConstStrLiteralTy, "__comment_"},
-      Pt{ConstStrLiteralTy, "__message_"}};
+      Pt{ConstStrLiteralTy, "__comment_"}, Pt{ConstStrLiteralTy, "__message_"}};
   const auto NumFields = FieldInfo.size();
 
   // Create fields
@@ -10743,7 +10740,6 @@ Decl *ASTContext::getVaListTagDecl() const {
 
   return VaListTagDecl;
 }
-
 
 TypedefDecl *ASTContext::getBuiltinMSVaListDecl() const {
   if (!BuiltinMSVaListDecl)

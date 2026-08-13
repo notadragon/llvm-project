@@ -298,12 +298,11 @@ ContractStmt *ContractStmt::CreateEmpty(const ASTContext &C, ContractKind Kind,
                                         bool HasLabel, bool HasCaptures,
                                         bool HasRequiresClause,
                                         unsigned NumAttrs) {
-  void *Mem = C.Allocate(
-      totalSizeToAlloc<Stmt *, const Attr *>(
-          1 + HasResultName + HasMessage + HasLabel + HasCaptures +
-              HasRequiresClause,
-          NumAttrs),
-      alignof(ContractStmt));
+  void *Mem = C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                             1 + HasResultName + HasMessage + HasLabel +
+                                 HasCaptures + HasRequiresClause,
+                             NumAttrs),
+                         alignof(ContractStmt));
   return new (Mem)
       ContractStmt(EmptyShell(), Kind, HasResultName, HasMessage, HasLabel,
                    HasCaptures, HasRequiresClause, NumAttrs);
@@ -317,13 +316,13 @@ ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
                                    Expr *RequiresClause) {
   assert((ResultNameDecl == nullptr || Kind == ContractKind::Post) &&
          "Only a postcondition can have a result name declaration");
-  void *Mem = C.Allocate(
-      totalSizeToAlloc<Stmt *, const Attr *>(
-          1 + (ResultNameDecl != nullptr) + (Message != nullptr) +
-              (Label != nullptr) + (Captures != nullptr) +
-              (RequiresClause != nullptr),
-          Attrs.size()),
-      alignof(ContractStmt));
+  void *Mem =
+      C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                     1 + (ResultNameDecl != nullptr) + (Message != nullptr) +
+                         (Label != nullptr) + (Captures != nullptr) +
+                         (RequiresClause != nullptr),
+                     Attrs.size()),
+                 alignof(ContractStmt));
   auto *CS = new (Mem)
       ContractStmt(Kind, KeywordLoc, Condition, ResultNameDecl, Message, Label,
                    Captures, Attrs, RequiresClause != nullptr);

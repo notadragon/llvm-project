@@ -1901,33 +1901,33 @@ enum class FunctionDefinitionKind {
 };
 
 enum class DeclaratorContext {
-  File,                   // File scope declaration.
-  Prototype,              // Within a function prototype.
-  ObjCResult,             // An ObjC method result type.
-  ObjCParameter,          // An ObjC method parameter type.
-  KNRTypeList,            // K&R type definition list for formals.
-  TypeName,               // Abstract declarator for types.
-  FunctionalCast,         // Type in a C++ functional cast expression.
-  Member,                 // Struct/Union field.
-  Block,                  // Declaration within a block in a function.
-  ForInit,                // Declaration within first part of a for loop.
-  SelectionInit,          // Declaration within optional init stmt of if/switch.
-  Condition,              // Condition declaration in a C++ if/switch/while/for.
-  TemplateParam,          // Within a template parameter list.
-  CXXNew,                 // C++ new-expression.
-  CXXCatch,               // C++ catch exception-declaration
-  ObjCCatch,              // Objective-C catch exception-declaration
-  BlockLiteral,           // Block literal declarator.
-  LambdaExpr,             // Lambda-expression declarator.
-  LambdaExprParameter,    // Lambda-expression parameter declarator.
-  ConversionId,           // C++ conversion-type-id.
-  TrailingReturn,         // C++11 trailing-type-specifier.
-  TrailingReturnVar,      // C++11 trailing-type-specifier for variable.
-  TemplateArg,            // Any template argument (in template argument list).
-  TemplateTypeArg,        // Template type argument (in default argument).
-  AliasDecl,              // C++11 alias-declaration.
-  AliasTemplate,          // C++11 alias-declaration template.
-  RequiresExpr,           // C++2a requires-expression.
+  File,                // File scope declaration.
+  Prototype,           // Within a function prototype.
+  ObjCResult,          // An ObjC method result type.
+  ObjCParameter,       // An ObjC method parameter type.
+  KNRTypeList,         // K&R type definition list for formals.
+  TypeName,            // Abstract declarator for types.
+  FunctionalCast,      // Type in a C++ functional cast expression.
+  Member,              // Struct/Union field.
+  Block,               // Declaration within a block in a function.
+  ForInit,             // Declaration within first part of a for loop.
+  SelectionInit,       // Declaration within optional init stmt of if/switch.
+  Condition,           // Condition declaration in a C++ if/switch/while/for.
+  TemplateParam,       // Within a template parameter list.
+  CXXNew,              // C++ new-expression.
+  CXXCatch,            // C++ catch exception-declaration
+  ObjCCatch,           // Objective-C catch exception-declaration
+  BlockLiteral,        // Block literal declarator.
+  LambdaExpr,          // Lambda-expression declarator.
+  LambdaExprParameter, // Lambda-expression parameter declarator.
+  ConversionId,        // C++ conversion-type-id.
+  TrailingReturn,      // C++11 trailing-type-specifier.
+  TrailingReturnVar,   // C++11 trailing-type-specifier for variable.
+  TemplateArg,         // Any template argument (in template argument list).
+  TemplateTypeArg,     // Template type argument (in default argument).
+  AliasDecl,           // C++11 alias-declaration.
+  AliasTemplate,       // C++11 alias-declaration template.
+  RequiresExpr,        // C++2a requires-expression.
   Association          // C11 _Generic selection expression association.
 };
 

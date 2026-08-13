@@ -12838,7 +12838,6 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
   if (DeclIsDefn && Context.getTargetInfo().getTriple().isAArch64())
     ARM().CheckSMEFunctionDefAttributes(NewFD);
 
-
   return Redeclaration;
 }
 
@@ -16544,7 +16543,6 @@ LambdaScopeInfo *Sema::RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator) {
         if (ByRef) {
           IT = IT.getNonReferenceType().withConst();
           IT = Context.getLValueReferenceType(IT);
-
         }
       }
       LSI->addCapture(VD, /*IsBlock*/ false, ByRef,
@@ -16552,7 +16550,7 @@ LambdaScopeInfo *Sema::RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator) {
                       C.getLocation(),
                       /*EllipsisLoc*/ C.isPackExpansion() ? C.getEllipsisLoc()
                                                           : SourceLocation(),
-            IT, /*IsAcrossContract*/ C.isCapturedAcrossContract(),
+                      IT, /*IsAcrossContract*/ C.isCapturedAcrossContract(),
                       C.getContractLoc(), /*Invalid*/ false);
 
     } else if (C.capturesThis()) {

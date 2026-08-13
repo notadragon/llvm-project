@@ -1166,7 +1166,6 @@ static QualType adjustCVQualifiersForCXXThisWithinLambda(
         ClassType.addConst();
       return ASTCtx.getPointerType(ClassType);
     }
-
   }
 
   // 2) We've run out of ScopeInfos but check 1. if CurDC is a lambda (which
@@ -1235,14 +1234,14 @@ QualType Sema::getCurrentThisType() {
     ThisTy = Context.getPointerType(ClassTy);
   }
 
-
   // Constify 'this' within a contract predicate.  The immediate expression
   // evaluation context is only flagged as a contract-assertion context in the
   // predicate itself; a nested lambda appearing in the predicate pushes a fresh
-  // evaluation context that loses that flag.  The contract scope stack, however,
-  // remains active across those nested contexts, so also consult it (via
-  // getCurrentContractEntry()) -- adjustCXXThisTypeForContracts self-guards and
-  // only constifies when 'this' belongs to the contracted function.
+  // evaluation context that loses that flag.  The contract scope stack,
+  // however, remains active across those nested contexts, so also consult it
+  // (via getCurrentContractEntry()) -- adjustCXXThisTypeForContracts
+  // self-guards and only constifies when 'this' belongs to the contracted
+  // function.
   if (!ThisTy.isNull() &&
       (currentEvaluationContext().isContractAssertionContext() ||
        getCurrentContractEntry()))

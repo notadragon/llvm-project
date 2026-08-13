@@ -12728,12 +12728,9 @@ void Sema::PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir) {
     S->PushUsingDirective(UDir);
 }
 
-Decl *Sema::ActOnContractControlUsingDirective(Scope *S,
-                                               SourceLocation UsingLoc,
-                                               SourceLocation NamespcLoc,
-                                               CXXScopeSpec &SS,
-                                               SourceLocation IdentLoc,
-                                               IdentifierInfo *NamespcName) {
+Decl *Sema::ActOnContractControlUsingDirective(
+    Scope *S, SourceLocation UsingLoc, SourceLocation NamespcLoc,
+    CXXScopeSpec &SS, SourceLocation IdentLoc, IdentifierInfo *NamespcName) {
   assert(!SS.isInvalid() && "Invalid CXXScopeSpec.");
   assert(NamespcName && "Invalid NamespcName.");
 

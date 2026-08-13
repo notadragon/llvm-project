@@ -3849,8 +3849,9 @@ void CodeGenModule::emitLLVMUsed() {
 //
 //   noexcept_observe -> the runtime reports via the contract-violation handler
 //                       and the program continues;
-//   noexcept_enforce -> the runtime reports via the handler and then terminates;
-//   quick_enforce    -> the runtime terminates WITHOUT calling the handler.
+//   noexcept_enforce -> the runtime reports via the handler and then
+//   terminates; quick_enforce    -> the runtime terminates WITHOUT calling the
+//   handler.
 //
 // assume is realized separately, per function, by clearing the SanitizeAddress
 // function attribute in StartFunction (see CodeGenFunction.cpp); plain throwing
@@ -3926,14 +3927,14 @@ void CodeGenModule::emitAsanContractSemanticDescriptor() {
       return;
     }
 
-    auto *GV = new llvm::GlobalVariable(
-        getModule(), Int8Ty, /*isConstant=*/true,
-        llvm::GlobalValue::WeakAnyLinkage,
-        llvm::ConstantInt::get(Int8Ty, Wire), Name);
-    // The descriptor has no in-TU references -- only the sanitizer runtime reads
-    // it -- so force it used.  Otherwise whole-program analysis would eliminate
-    // it as unreferenced and routing would silently fall back to stock behavior,
-    // in particular under (Thin)LTO.
+    auto *GV =
+        new llvm::GlobalVariable(getModule(), Int8Ty, /*isConstant=*/true,
+                                 llvm::GlobalValue::WeakAnyLinkage,
+                                 llvm::ConstantInt::get(Int8Ty, Wire), Name);
+    // The descriptor has no in-TU references -- only the sanitizer runtime
+    // reads it -- so force it used.  Otherwise whole-program analysis would
+    // eliminate it as unreferenced and routing would silently fall back to
+    // stock behavior, in particular under (Thin)LTO.
     addUsedGlobal(GV);
   };
 
@@ -3978,10 +3979,10 @@ void CodeGenModule::emitTsanContractSemanticDescriptor() {
     return;
   }
 
-  auto *GV = new llvm::GlobalVariable(
-      getModule(), Int8Ty, /*isConstant=*/true,
-      llvm::GlobalValue::WeakAnyLinkage, llvm::ConstantInt::get(Int8Ty, Wire),
-      "__tsan_contract_semantic");
+  auto *GV = new llvm::GlobalVariable(getModule(), Int8Ty, /*isConstant=*/true,
+                                      llvm::GlobalValue::WeakAnyLinkage,
+                                      llvm::ConstantInt::get(Int8Ty, Wire),
+                                      "__tsan_contract_semantic");
   addUsedGlobal(GV);
 }
 
@@ -4017,21 +4018,22 @@ void CodeGenModule::emitMsanContractSemanticDescriptor() {
     return;
   }
 
-  auto *GV = new llvm::GlobalVariable(
-      getModule(), Int8Ty, /*isConstant=*/true,
-      llvm::GlobalValue::WeakAnyLinkage, llvm::ConstantInt::get(Int8Ty, Wire),
-      "__msan_contract_semantic");
+  auto *GV = new llvm::GlobalVariable(getModule(), Int8Ty, /*isConstant=*/true,
+                                      llvm::GlobalValue::WeakAnyLinkage,
+                                      llvm::ConstantInt::get(Int8Ty, Wire),
+                                      "__msan_contract_semantic");
   addUsedGlobal(GV);
 }
 
 // P3100 Task 4.1 (UBSan runtime routing): the per-check analog of the ASan
 // descriptor above.  Whereas ASan has a single whole-program check (one byte),
-// UBSan has many independently-configurable runtime checks, so the conveyance is
-// a weak ARRAY, __ubsan_contract_semantic[RUC_COUNT], one wire byte per routed
-// check.  compiler-rt's ScopedReport destructor folds its ErrorType to a routed
-// id and reads the corresponding byte (compiler-rt/lib/ubsan/ubsan_diag.cpp).
-// The routed-check id ordering here MUST stay in sync with the RUC_* enum in
-// ubsan_diag.cpp.  Same wire encoding and emit-nothing-for-stock rule as ASan.
+// UBSan has many independently-configurable runtime checks, so the conveyance
+// is a weak ARRAY, __ubsan_contract_semantic[RUC_COUNT], one wire byte per
+// routed check.  compiler-rt's ScopedReport destructor folds its ErrorType to a
+// routed id and reads the corresponding byte
+// (compiler-rt/lib/ubsan/ubsan_diag.cpp). The routed-check id ordering here
+// MUST stay in sync with the RUC_* enum in ubsan_diag.cpp.  Same wire encoding
+// and emit-nothing-for-stock rule as ASan.
 void CodeGenModule::emitUbsanContractSemanticDescriptor() {
   if (!LangOpts.ContractsP3100)
     return;
@@ -4093,7 +4095,8 @@ void CodeGenModule::emitUbsanContractSemanticDescriptor() {
       // The implicit-conversion group has several member bits; each maps to the
       // single RUC_IMPLICIT_CONVERSION wire slot (SanitizerSet::has requires a
       // single-bit mask, so the group cannot be used directly here).
-      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitUnsignedIntegerTruncation},
+      {RUC_IMPLICIT_CONVERSION,
+       SanitizerKind::ImplicitUnsignedIntegerTruncation},
       {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitSignedIntegerTruncation},
       {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitIntegerSignChange},
       {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitBitfieldConversion},
@@ -7474,11 +7477,9 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
 
   // Emit __handle_contract_violation as a C-linkage alias for
   // ::handle_contract_violation when defined at global scope.
-  if (getLangOpts().Contracts &&
-      D->getDeclName().isIdentifier() &&
+  if (getLangOpts().Contracts && D->getDeclName().isIdentifier() &&
       D->getName() == "handle_contract_violation" &&
-      D->getDeclContext()->isTranslationUnit() &&
-      !D->isExternC()) {
+      D->getDeclContext()->isTranslationUnit() && !D->isExternC()) {
     llvm::GlobalAlias *Alias = llvm::GlobalAlias::create(
         Fn->getValueType(), 0, llvm::GlobalValue::ExternalLinkage,
         "__handle_contract_violation", Fn, &getModule());
@@ -7487,16 +7488,13 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
 
   // D4299: Emit __handle_contract_violation alias for C-defined
   // handle_contract_violation(const contract_violation_t*).
-  if (getLangOpts().ContractsP4299 &&
-      D->getDeclName().isIdentifier() &&
+  if (getLangOpts().ContractsP4299 && D->getDeclName().isIdentifier() &&
       D->getName() == "handle_contract_violation" &&
-      D->getDeclContext()->isTranslationUnit() &&
-      D->isExternC()) {
+      D->getDeclContext()->isTranslationUnit() && D->isExternC()) {
     // Validate signature: void(const contract_violation_t*)
     const auto *FD = dyn_cast<FunctionDecl>(D);
     bool valid = false;
-    if (FD && FD->getReturnType()->isVoidType() &&
-        FD->getNumParams() == 1) {
+    if (FD && FD->getReturnType()->isVoidType() && FD->getNumParams() == 1) {
       QualType PT = FD->getParamDecl(0)->getType();
       if (PT->isPointerType()) {
         QualType Pointee = PT->getPointeeType();
@@ -7514,7 +7512,7 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
       (void)Alias;
     } else if (FD) {
       getDiags().Report(FD->getLocation(),
-          diag::err_c_contract_handler_signature);
+                        diag::err_c_contract_handler_signature);
     }
   }
 }

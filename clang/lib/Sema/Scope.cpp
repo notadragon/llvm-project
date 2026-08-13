@@ -135,7 +135,8 @@ void Scope::LeaveLoopBody() {
 }
 
 void Scope::AddFlags(unsigned long FlagsToSet) {
-  assert((FlagsToSet & ~(BreakScope | ContinueScope | ContractAssertScope)) == 0 &&
+  assert((FlagsToSet & ~(BreakScope | ContinueScope | ContractAssertScope)) ==
+             0 &&
          "Unsupported scope flags");
   if (FlagsToSet & BreakScope) {
     assert((Flags & BreakScope) == 0 && "Already set");
@@ -258,9 +259,7 @@ void Scope::dumpImpl(raw_ostream &OS) const {
       {OpenACCLoopConstructScope, "OpenACCLoopConstructScope"},
       {TypeAliasScope, "TypeAliasScope"},
       {FriendScope, "FriendScope"},
-      {ContractAssertScope, "ContractAssertScope"}
-  };
-
+      {ContractAssertScope, "ContractAssertScope"}};
 
   for (auto Info : FlagInfo) {
     if (Flags & Info.first) {

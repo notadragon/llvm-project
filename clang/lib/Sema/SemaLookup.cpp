@@ -166,8 +166,7 @@ namespace {
       SmallVector<DeclContext*, 4> queue;
       while (true) {
         for (auto *UD : DC->using_directives()) {
-          if (UD->isContractControl() &&
-              !SemaRef.InAssertionControlExpression)
+          if (UD->isContractControl() && !SemaRef.InAssertionControlExpression)
             continue;
           DeclContext *NS = UD->getNominatedNamespace();
           if (SemaRef.isVisible(UD) && visited.insert(NS).second) {
