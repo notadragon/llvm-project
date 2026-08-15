@@ -325,6 +325,9 @@ def err_drv_sanitize_semantic_routed_observe : Error<
   "'-fcontracts-p4298'">;
 def err_drv_sanitize_semantic_requires_p4298 : Error<
   "'-fsanitize-semantic=%0:%1' requires '-fcontracts-p4298'">;
+def warn_drv_sanitize_semantic_no_p3100 : Warning<
+  "'-fsanitize-semantic=' has no effect without '-fcontracts-p3100'">,
+  InGroup<UnusedCommandLineArgument>;
 def err_drv_sanitize_recover_routed_requires_p4298 : Error<
   "'-fsanitize-recover=%0' routing to the contract-violation handler requires "
   "'-fcontracts-p4298' (for the 'noexcept_observe' semantic; a throwing "
