@@ -795,11 +795,15 @@ static bool SuppressErrorReport(uptr pc) {
       return false;
     if (cmp == pc) return true;
   }
-  // Pool exhausted.  On the routed continuing path we must never terminate
-  // here (observe has to continue); suppress instead.  Off the routed path
-  // keep the historical Die().
+  // Pool exhausted, so we can no longer tell a repeat of an
+  // already-reported site from a site never seen before.  Off the routed
+  // path, keep the historical Die().  On it, report: the dedup is a
+  // deduplication of *repeats*, and dropping violations at sites that have
+  // never been reported is not something any configured semantic asks for.
+  // Erring towards an extra report is recoverable; silently ceasing to
+  // check after the 25th distinct site is not.
   if (routed)
-    return true;
+    return false;
   Die();
 }
 
