@@ -699,7 +699,12 @@ CodeGenFunction::EmitReferenceBindingToExpr(const Expr *E) {
   assert(LV.isSimple());
   llvm::Value *Value = LV.getPointer(*this);
 
-  if (sanitizePerformTypeCheck() && !E->getType()->isFunctionType()) {
+  // P3100 routes this check too, so reach EmitTypeCheck when contracts ask
+  // for it even if no sanitizer does -- otherwise binding a reference to *p
+  // is the one access shape whose configured null/alignment reaction never
+  // fires.
+  if ((sanitizePerformTypeCheck() || getLangOpts().ContractsP3100) &&
+      !E->getType()->isFunctionType()) {
     // C++11 [dcl.ref]p5 (as amended by core issue 453):
     //   If a glvalue to which a reference is directly bound designates neither
     //   an existing object or function of an appropriate type nor a region of
@@ -750,6 +755,28 @@ bool CodeGenFunction::sanitizePerformTypeCheck() const {
          SanOpts.has(SanitizerKind::Vptr);
 }
 
+/// True if a type check of kind TCK is an access that carries the P3100
+/// implicit contract assertions for null dereference and misalignment.
+///
+/// A load or a store is the obvious case.  Binding a reference to *p and
+/// calling a non-static member function through a null this are the same
+/// undefined behaviour reached by different syntax -- [dcl.ref]/5 and
+/// [class.mfct.non-static]/2 respectively -- and UBSan groups all three
+/// under -fsanitize=null.  Taking the address of a dereference is NOT one
+/// of them: &*p accesses nothing and must stay uninstrumented.
+static bool isP3100AccessTypeCheck(CodeGenFunction::TypeCheckKind TCK) {
+  switch (TCK) {
+  case CodeGenFunction::TCK_Load:
+  case CodeGenFunction::TCK_Store:
+  case CodeGenFunction::TCK_ReferenceBinding:
+  case CodeGenFunction::TCK_MemberCall:
+  case CodeGenFunction::TCK_ConstructorCall:
+    return true;
+  default:
+    return false;
+  }
+}
+
 void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                                     llvm::Value *Ptr, QualType Ty,
                                     CharUnits Alignment,
@@ -797,14 +824,14 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
     llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
     bool AllowNullPointers = isNullPointerAllowed(TCK);
 
-    // P3100: a genuine data access (load/store) through a possibly-null pointer
-    // carries an implicit ub:expr.unary.dereference.nullptr contract assertion.
+    // P3100: an access through a possibly-null pointer carries an implicit
+    // ub:expr.unary.dereference.nullptr contract assertion.
     // Emit its configured reaction here; it takes precedence over the sanitizer
     // null check on the null edge.  (assume/ignore emit nothing and fall
     // through.)
     bool P3100NullHandled = false;
     if (getLangOpts().ContractsP3100 && !IsGuaranteedNonNull &&
-        (TCK == TCK_Load || TCK == TCK_Store))
+        isP3100AccessTypeCheck(TCK))
       P3100NullHandled = EmitImplicitNullDerefGuard(Ptr, Loc);
 
     if (!P3100NullHandled &&
@@ -881,13 +908,13 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                     (!PtrToAlloca || PtrToAlloca->getAlign() < *AlignVal);
     }
 
-    // P3100: a data access (load/store) through a possibly-misaligned pointer
-    // carries an implicit contract assertion; emit its reaction here
+    // P3100: an access through a possibly-misaligned pointer carries an
+    // implicit contract assertion; emit its reaction here
     // (independent of the null check above), taking precedence over the
     // sanitizer alignment check, which is then skipped.
     bool P3100AlignHandled = false;
     if (getLangOpts().ContractsP3100 && AlignNeeded &&
-        (TCK == TCK_Load || TCK == TCK_Store))
+        isP3100AccessTypeCheck(TCK))
       P3100AlignHandled = EmitImplicitMisalignedGuard(Ptr, *AlignVal, Loc);
 
     if (SanOpts.has(SanitizerKind::Alignment) && !P3100AlignHandled &&
