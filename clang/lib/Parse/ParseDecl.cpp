@@ -7467,7 +7467,20 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       MaybeParseCXX11Attributes(FnAttrs);
       // D4299: save C contract specifier tokens for later replay.
       if (getLangOpts().ContractsP4299 && isFunctionContractKeyword(Tok)) {
+        SourceLocation ContractLoc = Tok.getLocation();
         LateParseFunctionContractSpecifierSeq(D.LateParsedContracts);
+        // A contract written on a *parameter's* own function declarator has
+        // nothing to attach to -- the parameter is not a function being
+        // defined, so the replay in ParseFunctionDefinition never runs for
+        // it and the tokens reach Declarator::clear() unconsumed, tripping
+        // its assertion.  Diagnose and drop them.  GCC accepts and ignores
+        // the same construct, so ignoring matches; only the silence there,
+        // and the crash here, are worth changing.
+        if (D.getContext() == DeclaratorContext::Prototype ||
+            D.getContext() == DeclaratorContext::LambdaExprParameter) {
+          Diag(ContractLoc, diag::warn_contract_on_parameter_declarator);
+          D.LateParsedContracts.clear();
+        }
       }
     }
   }

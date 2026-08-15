@@ -1775,4 +1775,8 @@ def err_contract_requires_clause_require_flag : Error<
 def err_contract_label_require_flag : Error<
   "assertion-control labels require '-fcontracts-p3400'">;
 
+def warn_contract_on_parameter_declarator : Warning<
+  "contract on a parameter declarator is ignored">,
+  InGroup<IgnoredAttributes>;
+
 } // end of Parser diagnostics
