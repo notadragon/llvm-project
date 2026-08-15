@@ -594,6 +594,10 @@ static void precomputeDynamicTable(Sema &S, ContractStmt *CS,
                                    Expr *LabelExpr, QualType LabelTy,
                                    const CXXRecordDecl *RD,
                                    SourceLocation Loc) {
+  // As in applyLabelFacets: the label methods are constant-evaluated, and a
+  // prvalue label's temporaries must not escape into the enclosing function.
+  EnterExpressionEvaluationContext ConstantEvaluated(
+      S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
   // Match resolveContractConfig's group resolution: if no groups were supplied
   // (labeled via group_names, or unlabeled), fall back to the
   // [[clang::contract_group]] attribute so the dynamic scan matches the same
@@ -677,6 +681,14 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
   QualType LabelTy = LabelExpr->getType();
   if (LabelTy->isDependentType())
     return;
+
+  // Every facet below is read by constant-evaluating a member call built on
+  // the label expression.  Say so, so that the temporaries that come with a
+  // prvalue label -- pre<L{}> rather than pre<named> -- are torn down with
+  // this context instead of leaking into the enclosing function, where they
+  // trip ActOnFinishFunctionBody's "Unaccounted cleanups in function".
+  EnterExpressionEvaluationContext ConstantEvaluated(
+      S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
 
   SourceLocation Loc = CS->getKeywordLoc();
 
