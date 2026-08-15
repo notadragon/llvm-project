@@ -1487,13 +1487,22 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   SkipHotCutoffs.clear(~Sanitizers.Mask);
 
   // P3100: parse -fsanitize-semantic= and enforce the per-check allowed set.
-  // -fcontracts-p3100/-p4298 are ordinary contract feature flags visible in the
-  // driver arg list; -fcontracts-p3850 implies neither of them here (it only
-  // implies p3099/p3290/p3400), so both are queried directly.
+  // -fcontracts-p3100/-p4298 are ordinary contract feature flags visible in
+  // the driver arg list.  -fcontracts-p3850 is the umbrella that implies every
+  // per-paper flag, and CompilerInvocation::ParseLangArgs implements exactly
+  // that for LangOptions -- so the driver has to honour it too, or the two
+  // disagree: cc1 believes routing is on while the driver never renders the
+  // resolved semantics and never enables it.  The visible symptom was that
+  // -fcontracts-p3850 -fsanitize-semantic=<check>:<sem> produced instrumentation
+  // byte-for-byte identical to plain -fsanitize=, silently unrouted.
+  const bool ContractsP3850 = Args.hasFlag(
+      options::OPT_fcontracts_p3850, options::OPT_fno_contracts_p3850, false);
   ContractsP3100 = Args.hasFlag(options::OPT_fcontracts_p3100,
-                                options::OPT_fno_contracts_p3100, false);
+                                options::OPT_fno_contracts_p3100,
+                                ContractsP3850);
   ContractsP4298 = Args.hasFlag(options::OPT_fcontracts_p4298,
-                                options::OPT_fno_contracts_p4298, false);
+                                options::OPT_fno_contracts_p4298,
+                                ContractsP3850);
   SanitizeSemanticPrint = Args.hasArg(options::OPT_fsanitize_semantic_print);
   // P3100 Task 3.1: the global opt-out.  Parsed unconditionally (like GCC's
   // Common Driver flag_sanitize_noncontract_callbacks); it only has an effect
@@ -1503,6 +1512,17 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       Args.hasArg(options::OPT_fsanitize_noncontract_callbacks);
   parseSanitizeSemanticArgs(D, Args, DiagnoseErrors);
   applyRoutedSemanticP4298Gate(D, DiagnoseErrors);
+
+  // -fsanitize-semantic= only means anything when checks are routed to the
+  // contract-violation handler.  Without that it is accepted and then does
+  // nothing at all -- the instrumentation is byte-for-byte what plain
+  // -fsanitize= produces -- which reads as an ordinary sanitizer option that
+  // quietly failed.  It has to be said here rather than in cc1: the driver
+  // only renders -fsanitize-semantic= onward when routing is enabled, so cc1
+  // never sees the flag in precisely the case worth warning about.
+  if (DiagnoseErrors && !ContractsP3100 &&
+      Args.hasArg(options::OPT_fsanitize_semantic_EQ))
+    D.Diag(diag::warn_drv_sanitize_semantic_no_p3100);
 
   // P3100: the resolved contract-evaluation semantic selects which of the
   // sanitizer's OWN code paths a routed check is integrated along, by driving
