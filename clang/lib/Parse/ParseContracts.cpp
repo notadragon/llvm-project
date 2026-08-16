@@ -137,9 +137,33 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
       } else if (Tok.is(tok::eof) || Tok.is(tok::semi)) {
         Diag(Tok, diag::err_expected) << tok::greater;
         return false;
+      } else if (Tok.isOneOf(tok::l_paren, tok::l_square, tok::l_brace)) {
+        // A balanced group inside the label expression -- pre<L{}>,
+        // pre<make_label()>, pre<(a > b ? l1 : l2)>.  Cache it whole rather
+        // than token by token, for two reasons: its opening token is
+        // "special", so ConsumeToken cannot consume it, and a '<' or '>'
+        // inside the group is an operator rather than a template-argument-list
+        // delimiter, so counting it here would end the label early.
+        //
+        // StopAtSemi is off because the group is delimited by its own closing
+        // token and a ';' can legitimately appear within one -- a label whose
+        // expression is an immediately-invoked lambda, say.
+        tok::TokenKind Close = Tok.is(tok::l_paren)    ? tok::r_paren
+                               : Tok.is(tok::l_square) ? tok::r_square
+                                                       : tok::r_brace;
+        Toks.push_back(Tok);
+        ConsumeAnyToken();
+        if (!ConsumeAndStoreUntil(Close, Toks, /*StopAtSemi=*/false,
+                                  /*ConsumeFinalToken=*/true)) {
+          Diag(Tok, diag::err_expected) << Close;
+          return false;
+        }
+        continue;
       }
       Toks.push_back(Tok);
-      ConsumeToken();
+      // Not ConsumeToken: a label expression may contain string literals and
+      // annotation tokens, which are "special" and must be consumed as such.
+      ConsumeAnyToken();
     }
     // P4283: cache an optional requires-clause between the label and the
     // attributes/captures/predicate.
@@ -242,8 +266,24 @@ bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
 bool Parser::LateParseContractRequiresClause(CachedTokens &Toks) {
   assert(Tok.is(tok::kw_requires) && "Not a requires-clause");
 
+  // Cache a balanced '(...)' / '[...]' / '{...}' group.  Assumes Tok is the
+  // opener; ConsumeAndStoreUntil handles inner nesting.
+  auto cacheBalanced = [&](tok::TokenKind Close) {
+    Toks.push_back(Tok);
+    if (Close == tok::r_paren)
+      ConsumeParen();
+    else if (Close == tok::r_brace)
+      ConsumeBrace();
+    else
+      ConsumeBracket();
+    return ConsumeAndStoreUntil(Close, Toks, /*StopAtSemi=*/false,
+                                /*ConsumeFinalToken=*/true);
+  };
+
   // Cache a depth-counted template argument list '<...>', modelled on the
-  // P3400 label caching above (splitting a '>>' that closes two levels).
+  // P3400 label caching above (splitting a '>>' that closes two levels, and
+  // caching a balanced group whole so that neither its "special" opening
+  // token nor a '<' or '>' operator inside it is mishandled).
   // Assumes Tok is '<'.
   auto cacheAngles = [&]() -> bool {
     Toks.push_back(Tok);
@@ -268,25 +308,20 @@ bool Parser::LateParseContractRequiresClause(CachedTokens &Toks) {
       } else if (Tok.is(tok::eof) || Tok.is(tok::semi)) {
         Diag(Tok, diag::err_expected) << tok::greater;
         return false;
+      } else if (Tok.isOneOf(tok::l_paren, tok::l_square, tok::l_brace)) {
+        tok::TokenKind Close = Tok.is(tok::l_paren)    ? tok::r_paren
+                               : Tok.is(tok::l_square) ? tok::r_square
+                                                       : tok::r_brace;
+        if (!cacheBalanced(Close)) {
+          Diag(Tok, diag::err_expected) << Close;
+          return false;
+        }
+        continue;
       }
       Toks.push_back(Tok);
-      ConsumeToken();
+      ConsumeAnyToken();
     }
     return true;
-  };
-
-  // Cache a balanced '(...)' / '[...]' / '{...}' group.  Assumes Tok is the
-  // opener; ConsumeAndStoreUntil handles inner nesting.
-  auto cacheBalanced = [&](tok::TokenKind Close) {
-    Toks.push_back(Tok);
-    if (Close == tok::r_paren)
-      ConsumeParen();
-    else if (Close == tok::r_brace)
-      ConsumeBrace();
-    else
-      ConsumeBracket();
-    ConsumeAndStoreUntil(Close, Toks, /*StopAtSemi=*/false,
-                         /*ConsumeFinalToken=*/true);
   };
 
   // Cache a single constraint primary-expression.
