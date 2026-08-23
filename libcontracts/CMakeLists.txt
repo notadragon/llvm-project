@@ -58,11 +58,23 @@ set_target_properties(contracts_static PROPERTIES
 # -L the clang driver adds for -lcontracts -- is <prefix>/lib/<triple>, NOT the
 # bare <prefix>/lib.  Installing to the bare libdir leaves -lcontracts unfound
 # at link time even though libc++ (same dir in the build) resolves fine.
+#
+# Use lib${LLVM_LIBDIR_SUFFIX}, NOT ${CMAKE_INSTALL_LIBDIR}, because only the
+# former is what libc++ itself uses:
+#   libcxx/CMakeLists.txt:483
+#     set(LIBCXX_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX}/${LIBCXX_TARGET_SUBDIR} ...)
+# CMAKE_INSTALL_LIBDIR comes from GNUInstallDirs and is DISTRO-DEPENDENT: it is
+# "lib" on Debian/Ubuntu but "lib64" on RHEL-family systems.  Building this
+# toolchain in a rhel8 Bloomberg Space therefore put libcontracts in
+# <prefix>/lib64/<triple> while libc++ went to <prefix>/lib/<triple>, and
+# -lcontracts stopped resolving at link time -- every Clang contracts example
+# failed with "/usr/bin/ld: cannot find -lcontracts".  The two must be derived
+# the same way or they silently diverge on any non-Debian build host.
 if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND DEFINED LLVM_DEFAULT_TARGET_TRIPLE)
   set(LIBCONTRACTS_INSTALL_LIBDIR
-      "${CMAKE_INSTALL_LIBDIR}/${LLVM_DEFAULT_TARGET_TRIPLE}")
+      "lib${LLVM_LIBDIR_SUFFIX}/${LLVM_DEFAULT_TARGET_TRIPLE}")
 else()
-  set(LIBCONTRACTS_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+  set(LIBCONTRACTS_INSTALL_LIBDIR "lib${LLVM_LIBDIR_SUFFIX}")
 endif()
 
 # Name an install component so consumers can stage libcontracts on its own --
