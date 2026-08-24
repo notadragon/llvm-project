@@ -5967,14 +5967,16 @@ void Sema::InstantiateVirtualFunctionContractsOnUse(
     return;
 
   // Only for template instantiations: the pattern must carry contracts, and the
-  // instantiation must still be holding the pattern's own (dependent) contract
+  // instantiation must still be holding a pattern's own (dependent) contract
   // specifier as a placeholder.  If it already has a substituted specifier
   // (e.g. its definition was instantiated first), there is nothing to do.
+  // The placeholder may have come from any declaration on the pattern's
+  // redeclaration chain, not necessarily PatternDecl -- see
+  // holdsPatternContractSpecifier.
   const FunctionDecl *PatternDecl = Function->getTemplateInstantiationPattern();
   if (!PatternDecl || !PatternDecl->hasContracts())
     return;
-  if (!Function->getContracts() ||
-      Function->getContracts() != PatternDecl->getContracts())
+  if (!holdsPatternContractSpecifier(Function, PatternDecl))
     return;
   if (Function->isInvalidDecl() || Function->isDependentContext())
     return;

@@ -3317,6 +3317,21 @@ public:
   DeclResult
   RebuildContractsWithPlaceholderReturnType(FunctionDecl *Definition);
 
+  /// True while \p Instantiation is still carrying a *pattern's* contract
+  /// specifier as a placeholder, rather than one substituted for it.
+  ///
+  /// The placeholder is installed by VisitCXXMethodDecl from whichever
+  /// declaration of the pattern the class-template instantiation walked --
+  /// the in-class one -- while \p Pattern here is the declaration the
+  /// contracts are being substituted from, which for an out-of-line-defined
+  /// member is the definition, carrying its own re-pointed specifier.  So the
+  /// two are different specifiers on the same redeclaration chain, and the
+  /// question has to be asked of the whole chain rather than of \p Pattern
+  /// alone.  A substituted specifier is freshly built and belongs to no
+  /// chain, so this stays a reliable "not yet done" test.
+  static bool holdsPatternContractSpecifier(const FunctionDecl *Instantiation,
+                                            const FunctionDecl *Pattern);
+
   void InstantiateContractSpecifier(
       SourceLocation PointOfInstantiation, FunctionDecl *Instantiation,
       const FunctionDecl *Pattern,

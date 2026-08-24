@@ -1764,6 +1764,17 @@ void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
   diagnoseParamTypes(*this, FD, FD->getContracts());
 }
 
+bool Sema::holdsPatternContractSpecifier(const FunctionDecl *Instantiation,
+                                         const FunctionDecl *Pattern) {
+  const ContractSpecifierDecl *CSD = Instantiation->getContracts();
+  if (!CSD)
+    return false;
+  for (const FunctionDecl *RD : Pattern->redecls())
+    if (RD->getContracts() == CSD)
+      return true;
+  return false;
+}
+
 void Sema::InstantiateContractSpecifier(
     SourceLocation PointOfInstantiation, FunctionDecl *Instantiation,
     const FunctionDecl *Pattern,
@@ -1773,16 +1784,23 @@ void Sema::InstantiateContractSpecifier(
   if (!PatternCSD)
     return;
 
-  // Idempotent: at class-template instantiation the member is given the
+  // Idempotent: at class-template instantiation the member is given a
   // pattern's own (dependent) contract specifier as a placeholder
   // (VisitCXXMethodDecl).  Once we have replaced it with a substituted
-  // specifier, the instantiation carries a distinct ContractSpecifierDecl, so
-  // there is nothing more to do.  This lets the contracts be instantiated
-  // on-demand at the point of an odr-use (see
-  // InstantiateVirtualFunctionContractsOnUse) without being re-substituted when
-  // the function's definition is later instantiated.
+  // specifier, the instantiation carries a ContractSpecifierDecl that belongs
+  // to no redeclaration chain, so there is nothing more to do.  This lets the
+  // contracts be instantiated on-demand at the point of an odr-use (see
+  // InstantiateVirtualFunctionContractsOnUse) without being re-substituted
+  // when the function's definition is later instantiated.
+  //
+  // Ask the whole chain, not just PatternCSD: for a member declared in-class
+  // and defined out-of-line the placeholder comes from the declaration while
+  // PatternCSD is the definition's own re-pointed copy, so comparing against
+  // PatternCSD alone reads the placeholder as already-substituted and leaves
+  // the instantiation holding a predicate that references the *pattern's*
+  // parameters -- which CodeGen then trips over.
   if (Instantiation->getContracts() &&
-      Instantiation->getContracts() != PatternCSD)
+      !holdsPatternContractSpecifier(Instantiation, Pattern))
     return;
 
   bool IsInvalid = false;
