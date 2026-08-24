@@ -7460,6 +7460,20 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
         EndLoc = Range.getEnd();
       }
 
+      // A contract assertion is a complete-class context too ([class.mem.
+      // general]p7), so a contract on a member function is late-parsed on the
+      // same terms as the noexcept-specifier.  Record the decision as well as
+      // acting on it: the virt-specifier-seq and the trailing requires-clause
+      // are parsed after this returns, so a contract written behind either of
+      // them is not in front of us here and is picked up by
+      // ParseCXXMemberDeclaratorBeforeInitializer, which cannot make the call
+      // for itself -- by then the function chunk is on the declarator and
+      // isFunctionDeclaratorAFunctionDeclaration() no longer answers this
+      // question.  An inner function declarator sets the flag first and the
+      // outermost one, parsed last, overwrites it, which is the one that owns
+      // any contract.
+      D.setContractsAreLateParsed(Delayed);
+
       if (isFunctionContractKeyword(Tok) && Delayed) {
         LateParseFunctionContractSpecifierSeq(D.LateParsedContracts);
       }

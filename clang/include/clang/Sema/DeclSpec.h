@@ -2029,6 +2029,16 @@ public:
 
   CachedTokens LateParsedContracts;
 
+  /// Whether a function-contract-specifier written on this declarator has to
+  /// be late-parsed.  Only ParseFunctionDeclarator can decide that, since only
+  /// there is the declarator still short enough for
+  /// isFunctionDeclaratorAFunctionDeclaration() to mean what it says; the
+  /// answer is recorded because a virt-specifier-seq or a trailing
+  /// requires-clause is parsed afterwards, and a contract written behind one
+  /// of those is reached from ParseCXXMemberDeclaratorBeforeInitializer
+  /// instead.
+  bool ContractsAreLateParsed = false;
+
 private:
   /// If this declarator declares a template, its template parameter lists.
   ArrayRef<TemplateParameterList *> TemplateParameterLists;
@@ -2188,6 +2198,7 @@ public:
     Contracts = nullptr;
     assert(LateParsedContracts.empty() && "Late-parsed contracts unhandled");
     LateParsedContracts.clear();
+    ContractsAreLateParsed = false;
   }
 
   /// mayOmitIdentifier - Return true if the identifier is either optional or
@@ -2714,6 +2725,10 @@ public:
   const CachedTokens &getLateParsedContracts() const {
     return LateParsedContracts;
   }
+
+  void setContractsAreLateParsed(bool Late) { ContractsAreLateParsed = Late; }
+
+  bool areContractsLateParsed() const { return ContractsAreLateParsed; }
 
   /// Sets the template parameter lists that preceded the declarator.
   void setTemplateParameterLists(ArrayRef<TemplateParameterList *> TPLs) {

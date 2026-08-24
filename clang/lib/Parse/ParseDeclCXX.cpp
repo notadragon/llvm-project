@@ -2677,7 +2677,17 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
                                                               VS);
   }
 
-  ParseContractSpecifierSequence(DeclaratorInfo, /*EnterScope=*/true);
+  // Anything reaching here has a virt-specifier-seq or a trailing
+  // requires-clause in front of it -- otherwise ParseFunctionDeclarator would
+  // already have taken the contract.  Neither of those makes the contract any
+  // less of a complete-class context, so a member function's contract still
+  // has to be deferred to the end of the class; parsing it here would hide
+  // every member declared after it.  ParseFunctionDeclarator left its verdict
+  // on the declarator for exactly this.
+  if (DeclaratorInfo.areContractsLateParsed() && isFunctionContractKeyword(Tok))
+    LateParseFunctionContractSpecifierSeq(DeclaratorInfo.LateParsedContracts);
+  else
+    ParseContractSpecifierSequence(DeclaratorInfo, /*EnterScope=*/true);
 
   // If a simple-asm-expr is present, parse it.
   if (Tok.is(tok::kw_asm)) {
