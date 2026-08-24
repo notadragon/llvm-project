@@ -2730,6 +2730,10 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
   if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
     // If so, skip until the semi-colon or a }.
     SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+    // The caller gives up on this member without producing a declaration, so
+    // any cached contract tokens will never be replayed.
+    DiagnoseUnattachedLateParsedContracts(
+        DeclaratorInfo, diag::err_contract_on_invalid_declaration);
     return true;
   }
   return false;
@@ -3148,6 +3152,8 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
           cutOffParsing();
           Actions.CodeCompletion().CodeCompleteAfterFunctionEquals(
               DeclaratorInfo);
+          DiagnoseUnattachedLateParsedContracts(
+              DeclaratorInfo, diag::err_contract_on_invalid_declaration);
           return nullptr;
         }
       }
@@ -3173,6 +3179,8 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
         // Consume the optional ';'
         TryConsumeToken(tok::semi);
 
+        DiagnoseUnattachedLateParsedContracts(
+            DeclaratorInfo, diag::err_contract_on_invalid_declaration);
         return nullptr;
       }
 
@@ -3344,6 +3352,11 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
               DeclSpec::SCS_typedef)
         HandleMemberFunctionDeclDelays(DeclaratorInfo, ThisDecl);
     }
+    // Nothing was produced for the cached contract tokens to be replayed
+    // against -- either the declaration failed outright, or it turned out not
+    // to be the member function declaration the caching was predicated on.
+    DiagnoseUnattachedLateParsedContracts(
+        DeclaratorInfo, diag::err_contract_on_invalid_declaration);
     LateParsedAttrs.clear();
 
     DeclaratorInfo.complete(ThisDecl);

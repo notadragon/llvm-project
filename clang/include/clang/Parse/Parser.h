@@ -9162,6 +9162,8 @@ private:
 
   bool ParseLexedFunctionContracts(CachedTokens &Toks, Decl *FD,
                                    ContractEnterScopeKind EnterScopeKinds);
+
+  void DiagnoseUnattachedLateParsedContracts(Declarator &D, unsigned DiagID);
 };
 
 } // end namespace clang

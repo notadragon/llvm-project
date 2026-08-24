@@ -2402,8 +2402,9 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       ParseDeclarationAfterDeclaratorAndAttributes(D, TemplateInfo, FRI);
   if (LateParsedAttrs.size() > 0)
     ParseLexedAttributeList(LateParsedAttrs, FirstDecl, true, false);
-  if (auto *FD = dyn_cast_or_null<FunctionDecl>(FirstDecl)) {
-    if (!FD->isInvalidDecl() && !D.LateParsedContracts.empty()) {
+  if (!D.LateParsedContracts.empty()) {
+    auto *FD = dyn_cast_or_null<FunctionDecl>(FirstDecl);
+    if (FD && !FD->isInvalidDecl()) {
       // A contract on a non-defining function declaration (a prototype, e.g. in
       // a header).  Parse its late-parsed contract predicates so an ill-formed
       // predicate is diagnosed; they attach to this declaration only and are
@@ -2411,6 +2412,16 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       // contract merge for C).
       assert(!FD->isThisDeclarationADefinition());
       ParseLexedFunctionContracts(D.LateParsedContracts, FD, CES_AllScopes);
+    } else {
+      // Nothing to replay the tokens against.  The declarator was cached on
+      // the strength of carrying a function chunk, which a typedef of function
+      // type and a pointer-to-function variable both do without declaring a
+      // function; those get told so, while a declaration that simply failed
+      // has been diagnosed already.
+      DiagnoseUnattachedLateParsedContracts(
+          D, FirstDecl && !FirstDecl->isInvalidDecl()
+                 ? diag::err_contract_on_non_function
+                 : diag::err_contract_on_invalid_declaration);
     }
   }
   D.complete(FirstDecl);

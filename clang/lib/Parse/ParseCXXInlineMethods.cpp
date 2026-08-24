@@ -88,6 +88,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(
 
   if (FnD)
     HandleMemberFunctionDeclDelays(D, FnD);
+  else
+    DiagnoseUnattachedLateParsedContracts(
+        D, diag::err_contract_on_invalid_declaration);
 
   D.complete(FnD);
 

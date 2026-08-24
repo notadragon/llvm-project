@@ -427,6 +427,21 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
   if (!isFunctionContractKeyword(Tok))
     return;
 
+  // A contract specifier belongs to a function.  Written on anything else --
+  // a data member, a variable, a bit-field, or a declarator the parser has
+  // already given up on -- there is no function chunk to take the parameters
+  // and the result type from, so say so and eat the specifier rather than
+  // reading a chunk that is not there.  Caching the tokens is how the
+  // specifier's true extent is known: it may carry a label, a requires-clause,
+  // attributes and captures ahead of the predicate.
+  if (!DeclarationInfo.isFunctionDeclarator()) {
+    // Name the keyword as it was written -- `pre`, `__pre` or C's `_Pre`.
+    Diag(Tok, diag::err_contract_on_non_function) << PP.getSpelling(Tok);
+    CachedTokens Discarded;
+    LateParseFunctionContractSpecifierSeq(Discarded);
+    return;
+  }
+
   std::optional<QualType> CachedType;
   auto ReturnTypeResolver = [&]() {
     if (!CachedType) {
@@ -480,6 +495,23 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
   assert(DeclarationInfo.Contracts == nullptr && "Already have contracts?");
 
   DeclarationInfo.Contracts = Seq;
+}
+
+/// DiagnoseUnattachedLateParsedContracts - Report and discard contract tokens
+/// that were cached for late parsing but never got a declaration to be
+/// replayed against -- either because the declaration they were written on
+/// was too malformed to produce one, or because what it did produce is not a
+/// function.  \p DiagID picks which of those the caller is looking at.  Either
+/// way this keeps the tokens away from Declarator::clear(), whose assertion
+/// would otherwise turn a diagnosable input into a crash.
+void Parser::DiagnoseUnattachedLateParsedContracts(Declarator &D,
+                                                   unsigned DiagID) {
+  if (D.LateParsedContracts.empty())
+    return;
+
+  const Token &Start = D.LateParsedContracts.front();
+  Diag(Start.getLocation(), DiagID) << PP.getSpelling(Start);
+  D.LateParsedContracts.clear();
 }
 
 StmtResult Parser::ParseFunctionContractSpecifierImpl(

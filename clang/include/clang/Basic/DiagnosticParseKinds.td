@@ -1779,4 +1779,10 @@ def warn_contract_on_parameter_declarator : Warning<
   "contract on a parameter declarator is ignored">,
   InGroup<IgnoredAttributes>;
 
+def err_contract_on_non_function : Error<
+  "'%0' can only appear on a function declaration">;
+
+def err_contract_on_invalid_declaration : Error<
+  "'%0' ignored on an invalid declaration">;
+
 } // end of Parser diagnostics
