@@ -678,6 +678,9 @@ __cpp_lib_void_t                                        201411L <type_traits>
 # ifdef __clang_contracts_p3290
 #   define __cpp_lib_assert_can_use_contracts            202606L
 # endif
+# ifdef __clang_contracts_p3100
+#   define __cpp_lib_contracts_implicit                  202608L
+# endif
 # ifdef __cpp_contracts_labels
 #   define __cpp_lib_contracts_labels                    202606L
 # endif
