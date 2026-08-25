@@ -4388,7 +4388,7 @@ void CodeGenFunction::EmitFunctionEpilog(
   // Functions with no result always return void.
   if (!ReturnValue.isValid()) {
     if (!PostContractsHandledByPrologueCleanup)
-      EmitPostContracts(nullptr);
+      EmitPostContractsWithRetvalCleanup(nullptr);
     auto *I = Builder.CreateRetVoid();
     if (RetKeyInstructionsSourceAtom)
       addInstToSpecificSourceAtom(I, nullptr, RetKeyInstructionsSourceAtom);
@@ -4571,12 +4571,12 @@ void CodeGenFunction::EmitFunctionEpilog(
         RV = EmitCMSEClearRecord(RV, ITy, RetTy);
     }
     if (!PostContractsHandledByPrologueCleanup)
-      EmitPostContracts(RV);
+      EmitPostContractsWithRetvalCleanup(RV);
     EmitReturnValueCheck(RV);
     Ret = Builder.CreateRet(RV);
   } else {
     if (!PostContractsHandledByPrologueCleanup)
-      EmitPostContracts(nullptr);
+      EmitPostContractsWithRetvalCleanup(nullptr);
     Ret = Builder.CreateRetVoid();
   }
 

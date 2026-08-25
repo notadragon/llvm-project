@@ -1726,6 +1726,12 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
   if (!RV || RV->isEvaluatable(getContext()))
     ++NumSimpleReturnExprs;
 
+  // The returned object now exists.  Everything still to come -- destroying
+  // the return expression's temporaries, then the enclosing scopes' locals --
+  // can throw, and [except.ctor]/2 requires the returned object to be
+  // destroyed if it does.  Arm the cleanup pushed in StartFunction.
+  setReturnValueLive();
+
   cleanupScope.ForceCleanup();
   EmitBranchThroughCleanup(ReturnBlock);
 }

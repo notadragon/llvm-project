@@ -426,6 +426,20 @@ public:
   /// This is invalid if sret is not in use.
   Address ReturnValuePointer = Address::invalid();
 
+  /// A flag recording whether the returned object has been initialized, so
+  /// that an exception escaping the function afterwards destroys it -- see
+  /// [except.ctor]/2.  Null when the return type needs no destruction, or
+  /// when exceptions are off.  The analogue of GCC's current_retval_sentinel.
+  llvm::Value *ReturnValueLiveFlag = nullptr;
+
+  /// Records that the returned object now exists, arming ReturnValueLiveFlag.
+  void setReturnValueLive() {
+    if (ReturnValueLiveFlag)
+      Builder.CreateStore(Builder.getTrue(), Address(ReturnValueLiveFlag,
+                                                     Builder.getInt1Ty(),
+                                                     CharUnits::One()));
+  }
+
   /// If a return statement is being visited, this holds the return statment's
   /// result expression.
   const Expr *RetExpr = nullptr;
@@ -2660,6 +2674,14 @@ public:
   void EmitReturnValueCheck(llvm::Value *RV);
 
   void EmitPostContracts(llvm::Value *RV);
+
+  /// As EmitPostContracts, but with a cleanup that destroys the returned
+  /// object if a violation handler throws out of the checks.  By then the
+  /// object has been initialized ([stmt.return]/5 sequences postcondition
+  /// evaluation after it), but the prologue cleanup that would otherwise
+  /// cover it has already been popped -- the epilogue runs after
+  /// PopCleanupBlocks(PrologueCleanupDepth).
+  void EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
 
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);

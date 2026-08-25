@@ -763,6 +763,51 @@ static llvm::Constant *getPrologueSignature(CodeGenModule &CGM,
   return CGM.getTargetCodeGenInfo().getUBSanFunctionSignature(CGM);
 }
 
+namespace {
+/// Destroys the returned object when an exception escapes the function after
+/// that object has been initialized -- [except.ctor]/2.  The object lives in
+/// the caller's storage, so no scope cleanup of the callee's covers it.
+///
+/// Only fires once the object exists, which LiveFlag records; before the
+/// return statement runs there is nothing to destroy, and a named return value
+/// is still owned by its own variable's cleanup.
+struct DestroyReturnValueOnUnwind final : EHScopeStack::Cleanup {
+  Address Loc;
+  QualType Ty;
+  llvm::Value *LiveFlag;
+
+  DestroyReturnValueOnUnwind(Address loc, QualType ty, llvm::Value *liveFlag)
+      : Loc(loc), Ty(ty), LiveFlag(liveFlag) {}
+
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    llvm::BasicBlock *RunBB = CGF.createBasicBlock("retval.destroy");
+    llvm::BasicBlock *DoneBB = CGF.createBasicBlock("retval.live.done");
+
+    llvm::Value *Live = CGF.Builder.CreateFlagLoad(LiveFlag, "retval.live");
+    CGF.Builder.CreateCondBr(Live, RunBB, DoneBB);
+
+    CGF.EmitBlock(RunBB);
+    CodeGenFunction::destroyCXXObject(CGF, Loc, Ty);
+    CGF.EmitBranch(DoneBB);
+
+    CGF.EmitBlock(DoneBB);
+  }
+};
+} // namespace
+
+void CodeGenFunction::EmitPostContractsWithRetvalCleanup(llvm::Value *RV) {
+  if (!ReturnValueLiveFlag) {
+    EmitPostContracts(RV);
+    return;
+  }
+
+  RunCleanupsScope Scope(*this);
+  EHStack.pushCleanup<DestroyReturnValueOnUnwind>(EHCleanup, ReturnValue,
+                                                  FnRetTy, ReturnValueLiveFlag);
+  EmitPostContracts(RV);
+  Scope.ForceCleanup();
+}
+
 void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
                                     llvm::Function *Fn,
                                     const CGFunctionInfo &FnInfo,
@@ -1343,6 +1388,54 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   EmitStartEHSpec(CurCodeDecl);
 
   PrologueCleanupDepth = EHStack.stable_begin();
+
+  // A postcondition is checked after the returned object has been initialized
+  // ([stmt.return]/5), so a violation handler that throws unwinds past a live
+  // object in the caller's storage that no scope cleanup of ours covers.
+  // Record whether that object exists, so EmitPostContractsWithRetvalCleanup
+  // can destroy it.  The analogue of GCC's current_retval_sentinel.
+  //
+  // Only the flag is created here, not a cleanup.  A cleanup live across the
+  // body would make EHScopeStack::requiresLandingPad() true from function
+  // entry -- it skips only lifetime markers, not cleanups that are provably
+  // inactive -- turning every potentially-throwing call in the function into
+  // an invoke with a landing pad, to run a cleanup whose flag is still false
+  // there.  The cleanup this flag guards is pushed in the epilogue instead,
+  // after the body is emitted, where it costs nothing.
+  //
+  // Gated on the function actually having a postcondition, so nothing changes
+  // for code that has none.  That deliberately leaves the wider
+  // [except.ctor]/2 case unfixed -- an ordinary local's destructor throwing
+  // after the returned object was initialized, with no contracts involved,
+  // which Clang has never handled.  Fixing that needs the cleanup live across
+  // the body, so it needs the landing-pad cost dealt with first (gate on the
+  // body containing a potentially-throwing destructor, as GCC does).  Tracked
+  // separately; it is a core-language bug, not a contracts one.
+  //
+  // Skipped for a thunk or an implicitly-generated forwarding body (a
+  // lambda's static __invoke, say): those have no return statement of their
+  // own to set the flag.
+  if (getLangOpts().Exceptions && ReturnValue.isValid() &&
+      !RetTy->isVoidType() && !CurFuncIsThunk && CurCodeDecl &&
+      !CurCodeDecl->isImplicit()) {
+    const auto *ContractFD = dyn_cast<FunctionDecl>(CurCodeDecl);
+    bool HasPostcondition = false;
+    if (ContractFD && ContractFD->hasContracts())
+      for (const auto *CS : ContractFD->getContracts()->contracts())
+        if (CS->getContractKind() == ContractKind::Post)
+          HasPostcondition = true;
+
+    if (HasPostcondition)
+      if (const auto *RD = RetTy->getAsCXXRecordDecl())
+        if (RD->hasDefinition() && !RD->hasTrivialDestructor()) {
+          llvm::Value *Zero = Builder.getFalse();
+          RawAddress Flag = CreateTempAlloca(Zero->getType(), CharUnits::One(),
+                                             "retval.live");
+          EnsureInsertPoint();
+          Builder.CreateStore(Zero, Flag);
+          ReturnValueLiveFlag = Flag.getPointer();
+        }
+  }
 
   // Emit OpenMP specific initialization of the device functions.
   if (getLangOpts().OpenMP && CurCodeDecl)
