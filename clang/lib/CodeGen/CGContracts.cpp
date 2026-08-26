@@ -1664,6 +1664,105 @@ void CodeGenFunction::EmitContractStmtAsFullStmt(const ContractStmt &S) {
   emitCheckForSemantic(S, Semantic, /*ContinueBlock=*/nullptr);
 }
 
+/// Build the per-assertion data block the runtime walks, as a stack copy of
+/// the global block with the label's facet pointers appended.  Returns the
+/// pointer to hand the entry point: the extended block when the label carries
+/// a local handler or a query, and the plain global block otherwise.
+///
+/// Both detection paths need this.  The predicate-false path always had it;
+/// the exception path did not, and passed the bare global block instead, so a
+/// throwing predicate reported through a block carrying neither facet -- the
+/// local violation handler was never dispatched to, and query_control_object
+/// answered null.  GCC has always passed one shared block to both entry
+/// points.
+///
+/// Built at the use site rather than hoisted above the try: both callers are
+/// cold (a violation has already been detected), whereas hoisting would put
+/// the label expression's evaluation on the hot path of every check.
+static llvm::Value *emitContractDataBlock(CodeGenFunction &CGF,
+                                          const ContractStmt &S,
+                                          llvm::Value *BasicBlock) {
+  bool HasLocalHandler = S.hasLocalHandler() && S.getLabelExpr();
+  bool HasQuery = S.hasQuery() && S.getLabelExpr();
+  if (!HasLocalHandler && !HasQuery)
+    return BasicBlock;
+
+  CodeGenModule &CGM = CGF.CGM;
+  const auto *LabelRD = S.getLabelExpr()->getType()->getAsCXXRecordDecl();
+  llvm::Function *HandlerTrampoline =
+      (HasLocalHandler && LabelRD)
+          ? getOrCreateLocalHandlerTrampoline(CGM, LabelRD)
+          : nullptr;
+  llvm::Function *QueryTrampoline =
+      (HasQuery && LabelRD) ? getOrCreateQueryTrampoline(CGM, LabelRD)
+                            : nullptr;
+
+  bool EmitHandler = HandlerTrampoline != nullptr;
+  bool EmitQuery = QueryTrampoline != nullptr;
+  if (!EmitHandler && !EmitQuery)
+    return BasicBlock;
+
+  auto &Builder = CGF.Builder;
+  llvm::Value *LabelAddr = CGF.EmitLValue(S.getLabelExpr()).getPointer(CGF);
+
+  // Extended struct: 8 basic fields + handler? + query? + label_ptr.
+  llvm::Type *PtrTy = CGM.VoidPtrTy;
+  llvm::Type *I32Ty = llvm::Type::getInt32Ty(CGF.getLLVMContext());
+  SmallVector<llvm::Type *, 11> FieldTypes = {PtrTy, PtrTy, PtrTy, PtrTy,
+                                              I32Ty, I32Ty, PtrTy, PtrTy};
+  if (EmitHandler)
+    FieldTypes.push_back(PtrTy);
+  if (EmitQuery)
+    FieldTypes.push_back(PtrTy);
+  FieldTypes.push_back(PtrTy); // label_ptr
+
+  llvm::StructType *ExtBlockTy =
+      llvm::StructType::get(CGF.getLLVMContext(), FieldTypes,
+                            /*isPacked=*/false);
+
+  Address ExtBlock = CGF.CreateTempAlloca(
+      ExtBlockTy, CharUnits::fromQuantity(8), "contract.ext.data");
+
+  llvm::Constant *ExtDescTable =
+      getOrCreateDescriptorTable(CGM, EmitHandler, EmitQuery);
+  llvm::Value *ExtBlockRaw = ExtBlock.emitRawPointer(CGF);
+  const llvm::DataLayout &DL = CGM.getModule().getDataLayout();
+
+  for (unsigned i = 0; i < 8; ++i) {
+    llvm::Value *DstFieldPtr =
+        Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, i);
+    if (i == 0) {
+      Builder.CreateDefaultAlignedStore(ExtDescTable, DstFieldPtr);
+    } else {
+      llvm::Value *SrcFieldPtr =
+          Builder.CreateStructGEP(ExtBlockTy, BasicBlock, i);
+      llvm::Value *Val = Builder.CreateAlignedLoad(
+          ExtBlockTy->getStructElementType(i), SrcFieldPtr,
+          CharUnits::fromQuantity(
+              DL.getABITypeAlign(ExtBlockTy->getStructElementType(i)).value()));
+      Builder.CreateDefaultAlignedStore(Val, DstFieldPtr);
+    }
+  }
+
+  unsigned ExtIdx = 8;
+  if (EmitHandler) {
+    llvm::Value *Field =
+        Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx++);
+    Builder.CreateDefaultAlignedStore(HandlerTrampoline, Field);
+  }
+  if (EmitQuery) {
+    llvm::Value *Field =
+        Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx++);
+    Builder.CreateDefaultAlignedStore(QueryTrampoline, Field);
+  }
+  // label_ptr is always last.
+  llvm::Value *LabelField =
+      Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx);
+  Builder.CreateDefaultAlignedStore(LabelAddr, LabelField);
+
+  return ExtBlockRaw;
+}
+
 void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
                                            ContractEvaluationSemantic Semantic,
                                            llvm::BasicBlock *ContinueBlock) {
@@ -1807,8 +1906,11 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
     ExitCXXTryStmtWithCatchIR(*Try, [&] {
       if (Semantic == Enforce || Semantic == Observe ||
           Semantic == NoexceptEnforce || Semantic == NoexceptObserve) {
+        // The same block the predicate-false path builds: the label's local
+        // handler and query have to be reachable from here too.
+        llvm::Value *DataPtr = emitContractDataBlock(*this, S, ViolationInfo);
         EmitCxaContractViolationCall(
-            S.getContractKind(), Semantic, ExceptionRaised, ViolationInfo,
+            S.getContractKind(), Semantic, ExceptionRaised, DataPtr,
             /*IsNoExcept=*/Semantic == NoexceptEnforce ||
                 Semantic == NoexceptObserve,
             IsPostCapture);
@@ -1843,88 +1945,8 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
     EmitBlock(CurContract()->Violation);
     Builder.SetInsertPoint(CurContract()->Violation);
 
-    llvm::Value *DataPtr = CurContract()->ViolationInfoGV;
-
-    // If this contract has a local handler or query, build an extended
-    // data block on the stack with the extra fields appended.
-    bool HasLocalHandler = S.hasLocalHandler() && S.getLabelExpr();
-    bool HasQuery = S.hasQuery() && S.getLabelExpr();
-    if (HasLocalHandler || HasQuery) {
-      QualType LabelTy = S.getLabelExpr()->getType();
-      const auto *LabelRD = LabelTy->getAsCXXRecordDecl();
-      llvm::Function *HandlerTrampoline =
-          (HasLocalHandler && LabelRD)
-              ? getOrCreateLocalHandlerTrampoline(CGM, LabelRD)
-              : nullptr;
-      llvm::Function *QueryTrampoline =
-          (HasQuery && LabelRD) ? getOrCreateQueryTrampoline(CGM, LabelRD)
-                                : nullptr;
-
-      bool EmitHandler = HandlerTrampoline != nullptr;
-      bool EmitQuery = QueryTrampoline != nullptr;
-
-      if (EmitHandler || EmitQuery) {
-        llvm::Value *LabelAddr = EmitLValue(S.getLabelExpr()).getPointer(*this);
-
-        // Build extended struct: 8 basic fields + handler? + query? + label_ptr
-        llvm::Type *PtrTy = CGM.VoidPtrTy;
-        llvm::Type *I32Ty = llvm::Type::getInt32Ty(getLLVMContext());
-        SmallVector<llvm::Type *, 11> FieldTypes = {PtrTy, PtrTy, PtrTy, PtrTy,
-                                                    I32Ty, I32Ty, PtrTy, PtrTy};
-        if (EmitHandler)
-          FieldTypes.push_back(PtrTy);
-        if (EmitQuery)
-          FieldTypes.push_back(PtrTy);
-        FieldTypes.push_back(PtrTy); // label_ptr
-
-        llvm::StructType *ExtBlockTy = llvm::StructType::get(
-            getLLVMContext(), FieldTypes, /*isPacked=*/false);
-
-        Address ExtBlock = CreateTempAlloca(
-            ExtBlockTy, CharUnits::fromQuantity(8), "contract.ext.data");
-
-        llvm::Constant *ExtDescTable =
-            getOrCreateDescriptorTable(CGM, EmitHandler, EmitQuery);
-        llvm::Value *GV = CurContract()->ViolationInfoGV;
-        llvm::Value *ExtBlockRaw = ExtBlock.emitRawPointer(*this);
-        const llvm::DataLayout &DL = CGM.getModule().getDataLayout();
-
-        for (unsigned i = 0; i < 8; ++i) {
-          llvm::Value *DstFieldPtr =
-              Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, i);
-          if (i == 0) {
-            Builder.CreateDefaultAlignedStore(ExtDescTable, DstFieldPtr);
-          } else {
-            llvm::Value *SrcFieldPtr =
-                Builder.CreateStructGEP(ExtBlockTy, GV, i);
-            llvm::Value *Val = Builder.CreateAlignedLoad(
-                ExtBlockTy->getStructElementType(i), SrcFieldPtr,
-                CharUnits::fromQuantity(
-                    DL.getABITypeAlign(ExtBlockTy->getStructElementType(i))
-                        .value()));
-            Builder.CreateDefaultAlignedStore(Val, DstFieldPtr);
-          }
-        }
-
-        unsigned ExtIdx = 8;
-        if (EmitHandler) {
-          llvm::Value *Field =
-              Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx++);
-          Builder.CreateDefaultAlignedStore(HandlerTrampoline, Field);
-        }
-        if (EmitQuery) {
-          llvm::Value *Field =
-              Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx++);
-          Builder.CreateDefaultAlignedStore(QueryTrampoline, Field);
-        }
-        // label_ptr is always last
-        llvm::Value *LabelField =
-            Builder.CreateStructGEP(ExtBlockTy, ExtBlockRaw, ExtIdx);
-        Builder.CreateDefaultAlignedStore(LabelAddr, LabelField);
-
-        DataPtr = ExtBlockRaw;
-      }
-    }
+    llvm::Value *DataPtr =
+        emitContractDataBlock(*this, S, CurContract()->ViolationInfoGV);
 
     // For the _pf path, call the predicate_false entry point.
     EmitCxaContractViolationCall(S.getContractKind(), Semantic, PredicateFailed,
