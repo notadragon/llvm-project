@@ -811,8 +811,32 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
           /*TemplateKWLoc=*/SourceLocation(),
           /*FirstQualifierInScope=*/nullptr, HR,
           /*TemplateArgs=*/nullptr, /*S=*/nullptr);
-      if (!MR.isInvalid())
+      if (!MR.isInvalid()) {
         CS->setHasLocalHandler(true);
+
+        // CodeGen's rethrow shortcut reads the handler's body to decide
+        // whether the predicate needs an EH region at all, and CodeGen has no
+        // Sema to instantiate one with.  For a template specialization --
+        // __combined_label's handler above all, which is the case the
+        // optimization most wants to see -- MarkFunctionReferenced would only
+        // queue the definition until end of TU, by which point an eagerly
+        // emitted guarded function has already been code-generated without
+        // it.  Instantiate it here instead.  This does not cause an
+        // instantiation that would not happen anyway: the trampoline odr-uses
+        // the handler, so its definition is required in this TU regardless.
+        // It only moves that instantiation earlier.
+        for (const auto *M : RD->methods()) {
+          if (!M->getDeclName().isIdentifier() ||
+              M->getName() != "handle_contract_violation")
+            continue;
+          auto *MD = const_cast<CXXMethodDecl *>(M);
+          if (!MD->hasBody() && MD->isTemplateInstantiation())
+            S.InstantiateFunctionDefinition(Loc, MD, /*Recursive=*/false,
+                                            /*DefinitionRequired=*/false,
+                                            /*AtEndOfTU=*/false);
+          break;
+        }
+      }
     } else {
       HR.suppressDiagnostics();
     }

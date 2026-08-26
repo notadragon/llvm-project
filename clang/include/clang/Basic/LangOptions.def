@@ -131,6 +131,7 @@ LANGOPT(ContractsP3850    , 1, 0, NotCompatible, "P3850 contract extensions")
 LANGOPT(ContractsP4299    , 1, 0, NotCompatible, "P4299 C contracts extension")
 LANGOPT(ContractsP4298    , 1, 0, NotCompatible, "P4298 noexcept_enforce and noexcept_observe evaluation semantics")
 LANGOPT(ContractsP4301    , 1, 0, NotCompatible, "D4301 contract_violation::report() ASan/UBSan diagnostic accessor")
+LANGOPT(ContractDisableRethrowShortcut, 1, 0, NotCompatible, "disable eliding the predicate try/catch for an always-rethrowing local violation handler")
 LANGOPT(DllExportInlines  , 1, 1, NotCompatible, "dllexported classes dllexport inline methods")
 LANGOPT(ExperimentalLibrary, 1, 0, NotCompatible, "enable unstable and experimental library features")
 

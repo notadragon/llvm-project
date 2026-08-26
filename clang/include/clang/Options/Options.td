@@ -1925,6 +1925,14 @@ defm contracts_p4301 : BoolFOption<"contracts-p4301",
           "Enable P4301 contract_violation::report() ASan/UBSan diagnostic accessor">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contract_disable_rethrow_shortcut :
+  BoolFOption<"contract-disable-rethrow-shortcut",
+  LangOpts<"ContractDisableRethrowShortcut">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Disable eliding the predicate try/catch for a local violation "
+          "handler that always rethrows">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_allow_assume : BoolFOption<"contracts-allow-assume",
   LangOpts<"ContractOpts.AllowAssume">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
