@@ -460,19 +460,27 @@ struct __combined_label
   handle_contract_violation(const contracts::contract_violation& __v)
     requires (local_violation_label<_Lhs> || local_violation_label<_Rhs>)
   {
+    // A handler may return void, in which case it never claims the violation
+    // and the next component still runs.  The void case has to be split off
+    // before the declaration: `auto __r = <void expression>' is ill-formed, so
+    // testing decltype(__r) afterwards is too late.
     if constexpr (local_violation_label<_Lhs>) {
-      auto __r = _M_lhs.handle_contract_violation(__v);
-      if constexpr (!__is_same(decltype(__r), void))
-        if (static_cast<contracts::violation_handled>(__r)
-            == contracts::violation_handled::handled)
-          return contracts::violation_handled::handled;
+      using _Ret = decltype(_M_lhs.handle_contract_violation(__v));
+      if constexpr (__is_same(_Ret, void))
+        _M_lhs.handle_contract_violation(__v);
+      else if (static_cast<contracts::violation_handled>(
+                 _M_lhs.handle_contract_violation(__v))
+               == contracts::violation_handled::handled)
+        return contracts::violation_handled::handled;
     }
     if constexpr (local_violation_label<_Rhs>) {
-      auto __r = _M_rhs.handle_contract_violation(__v);
-      if constexpr (!__is_same(decltype(__r), void))
-        if (static_cast<contracts::violation_handled>(__r)
-            == contracts::violation_handled::handled)
-          return contracts::violation_handled::handled;
+      using _Ret = decltype(_M_rhs.handle_contract_violation(__v));
+      if constexpr (__is_same(_Ret, void))
+        _M_rhs.handle_contract_violation(__v);
+      else if (static_cast<contracts::violation_handled>(
+                 _M_rhs.handle_contract_violation(__v))
+               == contracts::violation_handled::handled)
+        return contracts::violation_handled::handled;
     }
     return contracts::violation_handled::not_handled;
   }
