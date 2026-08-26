@@ -2,10 +2,10 @@
 // RUN:   -fcontract-evaluation-semantic=noexcept_observe %libcxx_flags \
 // RUN:   -S -emit-llvm -o - | FileCheck %s
 
-// P3400: the rethrow shortcut is restricted to enforce and observe.  The
+// P3400: the bypass is restricted to enforce and observe.  The
 // noexcept semantics (D4298) exist to guarantee nothing propagates out of a
 // check, so their EH region must survive even for a rethrowing handler.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-5.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-5.C)
 
 #include <contracts>
 

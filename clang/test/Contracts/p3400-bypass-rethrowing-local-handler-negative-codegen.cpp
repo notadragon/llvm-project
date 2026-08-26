@@ -2,10 +2,10 @@
 // RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags -S -emit-llvm -o - | \
 // RUN:   FileCheck %s
 
-// P3400: the rethrow shortcut is conservative.  None of these handlers is
+// P3400: the bypass is conservative.  None of these handlers is
 // provably a bare rethrow of the in-flight exception, so every one of these
 // checks keeps its EH region and still calls the _ex entry point.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-4.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-4.C)
 
 #include <contracts>
 #include <exception>

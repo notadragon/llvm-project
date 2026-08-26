@@ -5,7 +5,7 @@
 // P3400: a rethrowing local handler reached through delegation -- a helper
 // function, and a combined label -- still propagates the predicate's
 // exception, whether or not the EH region was elided.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-8.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-8.C)
 
 #include <contracts>
 

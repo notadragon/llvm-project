@@ -2279,7 +2279,7 @@ static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
                                                const ContractStmt &S,
                                                ContractEvaluationSemantic Sem,
                                                bool IsPostCapture) {
-  if (CGF.getLangOpts().ContractDisableRethrowShortcut)
+  if (!CGF.getLangOpts().ContractBypassRethrowingLocalHandler)
     return false;
 
   // Only the two semantics whose handler may legitimately let an exception

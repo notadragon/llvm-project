@@ -814,7 +814,7 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
       if (!MR.isInvalid()) {
         CS->setHasLocalHandler(true);
 
-        // CodeGen's rethrow shortcut reads the handler's body to decide
+        // CodeGen's rethrowing-local-handler bypass reads the handler's body to decide
         // whether the predicate needs an EH region at all, and CodeGen has no
         // Sema to instantiate one with.  For a template specialization --
         // __combined_label's handler above all, which is the case the

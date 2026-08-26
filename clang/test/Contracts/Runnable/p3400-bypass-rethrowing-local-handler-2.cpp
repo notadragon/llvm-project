@@ -2,11 +2,11 @@
 // RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags -o %t
 // RUN: %t
 
-// P3400: the rethrow shortcut applies under enforce as well as observe, and to
+// P3400: the bypass applies under enforce as well as observe, and to
 // all three assertion kinds.  With a rethrowing local handler the exception
 // escapes rather than terminating, which is what the caught-and-rethrown code
 // did too.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-2.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-2.C)
 
 #include <contracts>
 

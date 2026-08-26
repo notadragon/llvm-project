@@ -3,11 +3,11 @@
 // RUN:   FileCheck %s \
 // RUN:     --implicit-check-not=__cxa_contract_violation_pre_enforce_ex
 
-// P3400: codegen for the rethrow shortcut.  Each of these handlers provably
+// P3400: codegen for the bypass.  Each of these handlers provably
 // rethrows an evaluation_exception, so no check wraps its predicate in an EH
 // region -- the _ex entry point, only ever called from that region, is absent.
 // The predicate-false path is untouched, which the positive CHECK pins.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-3.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-3.C)
 
 #include <contracts>
 #include <exception>

@@ -2,7 +2,7 @@
 // RUN:   -fcontract-evaluation-semantic=observe %libcxx_flags -o %t
 // RUN: %t
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontract-disable-rethrow-shortcut \
+// RUN:   -fno-contract-bypass-rethrowing-local-handler \
 // RUN:   -fcontract-evaluation-semantic=observe %libcxx_flags -o %t.off
 // RUN: %t.off
 
@@ -10,8 +10,8 @@
 // rethrowing makes the EH region around the predicate pointless -- the front
 // end elides it and the exception propagates on its own.  Behaviour must be
 // indistinguishable from catching and rethrowing, which is why this runs both
-// with and without -fcontract-disable-rethrow-shortcut.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-1.C)
+// with and without -fno-contract-bypass-rethrowing-local-handler.
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-1.C)
 
 #include <contracts>
 

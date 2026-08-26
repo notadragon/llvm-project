@@ -8019,8 +8019,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                       options::OPT_fno_contracts_p4301);
     Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
                       options::OPT_fno_contracts_allow_assume);
-    Args.addOptInFlag(CmdArgs, options::OPT_fcontract_disable_rethrow_shortcut,
-                      options::OPT_fno_contract_disable_rethrow_shortcut);
+    Args.addOptOutFlag(
+        CmdArgs, options::OPT_fcontract_bypass_rethrowing_local_handler,
+        options::OPT_fno_contract_bypass_rethrowing_local_handler);
   } else if (Args.hasArg(options::OPT_fno_contracts)) {
     // Explicitly disabled (e.g. -std=c++26 -fno-contracts): tell -cc1.
     CmdArgs.push_back("-fno-contracts");

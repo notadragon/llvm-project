@@ -3,13 +3,13 @@
 // RUN:   -S -emit-llvm -o - | FileCheck %s --check-prefix=ELIDED \
 // RUN:     --implicit-check-not=__cxa_contract_violation_pre_enforce_ex
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
-// RUN:   -fcontract-disable-rethrow-shortcut \
+// RUN:   -fno-contract-bypass-rethrowing-local-handler \
 // RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags \
 // RUN:   -S -emit-llvm -o - | FileCheck %s --check-prefix=KEPT
 
-// P3400: -fcontract-disable-rethrow-shortcut turns the optimization off, so a
+// P3400: -fno-contract-bypass-rethrowing-local-handler turns the optimization off, so a
 // handler that would otherwise qualify gets its EH region back.
-// (GCC mirror: g++.dg/contracts/cpp26/p3400-rethrow-shortcut-7.C)
+// (GCC mirror: g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-7.C)
 
 #include <contracts>
 
