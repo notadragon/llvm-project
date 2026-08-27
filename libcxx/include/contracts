@@ -300,19 +300,6 @@ template<identification_label _T>
 constexpr unsigned __group_max_len<_T> =
   sizeof(_T::group_names[0]);
 
-template<typename _Label>
-int __local_violation_trampoline(const void* __label_ptr,
-                                 const void* __cv_ptr) {
-  auto& __l = *static_cast<const _Label*>(__label_ptr);
-  auto& __v = *static_cast<const contracts::contract_violation*>(__cv_ptr);
-  using _Ret = decltype(__l.handle_contract_violation(__v));
-  if constexpr (__is_same(_Ret, void)) {
-    __l.handle_contract_violation(__v);
-    return 0;
-  } else
-    return static_cast<int>(__l.handle_contract_violation(__v));
-}
-
 struct review_t {
   using assertion_control_object = review_t;
   constexpr contracts::evaluation_semantic
