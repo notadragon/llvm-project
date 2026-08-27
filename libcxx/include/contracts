@@ -329,7 +329,7 @@ struct __combined_allowed_semantics_label {
 template<typename _Lhs, typename _Rhs>
   requires allowed_semantics_label<_Lhs>
 struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
-  contracts::evaluation_semantic_set allowed_semantics;
+  const contracts::evaluation_semantic_set allowed_semantics;
   constexpr __combined_allowed_semantics_label(const _Lhs& __l, const _Rhs&)
     : allowed_semantics(__l.allowed_semantics) {}
 };
@@ -337,7 +337,7 @@ struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
 template<typename _Lhs, typename _Rhs>
   requires allowed_semantics_label<_Rhs>
 struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
-  contracts::evaluation_semantic_set allowed_semantics;
+  const contracts::evaluation_semantic_set allowed_semantics;
   constexpr __combined_allowed_semantics_label(const _Lhs&, const _Rhs& __r)
     : allowed_semantics(__r.allowed_semantics) {}
 };
@@ -345,7 +345,7 @@ struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
 template<typename _Lhs, typename _Rhs>
   requires allowed_semantics_label<_Lhs> && allowed_semantics_label<_Rhs>
 struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
-  contracts::evaluation_semantic_set allowed_semantics;
+  const contracts::evaluation_semantic_set allowed_semantics;
   constexpr __combined_allowed_semantics_label(const _Lhs& __l, const _Rhs& __r)
     : allowed_semantics(
         contracts::evaluation_semantic_set(__l.allowed_semantics)

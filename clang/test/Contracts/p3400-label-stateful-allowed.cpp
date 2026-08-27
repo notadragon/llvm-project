@@ -27,11 +27,18 @@ static constexpr int key = 0;
 static constexpr evaluation_semantic_set observe_or_ignore
   = { evaluation_semantic::observe, evaluation_semantic::ignore };
 
-/* Non-static member, with a query facet so the label is materialized.  */
+/* Non-static member, with a query facet so the label is materialized.
+
+   The member is `const' because the concept requires
+   __is_const(decltype(T::allowed_semantics)): a non-const one is not a facet
+   at all, so this test would otherwise be pinning behaviour the library says
+   should not happen.  Const does not weaken what it tests -- it is still a
+   non-static data member, which is the thing that needed the materialized
+   label to fold against.  */
 struct MemAllowed
 {
   using assertion_control_object = MemAllowed;
-  evaluation_semantic_set allowed_semantics;
+  const evaluation_semantic_set allowed_semantics;
   constexpr MemAllowed (evaluation_semantic_set a) : allowed_semantics (a) {}
   void *query (const void *k, __SIZE_TYPE__ i) const
   { return (i != 0 || k != &key) ? nullptr : const_cast<char *> ("M"); }
@@ -51,7 +58,7 @@ struct StatAllowed
 struct MemAllowedNoFacet
 {
   using assertion_control_object = MemAllowedNoFacet;
-  evaluation_semantic_set allowed_semantics;
+  const evaluation_semantic_set allowed_semantics;
   constexpr MemAllowedNoFacet (evaluation_semantic_set a)
     : allowed_semantics (a) {}
 };

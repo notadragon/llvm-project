@@ -558,6 +558,23 @@ static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
     R.suppressDiagnostics();
     return AllContractSemanticsMaskWithExtensions;
   }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return AllContractSemanticsMaskWithExtensions;
+
+  // The concept requires `__is_const(decltype(_T::allowed_semantics))'.  A
+  // `static constexpr' member is const-qualified already, and so is a plain
+  // `const' one; a non-const member is not a facet.  Honouring it anyway
+  // narrowed the semantic set for a label the library says has no
+  // allowed_semantics facet at all, so a bare label and its combined form
+  // disagreed.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return AllContractSemanticsMaskWithExtensions;
 
   Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
@@ -653,6 +670,23 @@ static std::string extractStringFromAPValue(const APValue &Val) {
   return Str;
 }
 
+/// Turn a `group_names' array value into the list of names it holds.
+static SmallVector<std::string> decodeGroupNameArray(const APValue &Val) {
+  if (!Val.isArray())
+    return {};
+
+  SmallVector<std::string> Groups;
+  unsigned InitElts = Val.getArrayInitializedElts();
+  for (unsigned I = 0, N = Val.getArraySize(); I < N; ++I) {
+    const APValue &Elt =
+        (I < InitElts) ? Val.getArrayInitializedElt(I) : Val.getArrayFiller();
+    std::string Str = extractStringFromAPValue(Elt);
+    if (!Str.empty())
+      Groups.push_back(std::move(Str));
+  }
+  return Groups;
+}
+
 // Extract group names from label's group_names member (identification_label).
 // Returns a vector of group name strings; empty if no group_names member.
 static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
@@ -667,6 +701,23 @@ static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
     R.suppressDiagnostics();
     return {};
   }
+  // As for the function facets: a member this context cannot name is not a
+  // facet, and must not be an error.
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return {};
+
+  // group_names may be a *static* data member, which is a VarDecl and so is
+  // not part of the label object's value at all.  P3400's own example spells
+  // it `static constexpr', and the concept accepts either form, so both have
+  // to work.  Reading only fields silently produced no groups, and the
+  // label's group-based configuration then never applied: with
+  // -fcontract-group-evaluation-semantic=safety:observe the labelled contract
+  // stayed at the default semantic and simply never fired.
+  for (auto *D : R)
+    if (auto *VD = dyn_cast<VarDecl>(D->getUnderlyingDecl()))
+      if (const APValue *Val = VD->evaluateValue())
+        return decodeGroupNameArray(*Val);
 
   // Find the field declaration for group_names.
   FieldDecl *GNField = nullptr;
@@ -760,19 +811,9 @@ static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
     }
   }
 
-  if (!FieldVal || !FieldVal->isArray())
+  if (!FieldVal)
     return {};
-
-  SmallVector<std::string> Groups;
-  unsigned InitElts = FieldVal->getArrayInitializedElts();
-  for (unsigned I = 0, N = FieldVal->getArraySize(); I < N; ++I) {
-    const APValue &Elt = (I < InitElts) ? FieldVal->getArrayInitializedElt(I)
-                                        : FieldVal->getArrayFiller();
-    std::string Str = extractStringFromAPValue(Elt);
-    if (!Str.empty())
-      Groups.push_back(std::move(Str));
-  }
-  return Groups;
+  return decodeGroupNameArray(*FieldVal);
 }
 
 // Resolve contract config for any contract (with or without label).
