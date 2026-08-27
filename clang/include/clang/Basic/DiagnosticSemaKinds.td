@@ -13198,6 +13198,9 @@ def err_lambda_decl_ref_not_modifiable_lvalue_contract : Error<
 def err_contract_message_and_attribute : Error<
   "cannot use both a syntactic diagnostic message and "
   "'[[clang::contract_message]]' on the same contract assertion">;
+def err_contract_facet_not_constant : Error<
+  "%0 facet of assertion-control object %1 must be usable in a constant "
+  "expression">, NoSFINAE;
 def err_contract_invalid_label : Error<
   "value of type %0 is not a valid assertion-control label; its type must be a "
   "class type with an 'assertion_control_object' member type">;

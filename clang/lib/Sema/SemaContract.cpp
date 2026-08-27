@@ -233,18 +233,44 @@ static QualType getContractViolationType(Sema &S, SourceLocation Loc) {
   return S.Context.getCanonicalTagType(RD);
 }
 
+/// Constant-evaluate a facet call, reporting failure rather than hiding it.
+///
+/// No concept can ask whether a member is constexpr, so per D3400R5 a type
+/// with the right member *does* participate in the facet, and the error
+/// arrives when the result is consumed during translation -- which is here.
+/// This used to evaluate silently and return "absent" on failure, which is the
+/// quietest way to get this wrong: the label looked applied and the comment or
+/// semantic was simply unchanged, with no diagnostic at all.
+///
+/// The diagnostic is NoSFINAE so the surrounding probe trap, which is there to
+/// keep a wrong-shaped member from being reported, does not swallow a genuine
+/// error.
+static bool evaluateFacetConstant(Sema &S, Expr *Call, Expr::EvalResult &Eval,
+                                  StringRef FacetName, QualType LabelTy,
+                                  SourceLocation Loc) {
+  SmallVector<PartialDiagnosticAt, 8> Notes;
+  Eval.Diag = &Notes;
+  if (Call->EvaluateAsConstantExpr(Eval, S.Context))
+    return true;
+
+  // Unqualified: every assertion-control object is constexpr and therefore
+  // const, so printing that on the type is noise.
+  S.Diag(Loc, diag::err_contract_facet_not_constant)
+      << FacetName << LabelTy.getUnqualifiedType();
+  for (const PartialDiagnosticAt &Note : Notes)
+    S.Diag(Note.first, Note.second);
+  return false;
+}
+
 // Try to call label.member_name(semantic_arg) and constant-evaluate.
 // Returns the integer result, or -1 on failure.
 static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
                                const CXXRecordDecl *RD, StringRef MethodName,
                                unsigned SemVal, SourceLocation Loc) {
-  // A facet concept is a requires-expression, so it is simply false for a
-  // member this context cannot name -- the facet is absent, not an error.
-  // P3400 requires that specifically: a label may carry private helpers named
-  // after a facet (tag dispatch), and those must not make the program
-  // ill-formed.  WithAccessChecking makes the trap swallow access diagnostics
-  // too, which a plain SFINAETrap does not; it must be established before the
-  // lookup, since lookup itself can diagnose access.
+  // Probing must not diagnose: a member of the wrong shape simply means the
+  // facet is absent.  The trap covers only the construction of the call --
+  // constant evaluation below deliberately runs outside it, because a failure
+  // there IS reportable.
   Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
@@ -291,9 +317,9 @@ static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
     return -1;
 
   Expr::EvalResult Eval;
-  if (!Call.get()->EvaluateAsConstantExpr(Eval, S.Context))
+  if (!evaluateFacetConstant(S, Call.get(), Eval, MethodName, LabelTy, Loc) ||
+      !Eval.Val.isInt())
     return -1;
-
   return Eval.Val.getInt().getExtValue();
 }
 
@@ -303,13 +329,10 @@ static StringRef
 callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
                       const CXXRecordDecl *RD, StringRef MethodName,
                       StringRef CurrentVal, bool IsNull, SourceLocation Loc) {
-  // A facet concept is a requires-expression, so it is simply false for a
-  // member this context cannot name -- the facet is absent, not an error.
-  // P3400 requires that specifically: a label may carry private helpers named
-  // after a facet (tag dispatch), and those must not make the program
-  // ill-formed.  WithAccessChecking makes the trap swallow access diagnostics
-  // too, which a plain SFINAETrap does not; it must be established before the
-  // lookup, since lookup itself can diagnose access.
+  // Probing must not diagnose: a member of the wrong shape simply means the
+  // facet is absent.  The trap covers only the construction of the call --
+  // constant evaluation below deliberately runs outside it, because a failure
+  // there IS reportable.
   Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
@@ -360,7 +383,7 @@ callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
     return {};
 
   Expr::EvalResult Eval;
-  if (!Call.get()->EvaluateAsConstantExpr(Eval, S.Context))
+  if (!evaluateFacetConstant(S, Call.get(), Eval, MethodName, LabelTy, Loc))
     return {};
 
   const APValue &Val = Eval.Val;
