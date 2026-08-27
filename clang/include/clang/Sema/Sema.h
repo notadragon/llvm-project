@@ -7148,6 +7148,11 @@ public:
 
   bool InAssertionControlExpression = false;
 
+  /// Label types already checked for near-miss facets, so that a label named
+  /// by a hundred contracts does not warn a hundred times.  The answer depends
+  /// only on the type.
+  llvm::DenseSet<const CXXRecordDecl *> ContractNearMissCheckedLabels;
+
   const ContractScopeRecord *
   getFirstEnclosingContractScopeForContext(const DeclContext *DC) const;
   const ContractScopeRecord *

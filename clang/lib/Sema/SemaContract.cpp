@@ -262,6 +262,145 @@ static bool evaluateFacetConstant(Sema &S, Expr *Call, Expr::EvalResult &Eval,
   return false;
 }
 
+/// The argument list a facet named FacetName is probed with.
+///
+/// Expr is not movable, so the placeholders live in fixed in-place storage
+/// rather than a growable vector; no facet takes more than two arguments.
+struct FacetProbeArgs {
+  std::optional<OpaqueValueExpr> Storage[2];
+  SmallVector<Expr *, 2> Args;
+
+  /// False when the facet takes a shape this does not know how to probe.
+  bool build(Sema &S, StringRef FacetName, NamedDecl *Found,
+             SourceLocation Loc) {
+    unsigned N = 0;
+    auto push = [&](QualType T, ExprValueKind VK) {
+      Storage[N].emplace(Loc, T, VK);
+      Args.push_back(&*Storage[N]);
+      ++N;
+    };
+
+    if (FacetName == "handle_contract_violation") {
+      QualType CVTy = getContractViolationType(S, Loc);
+      if (CVTy.isNull())
+        return false;
+      push(CVTy.withConst(), VK_LValue);
+    } else if (FacetName == "query") {
+      push(S.Context.VoidPtrTy, VK_PRValue);
+      push(S.Context.getSizeType(), VK_PRValue);
+    } else if (FacetName == "compute_comment" ||
+               FacetName == "compute_message") {
+      push(S.Context.getPointerType(S.Context.CharTy.withConst()), VK_PRValue);
+    } else if (FacetName == "compute_semantic") {
+      // Recover the enumeration from the member rather than guessing at it.
+      auto *FD = Found ? dyn_cast<FunctionDecl>(Found->getUnderlyingDecl())
+                       : nullptr;
+      if (!FD || FD->getNumParams() != 1)
+        return false;
+      push(FD->getParamDecl(0)->getType().getNonReferenceType(), VK_PRValue);
+    } else {
+      return false;
+    }
+    return true;
+  }
+};
+
+/// True when calling Found on Obj with the facet's arguments is viable.
+static bool facetCallViable(Sema &S, Expr *Obj, QualType ObjTy,
+                            const CXXRecordDecl *RD, LookupResult &R,
+                            StringRef FacetName, SourceLocation Loc) {
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+  CXXScopeSpec SS;
+  ExprResult MR = S.BuildMemberReferenceExpr(
+      Obj, ObjTy, Loc, /*IsArrow=*/false, SS, /*TemplateKWLoc=*/SourceLocation(),
+      /*FirstQualifierInScope=*/nullptr, R, /*TemplateArgs=*/nullptr,
+      /*S=*/nullptr);
+  if (MR.isInvalid())
+    return false;
+
+  FacetProbeArgs Probe;
+  if (!Probe.build(S, FacetName, R.getRepresentativeDecl(), Loc))
+    return false;
+
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc,
+                                    Probe.Args, Loc, /*ExecConfig=*/nullptr);
+  return !Call.isInvalid();
+}
+
+/// Warn when RD has a member named FacetName that almost provides a facet.
+///
+/// Only two near misses are reported, and each is recognized by relaxing
+/// exactly one thing and seeing whether that alone makes the call viable: an
+/// inaccessible member, and one that is not const.  Anything else stays
+/// silent.  That matters: D3400R5 points out that a label may carry private
+/// helpers sharing a facet's name -- tag-dispatch overloads, say -- and
+/// warning on a name match alone would fire on every one of them.  Relaxing a
+/// single dimension will not make such a helper's signature fit, so it never
+/// reaches a warning.
+static void warnNearMissFacet(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                              const CXXRecordDecl *RD, StringRef FacetName,
+                              SourceLocation Loc) {
+  DeclarationName Name = &S.Context.Idents.get(FacetName);
+
+  auto lookup = [&](LookupResult &R) {
+    return S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)) &&
+           !R.isAmbiguous();
+  };
+
+  LookupResult Raw(S, Name, Loc, Sema::LookupMemberName);
+  if (!lookup(Raw)) {
+    Raw.suppressDiagnostics();
+    return;
+  }
+  Raw.suppressAccessDiagnostics();
+  NamedDecl *Rep = Raw.getRepresentativeDecl();
+
+  // The question detection asked: accessible candidates only, on the const
+  // label.  If that is viable the facet is present and there is nothing to say.
+  LookupResult Accessible(S, Name, Loc, Sema::LookupMemberName);
+  if (!lookup(Accessible)) {
+    Accessible.suppressDiagnostics();
+    return;
+  }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, Accessible);
+  bool AnyAccessible = !Accessible.empty();
+  if (AnyAccessible &&
+      facetCallViable(S, LabelExpr, LabelTy, RD, Accessible, FacetName, Loc))
+    return;
+
+  enum { Inaccessible, NotConst };
+
+  // Relax access only.
+  if (!AnyAccessible &&
+      facetCallViable(S, LabelExpr, LabelTy, RD, Raw, FacetName, Loc)) {
+    S.Diag(Loc, diag::warn_contract_invalid_label_facet)
+        << FacetName << LabelTy.getUnqualifiedType() << Inaccessible;
+    if (Rep)
+      S.Diag(Rep->getLocation(), diag::note_contract_invalid_label_facet);
+    return;
+  }
+
+  // Relax const only.  A facet is always invoked on a constexpr, therefore
+  // const, control object, so a non-const member can never be one.
+  if (AnyAccessible) {
+    QualType NonConstTy = LabelTy.getUnqualifiedType();
+    OpaqueValueExpr NonConstObj(Loc, NonConstTy, VK_LValue);
+    LookupResult Again(S, Name, Loc, Sema::LookupMemberName);
+    if (!lookup(Again)) {
+      Again.suppressDiagnostics();
+      return;
+    }
+    dropInaccessibleFacetCandidates(S, RD, NonConstTy, Again);
+    if (!Again.empty() && facetCallViable(S, &NonConstObj, NonConstTy, RD,
+                                          Again, FacetName, Loc)) {
+      S.Diag(Loc, diag::warn_contract_invalid_label_facet)
+          << FacetName << LabelTy.getUnqualifiedType() << NotConst;
+      if (Rep)
+        S.Diag(Rep->getLocation(), diag::note_contract_invalid_label_facet);
+    }
+  }
+}
+
 // Try to call label.member_name(semantic_arg) and constant-evaluate.
 // Returns the integer result, or -1 on failure.
 static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
@@ -902,6 +1041,19 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         CESem = static_cast<ContractEvaluationSemantic>(CECompute);
     }
     CS->setCESemantic(CESem);
+  }
+
+  // Report members that look like they were meant to be facets but are not.
+  // Once per label type: the answer depends only on the type, and a label is
+  // typically named by many contracts.
+  if (!S.getDiagnostics().isIgnored(diag::warn_contract_invalid_label_facet,
+                                    Loc) &&
+      S.ContractNearMissCheckedLabels.insert(RD).second) {
+    static constexpr StringRef Facets[] = {
+        "compute_semantic", "compute_comment", "compute_message",
+        "handle_contract_violation", "query"};
+    for (StringRef Facet : Facets)
+      warnNearMissFacet(S, LabelExpr, LabelTy, RD, Facet, Loc);
   }
 
   // Step 6: Detect local_violation_label facet.

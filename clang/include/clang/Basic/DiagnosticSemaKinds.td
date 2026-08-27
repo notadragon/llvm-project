@@ -13198,6 +13198,11 @@ def err_lambda_decl_ref_not_modifiable_lvalue_contract : Error<
 def err_contract_message_and_attribute : Error<
   "cannot use both a syntactic diagnostic message and "
   "'[[clang::contract_message]]' on the same contract assertion">;
+def warn_contract_invalid_label_facet : Warning<
+  "assertion-control object %1 does not provide the %0 facet because that "
+  "member is %select{inaccessible|not 'const'}2">,
+  InGroup<ContractInvalidLabelFacet>;
+def note_contract_invalid_label_facet : Note<"declared here">;
 def err_contract_facet_not_constant : Error<
   "%0 facet of assertion-control object %1 must be usable in a constant "
   "expression">, NoSFINAE;

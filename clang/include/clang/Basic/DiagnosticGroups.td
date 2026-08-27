@@ -2027,6 +2027,9 @@ def TrivialAutoVarInit : DiagGroup<"trivial-auto-var-init">;
 
 def ContractViolation : DiagGroup<"contract-violation">;
 
+// Warnings about an assertion-control object that nearly provides a facet.
+def ContractInvalidLabelFacet : DiagGroup<"contract-invalid-label-facet">;
+
 // Warnings about problems in the P3595 contract configuration.
 def ContractConfiguration : DiagGroup<"contract-configuration">;
 
