@@ -515,29 +515,103 @@ static bool StmtCanThrow(const Stmt *S) {
   return false;
 }
 
+/// A facet method found on a label, and where it lives.
+///
+/// ThisOffset is the distance from a LabelRD object to the base subobject the
+/// method belongs to.  The trampolines pass the label pointer straight through
+/// as `this', which is only correct at offset zero, so the offset has to
+/// travel with the method.
+struct LabelMethod {
+  const CXXMethodDecl *Method = nullptr;
+  CharUnits ThisOffset = CharUnits::Zero();
+  explicit operator bool() const { return Method != nullptr; }
+};
+
+static const CXXMethodDecl *findDirectMethod(const CXXRecordDecl *RD,
+                                             StringRef Name) {
+  for (const auto *M : RD->methods())
+    if (M->getDeclName().isIdentifier() &&
+        M->getDeclName().getAsIdentifierInfo()->getName() == Name)
+      return M;
+  return nullptr;
+}
+
+/// The method named Name that lookup finds on LabelRD, searching base classes.
+///
+/// Sema decides whether a facet is present using ordinary name lookup, which
+/// sees inherited members; CodeGen used to scan direct members only, so an
+/// inherited handler or query was detected and then no trampoline was ever
+/// built for it -- the facet silently did nothing.  This mirrors what lookup
+/// does: a direct member hides an inherited one, and a name found along two
+/// independent base paths is ambiguous and so is not found at all.
+///
+/// A facet reachable only through a virtual base is treated as absent.  Its
+/// offset is not a constant the trampoline could apply, and emitting a wrong
+/// one would be worse than not emitting the call.
+static LabelMethod findLabelMethod(ASTContext &Ctx,
+                                   const CXXRecordDecl *LabelRD,
+                                   StringRef Name) {
+  LabelMethod Result;
+  if (const CXXMethodDecl *M = findDirectMethod(LabelRD, Name)) {
+    Result.Method = M;
+    return Result;
+  }
+  if (!LabelRD->hasDefinition())
+    return {};
+
+  for (const CXXBaseSpecifier &Base : LabelRD->bases()) {
+    if (Base.isVirtual())
+      continue;
+    const CXXRecordDecl *BaseRD = Base.getType()->getAsCXXRecordDecl();
+    if (!BaseRD || !BaseRD->hasDefinition())
+      continue;
+    LabelMethod Found = findLabelMethod(Ctx, BaseRD, Name);
+    if (!Found)
+      continue;
+    if (Result)
+      return {}; // Found along two paths: ambiguous, so not found.
+    Result = Found;
+    Result.ThisOffset +=
+        Ctx.getASTRecordLayout(LabelRD).getBaseClassOffset(BaseRD);
+  }
+  return Result;
+}
+
 /// The local violation handler LabelRD carries, or null if it has none.  The
 /// rethrow analysis below has to reason about exactly the method the
 /// trampoline will call, so both go through here.
 static const CXXMethodDecl *
-findLocalViolationHandler(const CXXRecordDecl *LabelRD) {
-  for (const auto *M : LabelRD->methods())
-    if (M->getDeclName().isIdentifier() &&
-        M->getDeclName().getAsIdentifierInfo()->getName() ==
-            "handle_contract_violation")
-      return M;
-  return nullptr;
+findLocalViolationHandler(const CXXRecordDecl *LabelRD, ASTContext &Ctx) {
+  return findLabelMethod(Ctx, LabelRD, "handle_contract_violation").Method;
+}
+
+/// Step a label pointer to the base subobject a facet method belongs to.
+static llvm::Value *adjustToBase(llvm::IRBuilder<> &B, llvm::Value *LabelPtr,
+                                 CharUnits Offset) {
+  if (Offset.isZero())
+    return LabelPtr;
+  return B.CreateConstInBoundsGEP1_64(B.getInt8Ty(), LabelPtr,
+                                      Offset.getQuantity());
 }
 
 static llvm::Function *
 getOrCreateLocalHandlerTrampoline(CodeGenModule &CGM,
                                   const CXXRecordDecl *LabelRD) {
-  const CXXMethodDecl *HCVMethod = findLocalViolationHandler(LabelRD);
+  LabelMethod Found =
+      findLabelMethod(CGM.getContext(), LabelRD, "handle_contract_violation");
+  const CXXMethodDecl *HCVMethod = Found.Method;
   if (!HCVMethod)
     return nullptr;
 
+  // The mangled method name alone does not identify the trampoline: two labels
+  // can inherit the same base method at different offsets, and their
+  // trampolines differ only in the adjustment applied to `this'.  Keep the
+  // historic name for the offset-zero case and disambiguate the rest.
   std::string TrampolineName = ("__clang_contract_local_handler_" +
                                 CGM.getMangledName(GlobalDecl(HCVMethod)))
                                    .str();
+  if (!Found.ThisOffset.isZero())
+    TrampolineName += "_" + llvm::utostr(Found.ThisOffset.getQuantity());
 
   if (auto *Existing = CGM.getModule().getFunction(TrampolineName))
     return Existing;
@@ -575,7 +649,7 @@ getOrCreateLocalHandlerTrampoline(CodeGenModule &CGM,
 
   SmallVector<llvm::Value *, 2> CallArgs;
   if (!IsStatic)
-    CallArgs.push_back(LabelPtrArg);
+    CallArgs.push_back(adjustToBase(B, LabelPtrArg, Found.ThisOffset));
   CallArgs.push_back(ViolationArg);
 
   llvm::Value *CallResult = B.CreateCall(MethodFTy, MethodAddr, CallArgs);
@@ -592,20 +666,16 @@ getOrCreateLocalHandlerTrampoline(CodeGenModule &CGM,
 
 static llvm::Function *
 getOrCreateQueryTrampoline(CodeGenModule &CGM, const CXXRecordDecl *LabelRD) {
-  const CXXMethodDecl *QueryMethod = nullptr;
-  for (const auto *M : LabelRD->methods()) {
-    if (M->getDeclName().isIdentifier() &&
-        M->getDeclName().getAsIdentifierInfo()->getName() == "query") {
-      QueryMethod = M;
-      break;
-    }
-  }
+  LabelMethod Found = findLabelMethod(CGM.getContext(), LabelRD, "query");
+  const CXXMethodDecl *QueryMethod = Found.Method;
   if (!QueryMethod)
     return nullptr;
 
   std::string TrampolineName =
       ("__clang_contract_query_" + CGM.getMangledName(GlobalDecl(QueryMethod)))
           .str();
+  if (!Found.ThisOffset.isZero())
+    TrampolineName += "_" + llvm::utostr(Found.ThisOffset.getQuantity());
 
   if (auto *Existing = CGM.getModule().getFunction(TrampolineName))
     return Existing;
@@ -638,7 +708,7 @@ getOrCreateQueryTrampoline(CodeGenModule &CGM, const CXXRecordDecl *LabelRD) {
 
   SmallVector<llvm::Value *, 3> CallArgs;
   if (!IsStatic)
-    CallArgs.push_back(LabelPtrArg);
+    CallArgs.push_back(adjustToBase(B, LabelPtrArg, Found.ThisOffset));
   CallArgs.push_back(KeyArg);
   CallArgs.push_back(IndexArg);
 
@@ -2294,7 +2364,7 @@ static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
   if (!LabelRD)
     return false;
 
-  const CXXMethodDecl *HCV = findLocalViolationHandler(LabelRD);
+  const CXXMethodDecl *HCV = findLocalViolationHandler(LabelRD, CGF.getContext());
   if (!HCV || HCV->isVirtual())
     return false;
 

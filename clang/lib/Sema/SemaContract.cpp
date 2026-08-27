@@ -169,11 +169,83 @@ ExprResult Sema::ActOnContractAssertCondition(Expr *Cond) {
   return Cond;
 }
 
+/// Drop facet candidates this context cannot name, leaving R empty if none
+/// remain.
+///
+/// A facet concept is a requires-expression, so it is simply false for an
+/// inaccessible member: the facet is absent, not an error.  P3400 requires
+/// exactly that, because a label may carry private helpers named after a facet
+/// (tag dispatch) and those must not make the program ill-formed.
+///
+/// Filtering the candidates up front, rather than letting the probe fail on
+/// access, is deliberate.  Contracts are parsed as part of a declarator, and
+/// Clang *delays* access checking across a declaration so it can be redone
+/// once the declaration's context is known.  A probe run inside an SFINAE trap
+/// therefore observes no access failure at all -- the check is not skipped, it
+/// is parked, and it fires later against the contract, long after the trap has
+/// been destroyed.  That is how a private helper turned into a hard error.
+/// Removing the candidate means no member reference is ever built for it, so
+/// no access check is queued in the first place.
+static void dropInaccessibleFacetCandidates(Sema &S, const CXXRecordDecl *RD,
+                                            QualType LabelTy,
+                                            LookupResult &R) {
+  LookupResult::Filter F = R.makeFilter();
+  while (F.hasNext()) {
+    NamedDecl *D = F.next();
+    if (!S.IsSimplyAccessible(D, const_cast<CXXRecordDecl *>(RD), LabelTy))
+      F.erase();
+  }
+  F.done();
+  R.suppressAccessDiagnostics();
+}
+
+/// The library's std::contracts::contract_violation, or a null QualType when
+/// <contracts> is not in scope.
+///
+/// Facet detection needs the real type.  The concepts ask whether the member
+/// is callable with a `const contract_violation&', and probing with anything
+/// else -- the member's own parameter type, say -- would be circular and would
+/// admit a same-named helper of a different shape as a facet.
+static QualType getContractViolationType(Sema &S, SourceLocation Loc) {
+  NamespaceDecl *Std = S.getStdNamespace();
+  if (!Std)
+    return QualType();
+
+  LookupResult NR(S, &S.Context.Idents.get("contracts"), Loc,
+                  Sema::LookupNamespaceName);
+  if (!S.LookupQualifiedName(NR, Std)) {
+    NR.suppressDiagnostics();
+    return QualType();
+  }
+  auto *Contracts = NR.getAsSingle<NamespaceDecl>();
+  if (!Contracts)
+    return QualType();
+
+  LookupResult CR(S, &S.Context.Idents.get("contract_violation"), Loc,
+                  Sema::LookupTagName);
+  if (!S.LookupQualifiedName(CR, Contracts)) {
+    CR.suppressDiagnostics();
+    return QualType();
+  }
+  auto *RD = CR.getAsSingle<CXXRecordDecl>();
+  if (!RD)
+    return QualType();
+  return S.Context.getCanonicalTagType(RD);
+}
+
 // Try to call label.member_name(semantic_arg) and constant-evaluate.
 // Returns the integer result, or -1 on failure.
 static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
                                const CXXRecordDecl *RD, StringRef MethodName,
                                unsigned SemVal, SourceLocation Loc) {
+  // A facet concept is a requires-expression, so it is simply false for a
+  // member this context cannot name -- the facet is absent, not an error.
+  // P3400 requires that specifically: a label may carry private helpers named
+  // after a facet (tag dispatch), and those must not make the program
+  // ill-formed.  WithAccessChecking makes the trap swallow access diagnostics
+  // too, which a plain SFINAETrap does not; it must be established before the
+  // lookup, since lookup itself can diagnose access.
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
   if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
@@ -182,8 +254,10 @@ static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
     R.suppressDiagnostics();
     return -1;
   }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return -1;
 
-  Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
 
   ExprResult MemberRef =
@@ -229,6 +303,14 @@ static StringRef
 callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
                       const CXXRecordDecl *RD, StringRef MethodName,
                       StringRef CurrentVal, bool IsNull, SourceLocation Loc) {
+  // A facet concept is a requires-expression, so it is simply false for a
+  // member this context cannot name -- the facet is absent, not an error.
+  // P3400 requires that specifically: a label may carry private helpers named
+  // after a facet (tag dispatch), and those must not make the program
+  // ill-formed.  WithAccessChecking makes the trap swallow access diagnostics
+  // too, which a plain SFINAETrap does not; it must be established before the
+  // lookup, since lookup itself can diagnose access.
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
   DeclarationName Name = &S.Context.Idents.get(MethodName);
   LookupResult R(S, Name, Loc, Sema::LookupMemberName);
   if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
@@ -237,8 +319,10 @@ callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
     R.suppressDiagnostics();
     return {};
   }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return {};
 
-  Sema::SFINAETrap Trap(S);
   CXXScopeSpec SS;
 
   ExprResult MemberRef =
@@ -799,19 +883,41 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
 
   // Step 6: Detect local_violation_label facet.
   {
+    // See callLabelMethod: an inaccessible member means the facet is absent.
+    Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
     DeclarationName HCVName =
         &S.Context.Idents.get("handle_contract_violation");
     LookupResult HR(S, HCVName, Loc, Sema::LookupMemberName);
     if (S.LookupQualifiedName(HR, const_cast<CXXRecordDecl *>(RD)) &&
         !HR.isAmbiguous()) {
-      Sema::SFINAETrap Trap(S);
+      dropInaccessibleFacetCandidates(S, RD, LabelTy, HR);
       CXXScopeSpec SS;
-      ExprResult MR = S.BuildMemberReferenceExpr(
+      ExprResult MR = HR.empty() ? ExprError() : S.BuildMemberReferenceExpr(
           LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
           /*TemplateKWLoc=*/SourceLocation(),
           /*FirstQualifierInScope=*/nullptr, HR,
           /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+      // Forming the member reference is not enough to decide the facet: it
+      // succeeds for a member of any signature, and on a const label it
+      // succeeds even for a non-const member, because the constness of the
+      // implicit object argument is only checked when the call is built.  The
+      // concept asks whether `__t.handle_contract_violation(__v)' is valid for
+      // a `const _T __t', so build exactly that and see.  Use BuildCallExpr
+      // rather than BuildCallToMemberFunction, which asserts on the member
+      // reference produced for a static member.
+      bool Viable = false;
       if (!MR.isInvalid()) {
+        QualType CVTy = getContractViolationType(S, Loc);
+        if (!CVTy.isNull()) {
+          OpaqueValueExpr CVArg(Loc, CVTy.withConst(), VK_LValue);
+          Expr *ArgExprs[] = {&CVArg};
+          ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc,
+                                            ArgExprs, Loc,
+                                            /*ExecConfig=*/nullptr);
+          Viable = !Call.isInvalid();
+        }
+      }
+      if (Viable) {
         CS->setHasLocalHandler(true);
 
         // CodeGen's rethrowing-local-handler bypass reads the handler's body to decide
@@ -844,13 +950,15 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
 
   // Step 6b: Detect queryable_label facet.
   {
+    // See callLabelMethod: an inaccessible member means the facet is absent.
+    Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
     DeclarationName QName = &S.Context.Idents.get("query");
     LookupResult QR(S, QName, Loc, Sema::LookupMemberName);
     if (S.LookupQualifiedName(QR, const_cast<CXXRecordDecl *>(RD)) &&
         !QR.isAmbiguous()) {
-      Sema::SFINAETrap Trap(S);
+      dropInaccessibleFacetCandidates(S, RD, LabelTy, QR);
       CXXScopeSpec SS;
-      ExprResult MR = S.BuildMemberReferenceExpr(
+      ExprResult MR = QR.empty() ? ExprError() : S.BuildMemberReferenceExpr(
           LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
           /*TemplateKWLoc=*/SourceLocation(),
           /*FirstQualifierInScope=*/nullptr, QR,
@@ -860,8 +968,16 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         OpaqueValueExpr KeyArg(Loc, S.Context.VoidPtrTy, VK_PRValue);
         OpaqueValueExpr IdxArg(Loc, S.Context.getSizeType(), VK_PRValue);
         Expr *ArgExprs[] = {&KeyArg, &IdxArg};
-        ExprResult Call = S.BuildCallToMemberFunction(nullptr, QueryMember, Loc,
-                                                      ArgExprs, Loc);
+        // BuildCallToMemberFunction asserts that its callee has bound-member
+        // or overload type, which the member reference for a *static* query
+        // does not -- it is an ordinary function lvalue -- so calling it here
+        // crashed the compiler on a static member.  A static member satisfies
+        // the concept (`__t.query(...)' is valid for one), so this has to
+        // work.  BuildCallExpr dispatches on the callee's actual form and
+        // handles both.
+        ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, QueryMember, Loc,
+                                          ArgExprs, Loc,
+                                          /*ExecConfig=*/nullptr);
         if (!Call.isInvalid() && Call.get()->getType()->isVoidPointerType())
           CS->setHasQuery(true);
       }
