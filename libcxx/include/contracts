@@ -202,53 +202,75 @@ struct empty_label_t {
 };
 inline constexpr empty_label_t empty_label{};
 
+// The facet concepts below follow D3400R5.  They are spelled with the __is_*
+// builtins rather than <type_traits>/<concepts> so that <contracts> keeps its
+// short include list; the requirements are the paper's.
+//
+// Every facet is invoked on a constexpr -- therefore const -- control object,
+// so each requires-expression uses a const lvalue.  A member that is not
+// usable that way, whether because it is non-const or because it is
+// inaccessible, means the type simply does not participate in the facet.
+
 template<typename _T>
-concept semantic_computation_label = requires(const _T& __t, contracts::evaluation_semantic __s) {
-  __t.compute_semantic(__s);
-  requires __is_same(decltype(__t.compute_semantic(__s)), contracts::evaluation_semantic);
-};
+concept assertion_control_object = requires { typename _T::assertion_control_object; };
+
+template<typename _T>
+concept semantic_computation_label =
+  assertion_control_object<_T> &&
+  requires(const _T __t, contracts::evaluation_semantic __s) {
+    contracts::evaluation_semantic(__t.compute_semantic(__s));
+  };
 
 template<typename _T>
 concept allowed_semantics_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(const _T& __t) {
+  assertion_control_object<_T> &&
+  requires(const _T __t) {
+    requires __is_const(decltype(_T::allowed_semantics));
     contracts::evaluation_semantic_set({__t.allowed_semantics});
   };
 
 template<typename _T>
 concept local_violation_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(_T __t, const contracts::contract_violation& __v) {
+  assertion_control_object<_T> &&
+  requires(const _T __t, const contracts::contract_violation& __v) {
     __t.handle_contract_violation(__v);
+    requires __is_same(decltype(__t.handle_contract_violation(__v)), void) ||
+             __is_convertible(decltype(__t.handle_contract_violation(__v)), contracts::violation_handled);
   };
 
 template<typename _T>
 concept queryable_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(const _T& __t, const void* __key, std::size_t __index) {
+  assertion_control_object<_T> &&
+  requires(const _T __t, const void* __key, std::size_t __index) {
     __t.query(__key, __index);
     requires __is_same(decltype(__t.query(__key, __index)), void*);
   };
 
+// D3400R5 spells this as "group_names is a range whose elements convert to
+// string_view".  Rendered here as an indexable sequence of things that convert
+// to const char*, which avoids pulling <ranges> and <string_view> into this
+// header and matches what the rest of the implementation can consume --
+// __group_count is sizeof-based and so requires an array regardless.
 template<typename _T>
 concept identification_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(const _T& __t) {
-    __t.group_names;
+  assertion_control_object<_T> &&
+  requires(const _T __t) {
+    __t.group_names[0];
+    requires __is_convertible(decltype(__t.group_names[0]), const char*);
   };
 
 template<typename _T>
 concept compute_comment_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(const _T& __t, const char* __c) {
-    __t.compute_comment(__c);
+  assertion_control_object<_T> &&
+  requires(const _T __t, const char* __c) {
+    requires __is_convertible(decltype(__t.compute_comment(__c)), const char*);
   };
 
 template<typename _T>
 concept compute_message_label =
-  requires { typename _T::assertion_control_object; } &&
-  requires(const _T& __t, const char* __m) {
-    __t.compute_message(__m);
+  assertion_control_object<_T> &&
+  requires(const _T __t, const char* __m) {
+    requires __is_convertible(decltype(__t.compute_message(__m)), const char*);
   };
 
 template<unsigned _N>
@@ -457,7 +479,7 @@ struct __combined_label
   }
 
   contracts::violation_handled
-  handle_contract_violation(const contracts::contract_violation& __v)
+  handle_contract_violation(const contracts::contract_violation& __v) const
     requires (local_violation_label<_Lhs> || local_violation_label<_Rhs>)
   {
     // A handler may return void, in which case it never claims the violation
