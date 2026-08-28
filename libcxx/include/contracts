@@ -225,7 +225,7 @@ template<typename _T>
 concept allowed_semantics_label =
   assertion_control_object<_T> &&
   requires(const _T __t) {
-    requires __is_const(decltype(_T::allowed_semantics));
+    requires __is_const(decltype(__t.allowed_semantics));
     contracts::evaluation_semantic_set({__t.allowed_semantics});
   };
 
