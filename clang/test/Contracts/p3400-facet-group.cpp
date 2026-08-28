@@ -26,7 +26,7 @@ void k(int x) pre<"safety"group | review>(x > 0) {}
 // Custom identification_label type
 struct my_groups_t {
   using assertion_control_object = my_groups_t;
-  char group_names[2][16] = {"safety", "logging"};
+  const char group_names[2][16] = {"safety", "logging"};
 };
 constexpr my_groups_t my_groups{};
 
@@ -35,7 +35,7 @@ void l(int x) pre<my_groups>(x > 0) {}
 // Combined custom groups with allowed_semantics
 struct guarded_t {
   using assertion_control_object = guarded_t;
-  char group_names[1][8] = {"audit"};
+  const char group_names[1][8] = {"audit"};
   static constexpr evaluation_semantic_set allowed_semantics =
     evaluation_semantic_set(evaluation_semantic::observe)
     | evaluation_semantic_set(evaluation_semantic::enforce);

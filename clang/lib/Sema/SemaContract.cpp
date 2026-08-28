@@ -707,6 +707,19 @@ static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
   if (R.empty())
     return {};
 
+  // P3400 requires is_const_v<decltype(t.group_names)>, so that nothing
+  // implies a label's group membership could change at run time and have an
+  // effect -- the names are read during translation and never again.  An
+  // array of const elements is itself a const-qualified type, so both the
+  // `static constexpr' and the const-non-static spellings qualify.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return {};
+
   // group_names may be a *static* data member, which is a VarDecl and so is
   // not part of the label object's value at all.  P3400's own example spells
   // it `static constexpr', and the concept accepts either form, so both have

@@ -255,6 +255,7 @@ template<typename _T>
 concept identification_label =
   assertion_control_object<_T> &&
   requires(const _T __t) {
+    requires __is_const(decltype(__t.group_names));
     __t.group_names[0];
     requires __is_convertible(decltype(__t.group_names[0]), const char*);
   };
@@ -273,14 +274,31 @@ concept compute_message_label =
     requires __is_convertible(decltype(__t.compute_message(__m)), const char*);
   };
 
+// A minimal index sequence.  <utility> is deliberately not included here.
+template<class _Tp, _Tp... _I>
+struct __gn_seq {};
+
+template<unsigned _N>
+using __make_gn_seq = __make_integer_seq<__gn_seq, unsigned, _N>;
+
 template<unsigned _N>
 struct assertion_group_label {
   using assertion_control_object = assertion_group_label<_N>;
-  char group_names[1][_N];
-  constexpr assertion_group_label(const char (&__name)[_N]) {
-    for (unsigned __i = 0; __i < _N; ++__i)
-      group_names[0][__i] = __name[__i];
-  }
+  const char group_names[1][_N];
+
+  constexpr assertion_group_label(const char (&__name)[_N])
+    : assertion_group_label(__name, __make_gn_seq<_N>{}) {}
+
+private:
+  // A const member cannot be filled by assignment in the constructor body, so
+  // the characters are installed by a pack expansion in the mem-initializer.
+  // The private delegating constructor does not stop this being a structural
+  // type: that constrains members, not constructors, and ""group needs the
+  // type as a non-type template parameter.
+  template<unsigned... _I>
+  constexpr assertion_group_label(const char (&__name)[_N],
+                                  __gn_seq<unsigned, _I...>)
+    : group_names{{__name[_I]...}} {}
 };
 
 template<assertion_group_label _G>
@@ -352,6 +370,65 @@ struct __combined_allowed_semantics_label<_Lhs, _Rhs> {
         & contracts::evaluation_semantic_set(__r.allowed_semantics)) {}
 };
 
+// Group-name merging for combined labels.
+//
+// D3400R5 says a combined label's group_names is the sorted, unique union of
+// its constituents'.  The result is computed once into this mutable buffer and
+// then copied into the const member through a pack expansion: a const array
+// cannot be sorted in place, and an array cannot be returned by value, so the
+// buffer is what carries the answer out of the merge.
+//
+// The extent is a type-level upper bound (the sum of the constituents'
+// counts), because the number of *distinct* names depends on values the
+// constructor cannot see at class scope.  Duplicates therefore leave empty
+// rows at the end, which every consumer skips.
+template<unsigned _Nm, unsigned _Ml>
+struct __gn_buf {
+  char __a[_Nm][_Ml] = {};
+};
+
+constexpr int __gn_cmp(const char* __x, const char* __y) {
+  while (*__x && *__x == *__y) {
+    ++__x;
+    ++__y;
+  }
+  return (int)(unsigned char)*__x - (int)(unsigned char)*__y;
+}
+
+// Append every row of __t.group_names to __b at __n; return the new count.
+template<unsigned _Nm, unsigned _Ml, typename _Tp>
+constexpr unsigned __gn_append(__gn_buf<_Nm, _Ml>& __b, unsigned __n,
+                               const _Tp& __t) {
+  for (unsigned __i = 0; __i < __group_count<_Tp>; ++__i, ++__n)
+    for (unsigned __j = 0; __j < __group_max_len<_Tp> && __j < _Ml; ++__j)
+      __b.__a[__n][__j] = __t.group_names[__i][__j];
+  return __n;
+}
+
+template<unsigned _Nm, unsigned _Ml>
+constexpr void __gn_sort_unique(__gn_buf<_Nm, _Ml>& __b, unsigned __n) {
+  for (unsigned __i = 1; __i < __n; ++__i)
+    for (unsigned __j = __i;
+         __j > 0 && __gn_cmp(__b.__a[__j - 1], __b.__a[__j]) > 0; --__j)
+      for (unsigned __k = 0; __k < _Ml; ++__k) {
+        char __t = __b.__a[__j - 1][__k];
+        __b.__a[__j - 1][__k] = __b.__a[__j][__k];
+        __b.__a[__j][__k] = __t;
+      }
+
+  unsigned __w = 0;
+  for (unsigned __i = 0; __i < __n; ++__i)
+    if (__i == 0 || __gn_cmp(__b.__a[__i], __b.__a[__w - 1]) != 0) {
+      if (__w != __i)
+        for (unsigned __k = 0; __k < _Ml; ++__k)
+          __b.__a[__w][__k] = __b.__a[__i][__k];
+      ++__w;
+    }
+  for (unsigned __i = __w; __i < __n; ++__i)
+    for (unsigned __k = 0; __k < _Ml; ++__k)
+      __b.__a[__i][__k] = '\0';
+}
+
 template<typename _Lhs, typename _Rhs>
 struct __combined_identification_label {
   constexpr __combined_identification_label(const _Lhs&, const _Rhs&) {}
@@ -362,14 +439,23 @@ template<typename _Lhs, typename _Rhs>
 struct __combined_identification_label<_Lhs, _Rhs> {
   static constexpr unsigned __lc = __group_count<_Lhs>;
   static constexpr unsigned __ml = __group_max_len<_Lhs>;
-  char group_names[__lc][__ml];
+  const char group_names[__lc][__ml];
+
   constexpr __combined_identification_label(const _Lhs& __l, const _Rhs&)
-    : group_names{}
-  {
-    for (unsigned __i = 0; __i < __lc; ++__i)
-      for (unsigned __j = 0; __j < __ml; ++__j)
-        group_names[__i][__j] = __l.group_names[__i][__j];
+    : __combined_identification_label(__merge(__l),
+                                      __make_gn_seq<__lc * __ml>{}) {}
+
+private:
+  static constexpr __gn_buf<__lc, __ml> __merge(const _Lhs& __l) {
+    __gn_buf<__lc, __ml> __b;
+    __gn_sort_unique(__b, __gn_append(__b, 0u, __l));
+    return __b;
   }
+
+  template<unsigned... _I>
+  constexpr __combined_identification_label(const __gn_buf<__lc, __ml>& __b,
+                                            __gn_seq<unsigned, _I...>)
+    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
@@ -377,14 +463,23 @@ template<typename _Lhs, typename _Rhs>
 struct __combined_identification_label<_Lhs, _Rhs> {
   static constexpr unsigned __rc = __group_count<_Rhs>;
   static constexpr unsigned __ml = __group_max_len<_Rhs>;
-  char group_names[__rc][__ml];
+  const char group_names[__rc][__ml];
+
   constexpr __combined_identification_label(const _Lhs&, const _Rhs& __r)
-    : group_names{}
-  {
-    for (unsigned __i = 0; __i < __rc; ++__i)
-      for (unsigned __j = 0; __j < __ml; ++__j)
-        group_names[__i][__j] = __r.group_names[__i][__j];
+    : __combined_identification_label(__merge(__r),
+                                      __make_gn_seq<__rc * __ml>{}) {}
+
+private:
+  static constexpr __gn_buf<__rc, __ml> __merge(const _Rhs& __r) {
+    __gn_buf<__rc, __ml> __b;
+    __gn_sort_unique(__b, __gn_append(__b, 0u, __r));
+    return __b;
   }
+
+  template<unsigned... _I>
+  constexpr __combined_identification_label(const __gn_buf<__rc, __ml>& __b,
+                                            __gn_seq<unsigned, _I...>)
+    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
@@ -396,23 +491,25 @@ struct __combined_identification_label<_Lhs, _Rhs> {
   static constexpr unsigned __ml =
     __group_max_len<_Lhs> > __group_max_len<_Rhs>
       ? __group_max_len<_Lhs> : __group_max_len<_Rhs>;
-  char group_names[__tc][__ml];
-  constexpr __combined_identification_label(const _Lhs& __l,
-                                            const _Rhs& __r)
-    : group_names{}
-  {
-    unsigned __idx = 0;
-    for (unsigned __i = 0; __i < __lc; ++__i) {
-      for (unsigned __j = 0; __j < __group_max_len<_Lhs>; ++__j)
-        group_names[__idx][__j] = __l.group_names[__i][__j];
-      ++__idx;
-    }
-    for (unsigned __i = 0; __i < __rc; ++__i) {
-      for (unsigned __j = 0; __j < __group_max_len<_Rhs>; ++__j)
-        group_names[__idx][__j] = __r.group_names[__i][__j];
-      ++__idx;
-    }
+  const char group_names[__tc][__ml];
+
+  constexpr __combined_identification_label(const _Lhs& __l, const _Rhs& __r)
+    : __combined_identification_label(__merge(__l, __r),
+                                      __make_gn_seq<__tc * __ml>{}) {}
+
+private:
+  static constexpr __gn_buf<__tc, __ml> __merge(const _Lhs& __l,
+                                                const _Rhs& __r) {
+    __gn_buf<__tc, __ml> __b;
+    unsigned __n = __gn_append(__b, 0u, __l);
+    __gn_sort_unique(__b, __gn_append(__b, __n, __r));
+    return __b;
   }
+
+  template<unsigned... _I>
+  constexpr __combined_identification_label(const __gn_buf<__tc, __ml>& __b,
+                                            __gn_seq<unsigned, _I...>)
+    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
