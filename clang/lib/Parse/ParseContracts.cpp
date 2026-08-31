@@ -486,8 +486,18 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
                    : ContractScopeOffset::FunctionContext,
         IsInvalidTmp);
     IsInvalid |= IsInvalidTmp;
-    if (Contract.isUsable())
-      Contracts.push_back(Contract.getAs<ContractStmt>());
+    // dyn_cast, not ActionResult::getAs -- that is a static_cast, so anything
+    // other than a ContractStmt would be stored as a bogus ContractStmt rather
+    // than caught.  Nothing should produce one; treat it as invalid if it does
+    // rather than filing garbage into the specifier.
+    if (Contract.isUsable()) {
+      auto *CS = dyn_cast_if_present<ContractStmt>(Contract.get());
+      assert(CS && "contract specifier did not produce a ContractStmt");
+      if (CS)
+        Contracts.push_back(CS);
+      else
+        IsInvalid = true;
+    }
   }
   ContractSpecifierDecl *Seq = Actions.ActOnFinishContractSpecifierSequence(
       Contracts, StartLoc, IsInvalid);
@@ -898,8 +908,16 @@ bool Parser::ParseLexedFunctionContracts(
     bool IsInvalidTmp = false;
     StmtResult Contract = ParseFunctionContractSpecifierImpl(
         ReturnTypeResolver, ContractScopeOffset::FunctionContext, IsInvalidTmp);
-    if (Contract.isUsable())
-      Contracts.push_back(Contract.getAs<ContractStmt>());
+    // dyn_cast, not ActionResult::getAs -- see the same guard in
+    // ParseContractSpecifierSequence for why a static_cast is unsafe here.
+    if (Contract.isUsable()) {
+      auto *CS = dyn_cast_if_present<ContractStmt>(Contract.get());
+      assert(CS && "contract specifier did not produce a ContractStmt");
+      if (CS)
+        Contracts.push_back(CS);
+      else
+        IsInvalidTmp = true;
+    }
     IsInvalid |= IsInvalidTmp;
   }
   ContractSpecifierDecl *Seq = Actions.ActOnFinishContractSpecifierSequence(

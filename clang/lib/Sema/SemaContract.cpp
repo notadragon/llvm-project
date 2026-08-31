@@ -1512,7 +1512,35 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
     return Res;
   }
 
-  return ActOnFinishFullStmt(Res.get());
+  // Deliberately NOT ActOnFinishFullStmt: a contract assertion is not an
+  // expression-statement, and the generic full-statement finalization would
+  // rewrite it into something that is no longer a ContractStmt.  Whenever
+  // Cleanup is still dirty, MaybeCreateStmtWithCleanups wraps its argument in
+  // CompoundStmt -> StmtExpr -> ExprWithCleanups; every caller then files the
+  // result away with ActionResult::getAs<ContractStmt>(), which is a
+  // static_cast, so the wrapper lands in the ContractSpecifierDecl as a bogus
+  // ContractStmt and the next walk of the contract list reads garbage.
+  //
+  // Cleanup is dirty here exactly when the predicate is type-dependent -- so
+  // ActOnContractAssertCondition returned early, before the ActOnCondition ->
+  // ActOnFinishFullExpr that would otherwise have reset it -- and the
+  // predicate nonetheless holds a non-dependent temporary with a non-trivial
+  // destructor.
+  //
+  // Those cleanups must still be discharged rather than merely skipped: the
+  // contract's expression evaluation context is potentially-evaluated, so
+  // PopExpressionEvaluationContext MERGES its cleanup state into the parent
+  // instead of restoring it, and the flag would escape all the way out to
+  // ActOnFinishFunctionBody's "Unaccounted cleanups in function" assertion.
+  // Discarding them is right, and is the only thing ActOnFinishFullStmt was
+  // usefully doing here: a dependent predicate's temporaries are created
+  // afresh -- and their cleanups re-registered -- when TransformCondition
+  // re-finalizes the predicate at instantiation.  A non-dependent predicate
+  // has nothing to discard, because ActOnContractAssertCondition already
+  // turned its cleanups into an ExprWithCleanups on the condition itself.
+  CleanupVarDeclMarking();
+  DiscardCleanupsInEvaluationContext();
+  return Res;
 }
 
 /// ActOnResultNameDeclarator - Called from Parser::ParseFunctionDeclarator()
@@ -2211,7 +2239,11 @@ void Sema::InstantiateContractSpecifier(
       IsInvalid = true;
       continue;
     }
-    if (auto *NewCS = NewStmt.getAs<ContractStmt>())
+    // dyn_cast, not ActionResult::getAs: the latter is a static_cast, so this
+    // test never actually filtered anything.  TransformContractStmt hands back
+    // a NullStmt for a contract P4283 discarded, and that must be dropped
+    // rather than reinterpreted as a ContractStmt.
+    if (auto *NewCS = dyn_cast_if_present<ContractStmt>(NewStmt.get()))
       NewContracts.push_back(NewCS);
   }
 
@@ -2306,9 +2338,14 @@ void Sema::ActOnContractsOnFinishFunctionDecl(FunctionDecl *D,
            FunctionDecl::TK_FunctionTemplateSpecialization);
     assert(FD->getTemplatedKind() != FunctionDecl::TK_MemberSpecialization);
 
-    ContractSpecifierDecl *NewCSD = RebuildContractSpecifierForDecl(First, FD);
-    NewCSD->setOwningFunction(FD);
-    FD->setContracts(NewCSD);
+    // Null when every contract was discarded by an unsatisfied P4283
+    // requires-clause; RebuildContractSpecifierForDecl has already cleared the
+    // definition's specifier in that case.
+    if (ContractSpecifierDecl *NewCSD =
+            RebuildContractSpecifierForDecl(First, FD)) {
+      NewCSD->setOwningFunction(FD);
+      FD->setContracts(NewCSD);
+    }
   }
 
   if (!FD->hasContracts())
@@ -2421,8 +2458,20 @@ Sema::RebuildContractSpecifierForDecl(FunctionDecl *First, FunctionDecl *Def) {
     StmtResult NewStmt = Rebuilder.TransformContractStmt(CS);
     if (NewStmt.isInvalid())
       IsInvalid = true;
-    else
-      NewContracts.push_back(NewStmt.getAs<ContractStmt>());
+    // dyn_cast, not ActionResult::getAs, which is a static_cast: a contract
+    // discarded by an unsatisfied P4283 requires-clause comes back as a
+    // NullStmt and must be dropped, not stored as a bogus ContractStmt.
+    else if (auto *NewCS = dyn_cast_if_present<ContractStmt>(NewStmt.get()))
+      NewContracts.push_back(NewCS);
+  }
+
+  // Every contract discarded by an unsatisfied P4283 requires-clause and none
+  // left: the definition simply has no contracts.  ContractSpecifierDecl::
+  // Create requires at least one contract unless the specifier is invalid, and
+  // this is not an error, so leave the definition without a specifier.
+  if (NewContracts.empty() && !IsInvalid) {
+    Def->setContracts(nullptr);
+    return nullptr;
   }
 
   auto *CSD = BuildContractSpecifierDecl(
@@ -2488,8 +2537,17 @@ DeclResult Sema::RebuildContractsWithPlaceholderReturnType(FunctionDecl *FD) {
     StmtResult NewStmt = Rebuilder.TransformContractStmt(CS);
     if (NewStmt.isInvalid())
       IsInvalid = true;
-    else
-      NewContracts.push_back(NewStmt.getAs<ContractStmt>());
+    // dyn_cast, not ActionResult::getAs -- see RebuildContractSpecifierForDecl.
+    else if (auto *NewCS = dyn_cast_if_present<ContractStmt>(NewStmt.get()))
+      NewContracts.push_back(NewCS);
+  }
+
+  // As in RebuildContractSpecifierForDecl: everything discarded by an
+  // unsatisfied requires-clause is not an error, and an empty specifier cannot
+  // be built, so the function is left with none.
+  if (NewContracts.empty() && !IsInvalid) {
+    FD->setContracts(nullptr);
+    return DeclResult(/*IsInvalid*/ false);
   }
 
   auto *NewCSD = BuildContractSpecifierDecl(
@@ -2542,12 +2600,14 @@ void Sema::ActOnContractsOnFinishFunctionBody(FunctionDecl *Def) {
       Def->setInvalidDecl(true);
       return;
     }
-    auto *NewCSD = Res.getAs<ContractSpecifierDecl>();
-    assert(NewCSD);
-    NewCSD->setOwningFunction(Def);
-    Def->setContracts(NewCSD);
-    if (NewCSD->isInvalidDecl())
-      Def->setInvalidDecl(true);
+    // Null when every contract was discarded by an unsatisfied P4283
+    // requires-clause; the rebuild has already cleared the specifier.
+    if (auto *NewCSD = dyn_cast_if_present<ContractSpecifierDecl>(Res.get())) {
+      NewCSD->setOwningFunction(Def);
+      Def->setContracts(NewCSD);
+      if (NewCSD->isInvalidDecl())
+        Def->setInvalidDecl(true);
+    }
   }
 
   if (const LambdaScopeInfo *LSI =
