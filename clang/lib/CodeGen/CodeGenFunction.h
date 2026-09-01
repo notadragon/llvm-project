@@ -435,9 +435,9 @@ public:
   /// Records that the returned object now exists, arming ReturnValueLiveFlag.
   void setReturnValueLive() {
     if (ReturnValueLiveFlag)
-      Builder.CreateStore(Builder.getTrue(), Address(ReturnValueLiveFlag,
-                                                     Builder.getInt1Ty(),
-                                                     CharUnits::One()));
+      Builder.CreateStore(
+          Builder.getTrue(),
+          Address(ReturnValueLiveFlag, Builder.getInt1Ty(), CharUnits::One()));
   }
 
   /// If a return statement is being visited, this holds the return statment's

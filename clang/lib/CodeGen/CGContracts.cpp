@@ -548,9 +548,8 @@ static const CXXMethodDecl *findDirectMethod(const CXXRecordDecl *RD,
 /// A facet reachable only through a virtual base is treated as absent.  Its
 /// offset is not a constant the trampoline could apply, and emitting a wrong
 /// one would be worse than not emitting the call.
-static LabelMethod findLabelMethod(ASTContext &Ctx,
-                                   const CXXRecordDecl *LabelRD,
-                                   StringRef Name) {
+static LabelMethod
+findLabelMethod(ASTContext &Ctx, const CXXRecordDecl *LabelRD, StringRef Name) {
   LabelMethod Result;
   if (const CXXMethodDecl *M = findDirectMethod(LabelRD, Name)) {
     Result.Method = M;
@@ -2315,7 +2314,8 @@ RethrowOutcome RethrowAnalysis::walkStmt(const Stmt *S) {
         return RO_Fail;
       // Only assignments to locals we are already tracking; a store anywhere
       // else is an observable effect.
-      const auto *LHS = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
+      const auto *LHS =
+          dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
       const auto *VD = LHS ? dyn_cast<VarDecl>(LHS->getDecl()) : nullptr;
       if (!VD || !Env.count(VD))
         return RO_Fail;
@@ -2360,11 +2360,13 @@ static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
   if (!S.hasLocalHandler() || !S.getLabelExpr())
     return false;
 
-  const CXXRecordDecl *LabelRD = S.getLabelExpr()->getType()->getAsCXXRecordDecl();
+  const CXXRecordDecl *LabelRD =
+      S.getLabelExpr()->getType()->getAsCXXRecordDecl();
   if (!LabelRD)
     return false;
 
-  const CXXMethodDecl *HCV = findLocalViolationHandler(LabelRD, CGF.getContext());
+  const CXXMethodDecl *HCV =
+      findLocalViolationHandler(LabelRD, CGF.getContext());
   if (!HCV || HCV->isVirtual())
     return false;
 
@@ -2376,9 +2378,9 @@ static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
   if (!Body || HCV->getNumParams() != 1)
     return false;
 
-  RethrowAnalysis Analysis(HCV->getParamDecl(0), Sem,
-                           assertionKindValue(S.getContractKind(),
-                                              IsPostCapture));
+  RethrowAnalysis Analysis(
+      HCV->getParamDecl(0), Sem,
+      assertionKindValue(S.getContractKind(), IsPostCapture));
   return Analysis.walkStmt(Body) == RO_Rethrown;
 }
 

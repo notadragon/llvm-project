@@ -168,11 +168,12 @@ public:
     FriendScope = 0x80000000,
 
     /// The scope introduced by a pre, post, or contract_assert.
-    //
-    // FIXME(Ericwf): This scope in unlike others, where it doesn't applied
-    // to the entire scope, but only to the statement that introduced it.
-    // This is a bit of a hack, but it's the simplest way to get the
-    // functionality we need.
+    ///
+    /// Unlike most scope flags, this one describes only the statement that
+    /// introduced it rather than everything nested within it: a contract's
+    /// predicate is its own full-expression, and the constification and
+    /// result-name rules apply to that predicate alone, not to any scope a
+    /// lambda or statement-expression inside it may open.
     ContractAssertScope = 0x100000000,
 
     /// This is the scope of a condition variable (e.g. the declaration in

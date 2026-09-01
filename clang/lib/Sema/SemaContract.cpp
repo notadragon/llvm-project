@@ -187,8 +187,7 @@ ExprResult Sema::ActOnContractAssertCondition(Expr *Cond) {
 /// Removing the candidate means no member reference is ever built for it, so
 /// no access check is queued in the first place.
 static void dropInaccessibleFacetCandidates(Sema &S, const CXXRecordDecl *RD,
-                                            QualType LabelTy,
-                                            LookupResult &R) {
+                                            QualType LabelTy, LookupResult &R) {
   LookupResult::Filter F = R.makeFilter();
   while (F.hasNext()) {
     NamedDecl *D = F.next();
@@ -293,8 +292,8 @@ struct FacetProbeArgs {
       push(S.Context.getPointerType(S.Context.CharTy.withConst()), VK_PRValue);
     } else if (FacetName == "compute_semantic") {
       // Recover the enumeration from the member rather than guessing at it.
-      auto *FD = Found ? dyn_cast<FunctionDecl>(Found->getUnderlyingDecl())
-                       : nullptr;
+      auto *FD =
+          Found ? dyn_cast<FunctionDecl>(Found->getUnderlyingDecl()) : nullptr;
       if (!FD || FD->getNumParams() != 1)
         return false;
       push(FD->getParamDecl(0)->getType().getNonReferenceType(), VK_PRValue);
@@ -312,7 +311,8 @@ static bool facetCallViable(Sema &S, Expr *Obj, QualType ObjTy,
   Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
   CXXScopeSpec SS;
   ExprResult MR = S.BuildMemberReferenceExpr(
-      Obj, ObjTy, Loc, /*IsArrow=*/false, SS, /*TemplateKWLoc=*/SourceLocation(),
+      Obj, ObjTy, Loc, /*IsArrow=*/false, SS,
+      /*TemplateKWLoc=*/SourceLocation(),
       /*FirstQualifierInScope=*/nullptr, R, /*TemplateArgs=*/nullptr,
       /*S=*/nullptr);
   if (MR.isInvalid())
@@ -1121,11 +1121,13 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         !HR.isAmbiguous()) {
       dropInaccessibleFacetCandidates(S, RD, LabelTy, HR);
       CXXScopeSpec SS;
-      ExprResult MR = HR.empty() ? ExprError() : S.BuildMemberReferenceExpr(
-          LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
-          /*TemplateKWLoc=*/SourceLocation(),
-          /*FirstQualifierInScope=*/nullptr, HR,
-          /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+      ExprResult MR = HR.empty()
+                          ? ExprError()
+                          : S.BuildMemberReferenceExpr(
+                                LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                /*TemplateKWLoc=*/SourceLocation(),
+                                /*FirstQualifierInScope=*/nullptr, HR,
+                                /*TemplateArgs=*/nullptr, /*S=*/nullptr);
       // Forming the member reference is not enough to decide the facet: it
       // succeeds for a member of any signature, and on a const label it
       // succeeds even for a non-const member, because the constness of the
@@ -1140,18 +1142,19 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         if (!CVTy.isNull()) {
           OpaqueValueExpr CVArg(Loc, CVTy.withConst(), VK_LValue);
           Expr *ArgExprs[] = {&CVArg};
-          ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc,
-                                            ArgExprs, Loc,
-                                            /*ExecConfig=*/nullptr);
+          ExprResult Call =
+              S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc, ArgExprs, Loc,
+                              /*ExecConfig=*/nullptr);
           Viable = !Call.isInvalid();
         }
       }
       if (Viable) {
         CS->setHasLocalHandler(true);
 
-        // CodeGen's rethrowing-local-handler bypass reads the handler's body to decide
-        // whether the predicate needs an EH region at all, and CodeGen has no
-        // Sema to instantiate one with.  For a template specialization --
+        // CodeGen's rethrowing-local-handler bypass reads the handler's body to
+        // decide whether the predicate needs an EH region at all, and CodeGen
+        // has no Sema to instantiate one with.  For a template specialization
+        // --
         // __combined_label's handler above all, which is the case the
         // optimization most wants to see -- MarkFunctionReferenced would only
         // queue the definition until end of TU, by which point an eagerly
@@ -1187,11 +1190,13 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         !QR.isAmbiguous()) {
       dropInaccessibleFacetCandidates(S, RD, LabelTy, QR);
       CXXScopeSpec SS;
-      ExprResult MR = QR.empty() ? ExprError() : S.BuildMemberReferenceExpr(
-          LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
-          /*TemplateKWLoc=*/SourceLocation(),
-          /*FirstQualifierInScope=*/nullptr, QR,
-          /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+      ExprResult MR = QR.empty()
+                          ? ExprError()
+                          : S.BuildMemberReferenceExpr(
+                                LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                /*TemplateKWLoc=*/SourceLocation(),
+                                /*FirstQualifierInScope=*/nullptr, QR,
+                                /*TemplateArgs=*/nullptr, /*S=*/nullptr);
       if (!MR.isInvalid()) {
         Expr *QueryMember = MR.get();
         OpaqueValueExpr KeyArg(Loc, S.Context.VoidPtrTy, VK_PRValue);
@@ -1204,9 +1209,9 @@ static void applyLabelFacets(Sema &S, ContractStmt *CS) {
         // the concept (`__t.query(...)' is valid for one), so this has to
         // work.  BuildCallExpr dispatches on the callee's actual form and
         // handles both.
-        ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, QueryMember, Loc,
-                                          ArgExprs, Loc,
-                                          /*ExecConfig=*/nullptr);
+        ExprResult Call =
+            S.BuildCallExpr(/*Scope=*/nullptr, QueryMember, Loc, ArgExprs, Loc,
+                            /*ExecConfig=*/nullptr);
         if (!Call.isInvalid() && Call.get()->getType()->isVoidPointerType())
           CS->setHasQuery(true);
       }
