@@ -1015,10 +1015,17 @@ bool tools::wantsCxxContracts(const ArgList &Args) {
     return false;
   if (Args.hasArg(options::OPT_fcontracts))
     return true;
-  // C++26 mode enables contracts.
+  // C++26 and later enable contracts.  EVERY standard at or above C++26
+  // belongs in this list, in both its year and its provisional spelling, and
+  // the next one must be added when it appears -- omitting c++2d is how this
+  // silently stopped enabling contracts there while GCC still did, so a
+  // contract became a syntax error on one compiler and not the other.  (GCC
+  // had the mirror image of this bug in g++spec.cc, where the same list
+  // decides whether to link the contracts runtime.)
   StringRef Std = Args.getLastArgValue(options::OPT_std_EQ);
   if (Std == "c++26" || Std == "gnu++26" || Std == "c++2c" ||
-      Std == "gnu++2c" || Std == "c++latest" || Std == "gnu++latest")
+      Std == "gnu++2c" || Std == "c++2d" || Std == "gnu++2d" ||
+      Std == "c++latest" || Std == "gnu++latest")
     return true;
   // Any per-paper C++ contracts sub-flag implies -fcontracts.  The C-only
   // -fcontracts-p4299 is deliberately excluded.
