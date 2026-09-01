@@ -1,8 +1,14 @@
 // RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 \
 // RUN:   -fcontract-evaluation-semantic=ignore \
 // RUN:   -fcontract-group-evaluation-semantic=safety:observe \
-// RUN:   -Wno-contract-invalid-label-facet %libcxx_flags -o %t
+// RUN:   %libcxx_flags -o %t
 // RUN: %t
+
+// This deliberately does NOT pass -Wno-contract-invalid-label-facet.  It used
+// to, which suppressed nothing -- the near-miss warning probes the function
+// facets only, never the data-member ones -- while reading as though the
+// non-const group_names below were diagnosed and were being silenced here,
+// the opposite of the truth.
 
 // P3400: group_names must be const, and combining sorts and de-duplicates.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-facet-group-const.C)

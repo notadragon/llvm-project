@@ -2,6 +2,17 @@
 // RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags -S -emit-llvm -o - | \
 // RUN:   FileCheck %s \
 // RUN:     --implicit-check-not=__cxa_contract_violation_pre_enforce_ex
+//
+// And again under -g.  GCC lost this optimization to debug info and nothing
+// caught it, because every test there compiled without -g -- while Compiler
+// Explorer, and most real builds, always pass it (gnu_gcc: the walk treated
+// DEBUG_BEGIN_STMT as an unanalysable statement).  Clang walks the AST and so
+// never had that hole, but nothing pinned it either.  GCC mirror:
+// g++.dg/contracts/cpp26/p3400-bypass-rethrowing-local-handler-9.C.
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3400 -g \
+// RUN:   -fcontract-evaluation-semantic=enforce %libcxx_flags -S -emit-llvm -o - | \
+// RUN:   FileCheck %s \
+// RUN:     --implicit-check-not=__cxa_contract_violation_pre_enforce_ex
 
 // P3400: codegen for the bypass.  Each of these handlers provably
 // rethrows an evaluation_exception, so no check wraps its predicate in an EH
