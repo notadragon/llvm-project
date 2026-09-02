@@ -9,8 +9,14 @@
 // variables, and [basic.contract.eval] says the behaviour is "as if the
 // function body exits via that same exception", describing a state in which
 // the result object was never initialized.  We destroy it anyway; leaking an
-// object the program can no longer reach is not a defensible reading, and a
-// core issue is owed.  Do NOT "fix" this test back to expecting a leak.
+// object the program can no longer reach is not a defensible reading.
+//
+// A core issue has been filed for this at
+// <https://github.com/cplusplus/cwg/issues/988> (it has no CWG issue number
+// yet), proposing that [except.ctor]/2 be extended to cover an exception
+// escaping the evaluation of a postcondition assertion.  Until that resolves,
+// this test deliberately runs ahead of the wording: do NOT "fix" it back to
+// expecting a leak on the strength of the wording as it stands.
 //
 // GCC does the same, via g++.dg/contracts/cpp26/contract-retval-destroyed-on-
 // unwind.C, so the two compilers agree here.
