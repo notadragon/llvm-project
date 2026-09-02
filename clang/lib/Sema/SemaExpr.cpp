@@ -20052,7 +20052,25 @@ bool Sema::tryCaptureVariable(ValueDecl *Var, SourceLocation ExprLoc,
   // Exception: Function parameters are not tied to the function's DeclContext
   // until we enter the function definition. Capturing them anyway would result
   // in an out-of-bounds error while traversing DC and its parents.
-  if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod())
+  //
+  // ...except inside a contract assertion. [expr.prim.lambda.capture]/3.3
+  // permits a capture-default or simple-capture in a lambda whose innermost
+  // enclosing scope is a contract-assertion scope, so a lambda written in a
+  // pre/post predicate may capture the enclosing function's parameters. A
+  // free function's predicate is parsed off the declarator, before the
+  // parameters are reparented onto the function, so this early return is
+  // exactly what such a capture hits -- and because it returns "nothing to
+  // capture" rather than diagnosing, Sema accepted the reference with no
+  // capture recorded and CodeGen then died on a DeclRefExpr that is not in
+  // LocalDeclMap. (A member function's contract is late-parsed once the class
+  // is complete, so its parameters already have a function DeclContext, which
+  // is why only free functions were affected.)
+  //
+  // Let the scope walk below run instead: it terminates on the enclosing
+  // context the parameter does belong to, and it is what produces the
+  // err_lambda_impcap diagnostic a bare [] must get.
+  if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod() &&
+      !getFirstEnclosingContractScopeForContext(CurContext))
     return true;
 
   const auto *VD = dyn_cast<VarDecl>(Var);
@@ -20124,8 +20142,19 @@ bool Sema::tryCaptureVariable(ValueDecl *Var, SourceLocation ExprLoc,
     if (LSI && !LSI->AfterParameterList) {
       // This allows capturing parameters from a default value which does not
       // seems correct
+      //
+      // A simple-capture in a lambda inside a contract assertion is resolved
+      // from ActOnLambdaExpressionAfterIntroducer, before the lambda's own
+      // parameter list is parsed, so it arrives here; and the enclosing
+      // function's parameters are not reparented onto it yet, so
+      // isFunctionOrMethod() is false. That combination is well-formed under
+      // [expr.prim.lambda.capture]/3.3 -- let the walk continue. (Note the
+      // bail-out below is "return true", i.e. nothing to capture, so with
+      // assertions off this path silently dropped the capture and CodeGen
+      // later died on the DeclRefExpr.)
       if (isa<ParmVarDecl>(Var) &&
-          !Var->getDeclContext()->isFunctionOrMethod()) {
+          !Var->getDeclContext()->isFunctionOrMethod() &&
+          !getFirstEnclosingContractScopeForContext(CurContext)) {
         assert(false);
         return true;
       }

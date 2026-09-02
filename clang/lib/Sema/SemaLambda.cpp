@@ -1419,10 +1419,17 @@ void Sema::ActOnLambdaClosureQualifiers(LambdaIntroducer &Intro,
   // For DR1632, we also allow a capture-default in any context where we can
   // odr-use 'this' (in particular, in a default initializer for a non-static
   // data member).
+  // As with DR1632, a capture-default is also allowed where the lambda appears
+  // within a contract assertion and its innermost enclosing scope is the
+  // corresponding contract-assertion scope
+  // ([expr.prim.lambda.capture]/3.3). On a free function the predicate is
+  // parsed off the declarator, so the lambda's parent is not yet a function
+  // and this check would otherwise reject a well-formed [&] or [=].
   if (Intro.Default != LCD_None &&
       !LSI->Lambda->getParent()
            ->getEnclosingNonExpansionStatementContext()
            ->isFunctionOrMethod() &&
+      !getFirstEnclosingContractScopeForContext(CurContext) &&
       (getCurrentThisType().isNull() ||
        CheckCXXThisCapture(SourceLocation(), /*Explicit=*/true,
                            /*BuildAndDiagnose=*/false)))
