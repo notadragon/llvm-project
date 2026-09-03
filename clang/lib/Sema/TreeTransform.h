@@ -1643,9 +1643,11 @@ public:
                                        Label, Captures, Attrs, RequiresClause);
   }
 
-  DeclResult RebuildContractSpecifierDecl(ArrayRef<ContractStmt *> Stmts,
-                                          bool IsInvalid) {
-    return getSema().ActOnFinishContractSpecifierSequence(Stmts, IsInvalid);
+  ContractSpecifierDecl *
+  RebuildContractSpecifierDecl(ArrayRef<ContractStmt *> Stmts,
+                               SourceLocation Loc, bool IsInvalid) {
+    return getSema().ActOnFinishContractSpecifierSequence(Stmts, Loc,
+                                                          IsInvalid);
   }
 
   /// Build a new Objective-C \@try statement.
@@ -16750,6 +16752,41 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
   getDerived().transformedLocalDecl(E->getCallOperator(), {NewCallOperator});
+
+  // Carry the contracts over to the new call operator.
+  //
+  // Without this they are simply dropped: CreateLambdaCallOperator builds a
+  // fresh method, and nothing else copies them, so a `pre' or `post' on a
+  // lambda inside a template was silently not checked -- no diagnostic, no
+  // violation, the predicate never evaluated.  The same lambda outside a
+  // template was fine, which is what kept it hidden.
+  //
+  // This has to happen after CompleteLambdaCallOperator above, so the
+  // parameters the predicates name have been transformed and registered, and
+  // before the body below, which is where the checks are emitted from.
+  if (ContractSpecifierDecl *OldCSD = E->getCallOperator()->getContracts()) {
+    SmallVector<ContractStmt *, 4> NewContracts;
+    bool ContractsInvalid = OldCSD->isInvalidDecl();
+    for (ContractStmt *CS : OldCSD->contracts()) {
+      StmtResult NewCS = getDerived().TransformContractStmt(CS);
+      if (NewCS.isInvalid()) {
+        ContractsInvalid = true;
+        continue;
+      }
+      // A contract whose P4283 requires-clause is not satisfied transforms
+      // away; there is simply nothing to carry over for it.
+      if (auto *CStmt = dyn_cast_or_null<ContractStmt>(NewCS.get()))
+        NewContracts.push_back(CStmt);
+    }
+
+    if (ContractSpecifierDecl *NewCSD =
+            getDerived().RebuildContractSpecifierDecl(
+                NewContracts, OldCSD->getLocation(), ContractsInvalid)) {
+      NewCSD->setOwningFunction(NewCallOperator);
+      NewCallOperator->setContracts(NewCSD);
+    } else if (!NewContracts.empty())
+      Invalid = true;
+  }
 
   {
     // Number the lambda for linkage purposes if necessary.
