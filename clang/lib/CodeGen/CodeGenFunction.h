@@ -2673,7 +2673,10 @@ public:
   /// Emit a test that checks if the return value \p RV is nonnull.
   void EmitReturnValueCheck(llvm::Value *RV);
 
-  void EmitPostContracts(llvm::Value *RV);
+  /// Emit the postconditions.  Returns the value the function should return:
+  /// a postcondition's result binding names the return slot, so a predicate
+  /// may have written to it and RV can be stale on return.
+  llvm::Value *EmitPostContracts(llvm::Value *RV);
 
   /// As EmitPostContracts, but with a cleanup that destroys the returned
   /// object if a violation handler throws out of the checks.  By then the
@@ -2681,7 +2684,7 @@ public:
   /// evaluation after it), but the prologue cleanup that would otherwise
   /// cover it has already been popped -- the epilogue runs after
   /// PopCleanupBlocks(PrologueCleanupDepth).
-  void EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
+  llvm::Value *EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
 
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);

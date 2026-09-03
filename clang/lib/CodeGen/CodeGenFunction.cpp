@@ -795,17 +795,17 @@ struct DestroyReturnValueOnUnwind final : EHScopeStack::Cleanup {
 };
 } // namespace
 
-void CodeGenFunction::EmitPostContractsWithRetvalCleanup(llvm::Value *RV) {
-  if (!ReturnValueLiveFlag) {
-    EmitPostContracts(RV);
-    return;
-  }
+llvm::Value *
+CodeGenFunction::EmitPostContractsWithRetvalCleanup(llvm::Value *RV) {
+  if (!ReturnValueLiveFlag)
+    return EmitPostContracts(RV);
 
   RunCleanupsScope Scope(*this);
   EHStack.pushCleanup<DestroyReturnValueOnUnwind>(EHCleanup, ReturnValue,
                                                   FnRetTy, ReturnValueLiveFlag);
-  EmitPostContracts(RV);
+  RV = EmitPostContracts(RV);
   Scope.ForceCleanup();
+  return RV;
 }
 
 void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,

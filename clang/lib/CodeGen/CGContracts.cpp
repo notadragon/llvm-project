@@ -2710,7 +2710,12 @@ void CodeGenFunction::EmitVirtualContractWrapperBody(llvm::Function *Fn,
   llvm::Value *RetVal = (!ResultType->isVoidType() && Slot.isNull())
                             ? RV.getScalarVal()
                             : nullptr;
-  EmitPostContracts(RetVal);
+  // A predicate may mutate through the result binding, which names the return
+  // slot, so take back whatever EmitPostContracts leaves there -- the same
+  // reason the ordinary epilogue does.
+  if (llvm::Value *NewRetVal = EmitPostContracts(RetVal);
+      NewRetVal && NewRetVal != RetVal)
+    RV = RValue::get(NewRetVal);
 
   // Emit return via the thunk pattern.
   if (!ResultType->isVoidType() && Slot.isNull())

@@ -4571,7 +4571,7 @@ void CodeGenFunction::EmitFunctionEpilog(
         RV = EmitCMSEClearRecord(RV, ITy, RetTy);
     }
     if (!PostContractsHandledByPrologueCleanup)
-      EmitPostContractsWithRetvalCleanup(RV);
+      RV = EmitPostContractsWithRetvalCleanup(RV);
     EmitReturnValueCheck(RV);
     Ret = Builder.CreateRet(RV);
   } else {
@@ -4590,12 +4590,12 @@ void CodeGenFunction::EmitFunctionEpilog(
     addInstToNewSourceAtom(Ret, Backup);
 }
 
-void CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
+llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   SmallVector<const ContractStmt *, 4> PostContracts;
   const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl);
 
   if (!FD || !FD->hasContracts())
-    return;
+    return RV;
 
   ContractSpecifierDecl *CSD = FD->getContracts();
   assert(CSD);
@@ -4632,6 +4632,33 @@ void CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
     EmitBlock(SkipBB);
   }
   enableDebugInfo();
+
+  // The result binding names the return slot -- OVEBind above bound it to
+  // ReturnValue, after storing RV there -- so a predicate that mutates it
+  // has written to that slot and RV is now stale.  The caller is about to
+  // return RV, so re-read it.
+  //
+  // A predicate we evaluate is evaluated faithfully: [basic.contract.eval]
+  // permits not evaluating one, but not evaluating one and then discarding
+  // what it did.  GCC makes the same mutation observable (gnu_gcc
+  // 20eed05e8c4).
+  //
+  // Only when we did the store: with no result name there is nothing bound
+  // to the slot, and with no RV there is nothing to re-read.
+  //
+  // And only when a plain load reproduces what the caller is returning.  RV
+  // is not always a straight load of the slot -- a small class comes back
+  // coerced to some other type ({ i64, i64 } for a four-int struct, i32 for a
+  // one-int struct) -- and re-reading the slot there yields the wrong IR type
+  // and a broken module.  Comparing the types keeps this to the case the
+  // epilogue itself would have loaded.  An indirectly-returned (sret) result
+  // needs nothing: the callee writes the caller's object directly, so the
+  // mutation is already visible.
+  if (OVEStore && HaveInsertPoint() &&
+      RV->getType() == ReturnValue.getElementType())
+    RV = Builder.CreateLoad(ReturnValue, "contract.post.retval");
+
+  return RV;
 }
 
 void CodeGenFunction::EmitReturnValueCheck(llvm::Value *RV) {
