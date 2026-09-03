@@ -2673,6 +2673,11 @@ public:
   /// Emit a test that checks if the return value \p RV is nonnull.
   void EmitReturnValueCheck(llvm::Value *RV);
 
+  /// Set by EmitPostContracts when it bound a postcondition's result name to
+  /// the return slot, meaning a predicate may have rewritten that slot and
+  /// whatever the caller is about to return needs re-reading from it.
+  bool ContractResultBoundToReturnSlot = false;
+
   /// Emit the postconditions.  Returns the value the function should return:
   /// a postcondition's result binding names the return slot, so a predicate
   /// may have written to it and RV can be stale on return.

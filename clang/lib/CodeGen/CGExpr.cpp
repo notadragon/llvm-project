@@ -3705,7 +3705,14 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
   // FIXME: There's got to be more to this.
   if (const auto *RND = dyn_cast<ResultNameDecl>(ND)) {
-    ((void)RND);
+    // For a reference-returning function the return slot holds the reference
+    // itself -- a pointer -- while the binding names the referred-to object,
+    // so load the slot rather than reinterpreting it as that object.  T is
+    // already the pointee type: a reference-typed declaration's DeclRefExpr
+    // has the referred-to type and is an lvalue.
+    if (RND->getType()->isReferenceType())
+      return MakeNaturalAlignPointeeAddrLValue(Builder.CreateLoad(ReturnValue),
+                                               T);
     return MakeAddrLValue(ReturnValue, T, AlignmentSource::Decl);
   }
 

@@ -4570,8 +4570,25 @@ void CodeGenFunction::EmitFunctionEpilog(
       if (ITy != nullptr && isa<RecordType>(RetTy.getCanonicalType()))
         RV = EmitCMSEClearRecord(RV, ITy, RetTy);
     }
-    if (!PostContractsHandledByPrologueCleanup)
+    if (!PostContractsHandledByPrologueCleanup) {
       RV = EmitPostContractsWithRetvalCleanup(RV);
+
+      // A Direct/Extend result that is COERCED is not a plain load of the
+      // return slot -- a small class comes back as { i64, i64 } or i32 -- so
+      // EmitPostContracts could not re-read it and left RV alone.  The slot
+      // is still where the result binding lives and where a predicate's
+      // writes landed, so redo the coercion here, exactly as it was done
+      // above.  Without this a mutation through a class-typed result binding
+      // is silently dropped.
+      if (ContractResultBoundToReturnSlot && HaveInsertPoint() &&
+          (RetAI.getKind() == ABIArgInfo::Extend ||
+           RetAI.getKind() == ABIArgInfo::Direct) &&
+          !(RetAI.getCoerceToType() == ConvertType(RetTy) &&
+            RetAI.getDirectOffset() == 0)) {
+        Address V = emitAddressAtOffset(*this, ReturnValue, RetAI);
+        RV = CreateCoercedLoad(V, RetTy, RetAI.getCoerceToType(), *this);
+      }
+    }
     EmitReturnValueCheck(RV);
     Ret = Builder.CreateRet(RV);
   } else {
@@ -4602,13 +4619,35 @@ llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
 
   std::optional<OpaqueValueExpr> OVEStore;
   std::optional<OpaqueValueMapping> OVEBind;
+  // Whether the binding was made against the return slot, which is what makes
+  // re-reading that slot afterwards meaningful.
+  bool BoundToReturnSlot = false;
   if (auto CRD = CSD->getCanonicalResultName(); CRD && RV) {
+    QualType ResultTy = CRD->getType();
     Builder.CreateStore(RV, ReturnValue);
-    OVEStore.emplace(CRD->getLocation(), CRD->getType(), VK_LValue, OK_Ordinary,
-                     nullptr);
-    OVEBind.emplace(*this, &OVEStore.value(),
-                    MakeAddrLValue(ReturnValue, CRD->getType()));
+    if (const auto *RefTy = ResultTy->getAs<ReferenceType>()) {
+      // A reference-returning function.  The slot holds the reference itself
+      // (a pointer) and the binding names the referred-to object, so the
+      // OpaqueValueExpr is of the POINTEE type -- an Expr may not have
+      // reference type, and building one with it asserts here.
+      // EmitDeclRefLValue loads the slot to find that object.
+      //
+      // Nothing needs re-reading afterwards: a write through the binding goes
+      // straight to the referred-to object, and the reference itself is const.
+      QualType Pointee = RefTy->getPointeeType();
+      OVEStore.emplace(CRD->getLocation(), Pointee, VK_LValue, OK_Ordinary,
+                       nullptr);
+      OVEBind.emplace(*this, &OVEStore.value(),
+                      MakeNaturalAlignPointeeAddrLValue(RV, Pointee));
+    } else {
+      OVEStore.emplace(CRD->getLocation(), ResultTy, VK_LValue, OK_Ordinary,
+                       nullptr);
+      OVEBind.emplace(*this, &OVEStore.value(),
+                      MakeAddrLValue(ReturnValue, ResultTy));
+      BoundToReturnSlot = true;
+    }
   }
+  ContractResultBoundToReturnSlot = BoundToReturnSlot;
 
   disableDebugInfo();
   auto Reenabler = llvm::scope_exit([this]() { enableDebugInfo(); });
@@ -4654,7 +4693,7 @@ llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   // epilogue itself would have loaded.  An indirectly-returned (sret) result
   // needs nothing: the callee writes the caller's object directly, so the
   // mutation is already visible.
-  if (OVEStore && HaveInsertPoint() &&
+  if (BoundToReturnSlot && HaveInsertPoint() &&
       RV->getType() == ReturnValue.getElementType())
     RV = Builder.CreateLoad(ReturnValue, "contract.post.retval");
 

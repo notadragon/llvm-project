@@ -1,39 +1,53 @@
-// KNOWN CRASH, pinned so that fixing it shows up as an XPASS.
-//
 // A postcondition with a result-name-introducer on a function returning a
-// REFERENCE crashes Clang during code generation:
+// REFERENCE compiles, and the binding names the referred-to object.
+//
+// This used to crash in codegen:
 //
 //   Expr.h: Assertion `(t.isNull() || !t->isReferenceType()) &&
 //                      "Expressions can't have reference type"' failed.
 //
-// EmitPostContracts binds the result name by building an OpaqueValueExpr of
-// the result name's type, and for a reference-returning function that type is
-// a reference -- which an Expr may not have.  The binding presumably wants the
-// referenced type, with the slot holding the pointer.
+// Two things were wrong, and the assertion only exposed the first.
+// EmitPostContracts built an OpaqueValueExpr of the result name's type, which
+// for a reference-returning function is a reference -- and an Expr may not
+// have one.  Behind that, EmitDeclRefLValue mapped the result name straight
+// onto the return slot, but for a reference return that slot holds the
+// reference itself, a pointer; reinterpreting it as the referred-to object
+// gave mismatched IR types.  Load the slot instead.
 //
-// This is pre-existing (the block dates from the P3850 base commit) and is not
-// a regression from the result-binding mutation fix; it was found while
-// measuring that fix's coverage.
+// Both needed CODEGEN: -fsyntax-only was always clean, which is how this
+// survived.  GCC compiles and runs the same program correctly.
 //
-// It needs CODEGEN: -fsyntax-only is clean, which is why it survived.  GCC
-// compiles and runs the same program correctly (measured 2026-09-02: the
-// mutation below is observed, giving 105).
-//
-// XFAIL: *
 // RUN: %clangxx -std=c++26 %s -fcontracts %libcxx_flags -o %t && %t
 
 static int g = 100;
 
-// Plain use of the result name -- also crashes, so the mutation is not the
-// trigger; naming the result of a reference-returning function is.
+// Merely naming the result was enough to crash; the mutation was not needed.
 int &plain() post(r : r > 0) { return g; }
 
+// A write through the binding reaches the referred-to object directly -- no
+// copy back is involved, unlike a by-value result.
 int &mutating() post(r : (const_cast<int &>(r) += 5, true)) { return g; }
 
+// The binding must name the object the function returns, not a copy of it.
+static const int *seen = nullptr;
+static bool note(const int &r) {
+  seen = &r;
+  return true;
+}
+int &identity() post(r : note(r)) { return g; }
+
 int main() {
+  g = 100;
   if (plain() != 100)
     return 1;
+
+  g = 100;
   if (mutating() != 105)
     return 1;
+
+  g = 100;
+  if (&identity() != &g || seen != &g)
+    return 1;
+
   return 0;
 }
