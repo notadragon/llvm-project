@@ -1475,8 +1475,27 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     assert(D.Contracts);
   }
   assert(Actions.CurContext->isFunctionOrMethod());
-  cast<FunctionDecl>(Actions.CurContext)->setContracts(D.Contracts);
+  auto *CallOp = cast<FunctionDecl>(Actions.CurContext);
+  CallOp->setContracts(D.Contracts);
   D.Contracts = nullptr;
+
+  // [dcl.contract.func]'s restrictions on a parameter odr-used by a
+  // postcondition -- it must be const, and must not have array or function
+  // type -- apply to a lambda's call operator like any other function, but
+  // nothing ran them for one: they hang off ActOnFunctionDeclarator, which a
+  // lambda never reaches.  A *generic* lambda was diagnosed anyway, because
+  // the instantiation path runs the same checks, so only the non-generic case
+  // went unchecked.
+  //
+  // This has to come after the contracts are attached just above, not from
+  // ActOnStartOfLambdaDefinition: the specifier sequence is parsed after that
+  // action returns, so the call operator has no contracts yet while it runs.
+  // For a generic lambda the check is a no-op here -- the parameter types are
+  // still dependent, so nothing is diagnosable, and the instantiation keeps
+  // doing the work.
+  if (CallOp->hasContracts())
+    Actions.CheckFunctionContracts(CallOp, /*IsDefinition=*/true,
+                                   /*IsInstantiation=*/false);
 
   // Parse compound-statement.
   if (!Tok.is(tok::l_brace)) {
