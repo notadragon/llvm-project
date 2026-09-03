@@ -2152,6 +2152,65 @@ static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
     Checker.TraverseContractStmt(CS);
 }
 
+namespace {
+/// Finds an odr-use of a non-reference parameter of FD in a postcondition.
+class CoroutineParamUseFinder
+    : public RecursiveASTVisitor<CoroutineParamUseFinder> {
+  const FunctionDecl *FD;
+
+public:
+  llvm::SmallVector<const ParmVarDecl *, 4> Found;
+
+  explicit CoroutineParamUseFinder(const FunctionDecl *FD) : FD(FD) {}
+
+  bool VisitDeclRefExpr(DeclRefExpr *E) {
+    const auto *PVD = dyn_cast_or_null<ParmVarDecl>(E->getDecl());
+    if (!PVD || E->isNonOdrUse())
+      return true;
+    // A reference parameter is fine: [dcl.fct.def.coroutine]/5 binds its copy
+    // to the same object.
+    if (PVD->getType()->isReferenceType())
+      return true;
+    // Only this function's own parameters.
+    if (PVD->getFunctionScopeIndex() >= FD->getNumParams() ||
+        FD->getParamDecl(PVD->getFunctionScopeIndex()) != PVD)
+      return true;
+    if (!llvm::is_contained(Found, PVD))
+      Found.push_back(PVD);
+    return true;
+  }
+};
+} // namespace
+
+void Sema::diagnoseCoroutinePostconditionParams(FunctionDecl *FD) {
+  const ContractSpecifierDecl *CSD = FD->getContracts();
+  if (!CSD)
+    return;
+
+  // [dcl.contract.func] requires a non-reference parameter odr-used in a
+  // postcondition to be const, and [dcl.fct.def.coroutine]/5 makes the
+  // coroutine's copy of such a parameter direct-initialized from an xvalue of
+  // the UNQUALIFIED type -- which cannot be formed from a const parameter.
+  // The two cannot both be satisfied, and [dcl.fct.def.coroutine] says so
+  // directly: "An odr-use of a non-reference parameter in a postcondition
+  // assertion of a coroutine is ill-formed."
+  //
+  // So the non-const spelling is rejected by the const rule and the const
+  // spelling by this one; there is no third.  A precondition is unaffected,
+  // being outside the const rule.
+  CoroutineParamUseFinder Finder(FD);
+  for (auto *CS : CSD->postconditions())
+    Finder.TraverseStmt(CS);
+
+  for (const ParmVarDecl *PVD : Finder.Found) {
+    Diag(PVD->getLocation(), diag::err_contract_coroutine_postcondition_param)
+        << PVD;
+    Diag(PVD->getLocation(),
+         diag::note_contract_coroutine_postcondition_param);
+    FD->setInvalidDecl();
+  }
+}
+
 void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
                                   bool IsInstantiation) {
   assert(FD && FD->hasContracts());

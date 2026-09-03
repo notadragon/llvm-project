@@ -13165,6 +13165,12 @@ def warn_contract_always_evaluates_to : Warning<
 
 def err_contract_postcondition_parameter_type_invalid : Error<
     "parameter %0 referenced in contract postcondition %select{cannot have an array type|cannot have a function type|must be declared const}1">;
+def err_contract_coroutine_postcondition_param : Error<
+    "parameter %0 is odr-used in a postcondition of a coroutine">;
+def note_contract_coroutine_postcondition_param : Note<
+    "a coroutine copies its parameters at the beginning of the replacement "
+    "body, so a postcondition cannot name one; consider a reference "
+    "parameter">;
 def note_parameter_with_name : Note<
   "parameter %0 is declared here">;
 def note_parameter_with_name_and_type : Note<

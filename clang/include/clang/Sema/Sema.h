@@ -3300,6 +3300,11 @@ public:
   void CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
                               bool IsInstantiation);
 
+  /// [dcl.fct.def.coroutine]: an odr-use of a non-reference parameter in a
+  /// postcondition assertion of a coroutine is ill-formed.  Called once the
+  /// body has been parsed, which is when a function is known to be one.
+  void diagnoseCoroutinePostconditionParams(FunctionDecl *FD);
+
   ContractSpecifierDecl *
   ActOnFinishContractSpecifierSequence(ArrayRef<ContractStmt *> ContractStmts,
                                        SourceLocation Loc, bool IsInvalid);

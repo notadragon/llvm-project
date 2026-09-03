@@ -1225,6 +1225,11 @@ void Sema::CheckCompletedCoroutineBody(FunctionDecl *FD, Stmt *&Body) {
     return;
   }
 
+  // Now the body is parsed we know this is a coroutine, which is the earliest
+  // point [dcl.fct.def.coroutine]'s restriction on a postcondition naming a
+  // parameter can be applied -- a contract is parsed with the declarator.
+  diagnoseCoroutinePostconditionParams(FD);
+
   // The always_inline attribute doesn't reliably apply to a coroutine,
   // because the coroutine will be split into pieces and some pieces
   // might be called indirectly, as in a virtual call. Even the ramp
