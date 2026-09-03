@@ -548,8 +548,24 @@ namespace {
     }
 
     ~ParamReferenceReplacerRAII() {
-      for (auto&& SavedLocal : SavedLocals) {
-        LocalDeclMap.insert({SavedLocal.first, SavedLocal.second});
+      for (auto &&SavedLocal : SavedLocals) {
+        // Assign, do not insert: addCopy redirected the parameter by
+        // overwriting its value in place, so the key is still present and
+        // DenseMap::insert would find it and do nothing -- leaving every
+        // parameter pointing at its coroutine-frame copy for the rest of the
+        // function, which is the opposite of what this RAII exists to undo.
+        //
+        // Nothing upstream reads a parameter after the body, so this was
+        // invisible.  A postcondition does: it is emitted from the epilogue,
+        // and it was naming the frame copy while the precondition -- emitted
+        // before addCopy ran -- named the parameter, so one name meant two
+        // objects on one declaration.
+        // (Address is not default-constructible, so not operator[].)
+        auto it = LocalDeclMap.find(SavedLocal.first);
+        if (it != LocalDeclMap.end())
+          it->second = SavedLocal.second;
+        else
+          LocalDeclMap.insert({SavedLocal.first, SavedLocal.second});
       }
     }
   };
