@@ -54,12 +54,33 @@ int two_postconditions() post(r : (const_cast<int &>(r)++, true))
 // A postcondition with no result name must be unaffected.
 int no_result_name() post(true) { return 77; }
 
-// A predicate that mutates and then fails still mutates -- and the check still
-// reports.  Under `observe' the function completes normally.
-static int violations = 0;
-int mutate_and_fail() post(r : (const_cast<int &>(r) += 100, r < 0)) {
-  return 1;
+// A class-typed result with a NON-TRIVIAL copy constructor and destructor
+// must be bound WITHOUT introducing a temporary -- [dcl.contract.res]
+// Example 2's `B' row, "the postcondition check succeeds, no temporary is
+// introduced".  An extra copy here would be observable as extra constructor
+// and destructor calls, so the counts are pinned, not just the address.
+//
+// (Example 2's `A' row permits a temporary for a result the implementation
+// returns by other means, and both compilers do introduce one for a
+// TRIVIALLY-copyable class -- where it costs no constructor call and is
+// unobservable except that a mutation through it is lost.  That is what
+// contract-result-binding-mutation-class.cpp pins.)
+struct Counted {
+  int a;
+  static int ctor, copy, move, dtor;
+  Counted(int v) : a(v) { ++ctor; }
+  Counted(const Counted &o) : a(o.a) { ++copy; }
+  Counted(Counted &&o) : a(o.a) { ++move; }
+  ~Counted() { ++dtor; }
+};
+int Counted::ctor = 0, Counted::copy = 0, Counted::move = 0, Counted::dtor = 0;
+
+static const Counted *seen_addr = nullptr;
+static bool note(const Counted &r) {
+  seen_addr = &r;
+  return true;
 }
+Counted counted() post(r : note(r)) { return Counted(1); }
 
 int main() {
   check("increment through const_cast", direct_increment(), 2);
@@ -67,6 +88,19 @@ int main() {
   check("mutation via a const& parameter", via_reference_parameter(), 15);
   check("two mutating postconditions", two_postconditions(), 9);
   check("no result name", no_result_name(), 77);
+
+  {
+    Counted::ctor = Counted::copy = Counted::move = Counted::dtor = 0;
+    Counted c = counted();
+    check("non-trivial result: constructions", Counted::ctor, 1);
+    check("non-trivial result: copies", Counted::copy, 0);
+    check("non-trivial result: moves", Counted::move, 0);
+    if (seen_addr != &c) {
+      __builtin_printf("FAIL: non-trivial result: the predicate saw a "
+                       "temporary, not the returned object\n");
+      ++failures;
+    }
+  }
 
   if (failures)
     __builtin_abort();
