@@ -1,20 +1,24 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify %s -fcontracts
-// XFAIL: *
 
-// [dcl.contract.func]/7 is never applied to a DEPENDENT parameter type.
+// [dcl.contract.func]/7 applied to a DEPENDENT parameter type.
 //
-// The rule is about a function: a specialization whose non-reference
-// parameter deduces to a non-const type and is odr-used by a postcondition
-// predicate is ill-formed, even though the template itself is fine (a valid
-// specialization exists, so [temp.res.general] does not make it ill-formed
-// NDR).  Clang checks the rule when the parameter type is concrete -- see
-// deducing-this-postcondition-param.cpp, which passes -- and never rechecks
-// it at instantiation, so every shape below is accepted silently.  GCC
-// diagnoses all four.
+// The rule is about a function: a specialization whose non-reference parameter
+// deduces to a non-const type and is odr-used by a postcondition predicate is
+// ill-formed, even though the template itself is fine, a valid specialization
+// existing.
 //
-// This is not specific to deducing this: DeducedOrdinary and InClassTemplate
-// below have no explicit object parameter at all.  The axis is "the parameter
-// type was dependent when the contract was first seen".
+// Every function below is DECLARED but not DEFINED, which is the whole point.
+// Contract assertions are needed "when the function is odr-used
+// ([basic.def.odr]) or the function is defined" ([dcl.contract.func]/9), and
+// Clang used to instantiate a contract specifier only along the second of
+// those paths.  A declaration-only template that was merely called therefore
+// kept a dependent predicate forever, and /7 -- which correctly declines to
+// judge a dependent parameter type -- never got a concrete one to judge.  The
+// same templates WITH bodies were diagnosed correctly all along, which is what
+// made this look like a missing check rather than a missing instantiation.
+//
+// This is not specific to deducing this: deduced_ordinary and InClassTemplate
+// below have no explicit object parameter at all.
 //
 // GCC mirror: g++.dg/contracts/cpp26/deducing-this-postcondition-param.C
 
@@ -26,17 +30,18 @@ struct S {
 // parameter drops the argument's top-level cv-qualification, so Self deduces
 // to the unqualified class type and the parameter is non-const.
 struct DeducedByValue : S {
-  // expected-error@+1 {{must be declared const}}
+  // expected-note@+2 {{parameter of type 'DeducedByValue' is declared here}}
+  // expected-error@+1 {{parameter 'self' referenced in contract postcondition must be declared const}}
   template <class Self> void f(this Self self) post(self.x == 0);
 };
 
 void use_deduced_by_value() {
   DeducedByValue a;
-  a.f();
+  a.f(); // expected-note {{in instantiation of function template specialization 'DeducedByValue::f<DeducedByValue>' requested here}}
 }
 
-// The same, called on a const object: deduction still drops the const, so
-// this is ill-formed for the same reason.
+// The same, called on a const object: deduction still drops the const, so this
+// is the SAME specialization, already diagnosed above, and says nothing more.
 void use_deduced_by_value_on_const() {
   const DeducedByValue a;
   a.f();
@@ -44,34 +49,53 @@ void use_deduced_by_value_on_const() {
 
 // CONTROL, no explicit object parameter: an ordinary function template whose
 // by-value parameter type is deduced non-const.
-// expected-error@+1 {{must be declared const}}
+// expected-note@+2 {{parameter of type 'S' is declared here}}
+// expected-error@+1 {{parameter 't' referenced in contract postcondition must be declared const}}
 template <class T> void deduced_ordinary(T t) post(t.x == 0);
 
 void use_deduced_ordinary() {
   S s;
-  deduced_ordinary(s);
+  deduced_ordinary(s); // expected-note {{in instantiation of function template specialization 'deduced_ordinary<S>' requested here}}
 }
 
 // CONTROL, dependent but not deduced: a class template's member with a
 // by-value parameter of the template parameter type.
 template <class T> struct InClassTemplate {
-  // expected-error@+1 {{must be declared const}}
+  // expected-note@+2 {{parameter of type 'S' is declared here}}
+  // expected-error@+1 {{parameter 't' referenced in contract postcondition must be declared const}}
   void f(T t) post(t.x == 0);
 };
 
 void use_in_class_template() {
   InClassTemplate<S> x;
   S s;
-  x.f(s);
+  x.f(s); // expected-note {{in instantiation of member function 'InClassTemplate<S>::f' requested here}}
 }
 
 // An explicit object parameter of the enclosing class template's own type.
 template <class T> struct ExplicitObjectInClassTemplate : S {
-  // expected-error@+1 {{must be declared const}}
+  // expected-note@+2 {{parameter of type 'ExplicitObjectInClassTemplate<int>' is declared here}}
+  // expected-error@+1 {{parameter 'self' referenced in contract postcondition must be declared const}}
   void f(this ExplicitObjectInClassTemplate self) post(self.x == 0);
 };
 
 void use_explicit_object_in_class_template() {
   ExplicitObjectInClassTemplate<int> x;
-  x.f();
+  x.f(); // expected-note {{in instantiation of member function 'ExplicitObjectInClassTemplate<int>::f' requested here}}
 }
+
+// A declaration-only template that is odr-used and IS well-formed stays quiet.
+struct DeducedConst : S {
+  template <class Self> void f(this const Self self) post(self.x == 0);
+};
+
+void use_deduced_const() {
+  DeducedConst a;
+  a.f();
+}
+
+// A declaration-only template that is never odr-used is never instantiated,
+// and a valid specialization exists, so it is not diagnosed.
+struct NeverUsed : S {
+  template <class Self> void f(this Self self) post(self.x == 0);
+};

@@ -19181,14 +19181,14 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       (OdrUse == OdrUseContext::Used ||
        (NeededForConstantEvaluation && !Func->isPureVirtual()));
 
-  // P3097: when a virtual function is odr-used, ensure its interface contracts
-  // are instantiated -- the contract wrapper around the vtable dispatch needs a
-  // non-dependent contract specifier even if the function's own definition is
-  // never instantiated (e.g. an inline virtual member of a class template that
-  // is only called polymorphically).
+  // [dcl.contract.func]/9: a function's contract assertions are needed when it
+  // is odr-used, not only when it is defined.  Instantiate them here so that a
+  // declaration-only template that is merely called still gets its predicate
+  // substituted and checked, and so that a virtual function's interface
+  // contracts exist for the P3097 wrapper around the vtable dispatch even if
+  // its own definition is never instantiated.
   if (OdrUse == OdrUseContext::Used)
-    if (auto *MD = dyn_cast<CXXMethodDecl>(Func))
-      InstantiateVirtualFunctionContractsOnUse(Loc, MD);
+    InstantiateFunctionContractsOnUse(Loc, Func);
 
   // C++14 [temp.expl.spec]p6:
   //   If a template [...] is explicitly specialized then that specialization

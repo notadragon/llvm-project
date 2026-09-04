@@ -3342,16 +3342,24 @@ public:
       const FunctionDecl *Pattern,
       const MultiLevelTemplateArgumentList &TemplateArgs);
 
-  /// P3097: A virtual function's interface contracts are checked by a contract
-  /// wrapper around the vtable dispatch, so they must exist as an instantiated
-  /// (non-dependent) contract specifier even when the function's own definition
-  /// is never instantiated (e.g. an inline virtual member of a class template
-  /// that is only ever called polymorphically).  When such a function is
-  /// odr-used, instantiate just its contract specifier (not its body) if it is
-  /// still carrying the dependent pattern copy.  Idempotent.
+  /// [dcl.contract.func]/9: "The function contract assertions of a function
+  /// are considered to be needed ([temp.inst]) when the function is odr-used
+  /// ([basic.def.odr]) or the function is defined."  Instantiating them only
+  /// with the definition therefore misses a declaration-only template that is
+  /// called: its predicate stays dependent and is never checked at all.
+  ///
+  /// So when a function is odr-used, instantiate just its contract specifier
+  /// (not its body) if it is still carrying the dependent pattern copy.
+  /// Idempotent.
+  ///
+  /// A virtual function needs this for a second reason: under P3097 its
+  /// interface contracts are checked by a contract wrapper around the vtable
+  /// dispatch, so they must exist as a non-dependent specifier even when the
+  /// function's own definition is never instantiated (e.g. an inline virtual
+  /// member of a class template only ever called polymorphically).
   void
-  InstantiateVirtualFunctionContractsOnUse(SourceLocation PointOfInstantiation,
-                                           CXXMethodDecl *Function);
+  InstantiateFunctionContractsOnUse(SourceLocation PointOfInstantiation,
+                                    FunctionDecl *Function);
 
   std::optional<unsigned>
   getFunctionScopeIndexForDeclaration(const ValueDecl *VD);

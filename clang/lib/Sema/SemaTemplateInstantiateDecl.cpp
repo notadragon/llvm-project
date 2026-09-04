@@ -5957,26 +5957,42 @@ FunctionDecl *Sema::InstantiateFunctionDeclaration(
   return cast_or_null<FunctionDecl>(SubstDecl(FD, FD->getParent(), MArgs));
 }
 
-void Sema::InstantiateVirtualFunctionContractsOnUse(
-    SourceLocation PointOfInstantiation, CXXMethodDecl *Function) {
-  // Only relevant under P3097: a virtual function's interface contracts are
-  // evaluated by the contract wrapper around the vtable dispatch, so they must
-  // exist as an instantiated (non-dependent) contract specifier even when the
-  // function's own definition is never instantiated.
-  if (!getLangOpts().ContractsP3097 || !Function->isVirtual())
+void Sema::InstantiateFunctionContractsOnUse(
+    SourceLocation PointOfInstantiation, FunctionDecl *Function) {
+  if (!getLangOpts().Contracts)
     return;
 
-  // Only for template instantiations: the pattern must carry contracts, and the
-  // instantiation must still be holding a pattern's own (dependent) contract
-  // specifier as a placeholder.  If it already has a substituted specifier
-  // (e.g. its definition was instantiated first), there is nothing to do.
-  // The placeholder may have come from any declaration on the pattern's
-  // redeclaration chain, not necessarily PatternDecl -- see
-  // holdsPatternContractSpecifier.
+  // [dcl.contract.func]/9: the contract assertions of a function are needed
+  // when the function is odr-used OR defined.  Instantiating them only with
+  // the definition misses a declaration-only template that is called: the
+  // predicate stays dependent, so [dcl.contract.func]/7 -- the rule that a
+  // non-reference parameter odr-used by a postcondition be const -- is never
+  // applied to it at all.
+  //
+  // A virtual function needs this for the further P3097 reason that the
+  // contract wrapper around the vtable dispatch evaluates its interface
+  // contracts, so they must exist as a non-dependent specifier even when the
+  // function's own definition is never instantiated.
+
+  // Only for template instantiations: the pattern must carry contracts, and
+  // the instantiation must not already have a substituted specifier of its own
+  // (e.g. because its definition was instantiated first), in which case there
+  // is nothing to do.
+  //
+  // Two states mean "not yet substituted".  A member of a class template
+  // instantiation is handed the pattern's own (dependent) specifier as a
+  // placeholder by VisitCXXMethodDecl -- and it may have come from any
+  // declaration on the pattern's redeclaration chain, not necessarily
+  // PatternDecl, hence holdsPatternContractSpecifier.  A function template
+  // specialization formed by deduction, on the other hand, simply has NO
+  // contracts until its definition is instantiated; requiring the placeholder
+  // here is what previously made this a no-op for a declaration-only function
+  // template, which is the [dcl.contract.func]/9 case above.
   const FunctionDecl *PatternDecl = Function->getTemplateInstantiationPattern();
   if (!PatternDecl || !PatternDecl->hasContracts())
     return;
-  if (!holdsPatternContractSpecifier(Function, PatternDecl))
+  if (Function->getContracts() &&
+      !holdsPatternContractSpecifier(Function, PatternDecl))
     return;
   if (Function->isInvalidDecl() || Function->isDependentContext())
     return;
