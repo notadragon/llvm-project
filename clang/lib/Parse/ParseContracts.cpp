@@ -472,8 +472,26 @@ void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
     }
   }
 
-  InitCXXThisScopeForDeclaratorIfRelevant(
-      DeclarationInfo, DeclarationInfo.getDeclSpec(), ThisScope);
+  // [expr.prim.this]/1: `this` "shall not appear within the declaration of
+  // either a static member function or an explicit object member function of
+  // the current class".  A contract predicate is within that declaration, so
+  // an explicit object member function must get no `this` scope here.
+  //
+  // Sema::CheckCXXThisType already diagnoses the explicit-object case
+  // correctly, but only fires when the `this` type is null; pushing a scope
+  // gives it a non-null one and makes that branch unreachable, so both `this`
+  // and an unqualified member name (which means (*this).m) were accepted in a
+  // predicate and then asserted in CodeGen on LoadCXXThis.  Leaving the scope
+  // unpushed gives such a predicate the same diagnostics the function BODY
+  // already gets.
+  //
+  // The condition is deliberately applied here rather than inside
+  // InitCXXThisScopeForDeclaratorIfRelevant: that helper is shared with the
+  // trailing-return-type path, whose handling of explicit object member
+  // functions is a separate question from contracts.
+  if (!DeclarationInfo.isExplicitObjectMemberFunction())
+    InitCXXThisScopeForDeclaratorIfRelevant(
+        DeclarationInfo, DeclarationInfo.getDeclSpec(), ThisScope);
   bool IsInvalid = false;
   SourceLocation StartLoc = Tok.getLocation();
 
@@ -889,8 +907,14 @@ bool Parser::ParseLexedFunctionContracts(
     Actions.PushFunctionScope();
   }
 
+  // An explicit object member function has no `this` ([expr.prim.this]/1), and
+  // a contract predicate is within its declaration, so it gets no `this` scope
+  // -- see the matching condition on the eager path above.  This is the
+  // late-parsed path, which is the one a member function's contracts actually
+  // take.
   std::optional<Sema::CXXThisScopeRAII> ThisScope;
-  if (ScopesToEnter & ContractEnterScopeKind::CES_CXXThis)
+  if ((ScopesToEnter & ContractEnterScopeKind::CES_CXXThis) &&
+      !(Method && Method->isExplicitObjectMemberFunction()))
     ThisScope.emplace(Actions, Method ? Method->getParent() : nullptr,
                       Method ? Method->getMethodQualifiers() : Qualifiers{},
                       Method && getLangOpts().CPlusPlus11);

@@ -1,24 +1,25 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify %s -fcontracts
-// XFAIL: *
 
 // `this` is unavailable inside an explicit object member function
 // ([expr.prim.this]/1), and a contract predicate on such a function is inside
 // it.  Naming `this` -- explicitly, or implicitly by naming a non-static data
 // member unqualified, which means (*this).m -- must be rejected.
 //
-// Clang accepts all of it, and then CodeGen asserts:
+// All of it used to be accepted, and CodeGen then asserted:
 //
 //   CodeGenFunction.h: LoadCXXThis():
 //   Assertion `CXXThisValue && "no 'this' value for this function"' failed.
 //
-// The control at the bottom is what makes this contracts-specific rather than
-// a general deducing-this hole: the identical use of `this` in the function
-// BODY is correctly rejected, with "invalid use of 'this' in a function with
-// an explicit object parameter".  Only the predicate is unguarded.
+// Sema::CheckCXXThisType already handled the explicit-object case correctly,
+// but it only fires when the `this` type is null, and parsing a contract
+// pushed a CXXThisScopeRAII for any member declarator -- the shared helper's
+// notion of "member function" predates P0847 -- so that branch was
+// unreachable.  The contract parser no longer pushes the scope for an explicit
+// object member function.
 //
-// -fsyntax-only, as here, does not reach the assertion -- it is a CodeGen
-// failure -- so this file XFAILs on the missing diagnostics, and a compile
-// of the same shapes crashes.  GCC rejects every case below.
+// The control at the bottom is what made this contracts-specific rather than a
+// general deducing-this hole: the identical use of `this` in the function BODY
+// was rejected correctly all along.  Only the predicate was unguarded.
 //
 // GCC mirror: g++.dg/contracts/cpp26/deducing-this-no-this-in-predicate.C
 
@@ -34,20 +35,20 @@ struct ExplicitThis : S {
 
 // An unqualified non-static data member in a precondition.
 struct ImplicitThisPre : S {
-  // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+  // expected-error@+1 {{invalid use of member 'x' in explicit object member function}}
   void f(this ImplicitThisPre &self) pre(x == 0);
 };
 
 // The same in a postcondition.
 struct ImplicitThisPost : S {
-  // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+  // expected-error@+1 {{invalid use of member 'x' in explicit object member function}}
   int f(this ImplicitThisPost &self) post(r : x == r);
 };
 
 // The same in an assertion-statement in the body.
 struct ImplicitThisAssert : S {
   void f(this ImplicitThisAssert &self) {
-    // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+    // expected-error@+1 {{invalid use of member 'x' in explicit object member function}}
     contract_assert(x == 0);
   }
 };
