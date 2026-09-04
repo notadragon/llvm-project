@@ -19,8 +19,18 @@ struct Tracker {
 
 bool postcondition_evaluated = false;
 
+// Recorded through a call, not by assigning to `postcondition_evaluated`
+// directly: [expr.prim.id.unqual]/3+d const-qualifies every variable a
+// predicate names, whatever its storage duration, so the assignment would be
+// ill-formed.  (It used to compile only because Clang constified automatic
+// storage alone -- see Sema/contract-predicate-constify-storage.cpp.)
+static bool note_evaluated() {
+  postcondition_evaluated = true;
+  return true;
+}
+
 void f(int x)
-  post [t = Tracker(x)] ((postcondition_evaluated = true, true))
+  post [t = Tracker(x)] (note_evaluated())
 {
   throw 42;
 }

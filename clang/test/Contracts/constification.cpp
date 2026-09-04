@@ -13,14 +13,23 @@ constexpr int do_test() {
 constexpr int anchor = do_test(); // expected-error {{must be initialized}}
 // expected-note@-1 {{in call}}
 
-// not constified.
+// Constified, like every other variable named in a predicate: the rule in
+// [expr.prim.id.unqual]/3+d is "a variable declared outside of C", with no
+// storage-duration restriction (P2900R9 removed one).  This was commented
+// "not constified" while only automatic-storage variables were constified.
+//
+// The assignment below is a poor witness either way, because it is ill-formed
+// for a second, independent reason -- inside a predicate `&x` is a
+// `const int *` -- so it was rejected even when `y` itself was writable.  Only
+// incrementing the pointer isolates the rule; see
+// Sema/contract-predicate-constify-storage.cpp.
 int *y = nullptr;
 
 int foo() {
   int x = 42;
   contract_assert(
     ++x && // expected-error {{it is considered 'const'}}
-    (y = &x)); // expected-error {{discards qualifiers}}
+    (y = &x)); // expected-error {{it is considered 'const'}}
 }
 
 template <class T, class U>

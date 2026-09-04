@@ -1,5 +1,4 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify %s -fcontracts
-// XFAIL: *
 
 // [expr.prim.id.unqual]/3+d: inside the predicate of a contract assertion C,
 // an id-expression naming "a variable declared outside of C of object type T"
@@ -9,16 +8,17 @@
 // the paragraph's own example opens with a namespace-scope `int n` and
 // `pre(++n) // error: attempting to modify const lvalue`.
 //
-// Clang constifies only variables of AUTOMATIC storage duration.  A
+// Clang used to constify only variables of AUTOMATIC storage duration, leaving
+// a
 // namespace-scope variable, a function-local static, a thread_local and a
-// static data member are all left writable inside a predicate.  GCC
-// constifies all of them.
+// static data member writable inside a predicate.  The rule was encoded twice:
+// once in getContractConstification's storage-duration test, and again in
+// isUsageAcrossContract, which returned false outright for any non-local
+// variable.  Both are gone.
 //
-// Note that Contracts/constification.cpp currently pins the contrary
-// behaviour: its `int *y = nullptr;` is commented "not constified", and the
-// error it expects there is the unrelated one for assigning `const int *` to
-// `int *`.  That file belongs to the deferred constification cluster; when
-// this gap is closed, that comment and expectation have to move with it.
+// Contracts/constification.cpp pinned the contrary behaviour -- its
+// `int *y = nullptr;` was commented "not constified" -- and is updated with
+// this change.
 //
 // GCC mirror: g++.dg/contracts/cpp26/contract-predicate-constify-storage.C
 

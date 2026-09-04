@@ -2708,16 +2708,33 @@ bool Sema::isUsageAcrossContract(const ValueDecl *VD) {
   if (isContractAssertionContext())
     return true;
 
+  // A variable that is not local to a function is visible everywhere, so
+  // there is nothing to walk: if a contract scope is current at all, naming it
+  // here is a use from inside a predicate.  The intervening-scope walk below
+  // exists to decide the LOCAL case, where an intervening lambda may have
+  // copy-captured the variable, and getInterveningScopeEntries bails on a
+  // non-local one by construction.
+  //
+  // This used to return false, which is the pre-R9 rule ("only variables with
+  // automatic storage duration") in its second hiding place: it left
+  // namespace-scope variables, thread_locals and static data members
+  // unconstified no matter what getContractConstification decided.
   if (isa<VarDecl>(VD) && !cast<VarDecl>(VD)->isLocalVarDeclOrParm())
-    return false;
+    return true;
 
   assert(VD);
   return getInterveningContractEntry(*this, VD) != nullptr;
 }
 
-/// [basic.contract.general]
-/// Within the predicate of a contract assertion, id-expressions referring to
-/// variables with automatic storage duration are const ([expr.prim.id.unqual])
+/// [expr.prim.id.unqual]/3+d
+/// Within the predicate of a contract assertion C, an id-expression naming a
+/// variable declared outside of C of object type T -- or of type "reference to
+/// T", or a structured binding whose variable is declared outside of C -- has
+/// type const T.  There is no storage-duration restriction: P2900R9 removed
+/// one ("Made implicit const in contract predicates apply to all variables,
+/// rather than just those with automatic storage duration"), and the
+/// paragraph's own example opens with a namespace-scope `int n` and
+/// `pre(++n) // error: attempting to modify const lvalue`.
 ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
   // WalkUpContractScopesTest();
   auto &S = *this;
@@ -2741,8 +2758,22 @@ ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
   // encloses) ContextAtPush, and must be constified -- so we must not treat the
   // equal case as "declared inside the predicate" (DeclContext::Encloses is
   // reflexive, hence the explicit !Equals).
-  if (!CSR || (CSR->ContextAtPush->Encloses(VD->getDeclContext()) &&
-               !CSR->ContextAtPush->Equals(VD->getDeclContext())))
+  //
+  // The enclosure test is only a proxy for "declared inside the predicate",
+  // and it is the wrong proxy for a variable that is not local to a function:
+  // a static data member's DeclContext is its CLASS, which the enclosing
+  // namespace strictly encloses, so `void f() pre(++H::s)` read as though
+  // `H::s` had been declared inside the predicate.  Nothing declared inside a
+  // predicate is a non-local variable -- what can be declared there are the
+  // parameters and locals of lambdas within it -- so exempt those from the
+  // proxy entirely.  This also covers [expr.prim.id.qual]/5+a, which P2900
+  // adds alongside the unqualified rule in the same words.
+  if (!CSR)
+    return CC_None;
+  const auto *AsVar = dyn_cast<VarDecl>(VD);
+  const bool NonLocalVar = AsVar && !AsVar->isLocalVarDeclOrParm();
+  if (!NonLocalVar && CSR->ContextAtPush->Encloses(VD->getDeclContext()) &&
+      !CSR->ContextAtPush->Equals(VD->getDeclContext()))
     return CC_None;
 
   // If there is no contract scope that encloses the current context, then we
@@ -2767,29 +2798,29 @@ ContractConstification Sema::getContractConstification(const ValueDecl *VD) {
   if (isa<ResultNameDecl>(VD))
     return CC_ApplyConst;
 
-  // — a structured binding of type T whose corresponding variable has automatic
-  // storage
-  //  duration, or
+  // — a structured binding of type T whose corresponding variable is declared
+  //  outside of C, or
+  //
+  // "Declared outside of C" is what the checks above already established, so
+  // there is nothing further to test here: a binding of any storage duration
+  // qualifies.
   if (auto *Bound = dyn_cast<BindingDecl>(VD)) {
     if (!Bound->getHoldingVar())
       return CC_None;
-    auto Var = Bound->getHoldingVar();
-    if (Var->isLocalVarDeclOrParm() &&
-        (Var->getStorageDuration() == SD_Automatic ||
-         Var->getKind() == Decl::ParmVar))
-      return CC_ApplyConst;
-    return CC_None;
+    return CC_ApplyConst;
   }
 
   // Postcondition captures are not constified (P3098 Section 4.4.1)
   if (isa<PostconditionCaptureDecl>(VD))
     return CC_None;
 
-  // — a variable with automatic storage duration ...
-  if (auto Var = dyn_cast<VarDecl>(VD);
-      Var && Var->isLocalVarDeclOrParm() &&
-      (Var->getStorageDuration() == SD_Automatic ||
-       Var->getKind() == Decl::ParmVar)) {
+  // — a variable declared outside of C ...
+  //
+  // Any storage duration: a namespace-scope variable, a function-local static,
+  // a thread_local and a static data member are all "a variable declared
+  // outside of C".  Restricting this to automatic storage was P2900's pre-R9
+  // rule.
+  if (auto Var = dyn_cast<VarDecl>(VD)) {
     // ... of object type T, or
     if (Var->getType()->isObjectType())
       return CC_ApplyConst;
