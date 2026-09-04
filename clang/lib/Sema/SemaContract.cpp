@@ -2772,19 +2772,29 @@ bool Sema::isUsageAcrossContract(const ValueDecl *VD) {
   if (isContractAssertionContext())
     return true;
 
-  // A variable that is not local to a function is visible everywhere, so
+  // A variable that needs no capture to be named is visible everywhere, so
   // there is nothing to walk: if a contract scope is current at all, naming it
-  // here is a use from inside a predicate.  The intervening-scope walk below
-  // exists to decide the LOCAL case, where an intervening lambda may have
-  // copy-captured the variable, and getInterveningScopeEntries bails on a
-  // non-local one by construction.
+  // here is a use from inside a predicate.  That covers both a variable that
+  // is not local to a function AND a local one with static or thread storage
+  // duration.
   //
-  // This used to return false, which is the pre-R9 rule ("only variables with
-  // automatic storage duration") in its second hiding place: it left
-  // namespace-scope variables, thread_locals and static data members
-  // unconstified no matter what getContractConstification decided.
-  if (isa<VarDecl>(VD) && !cast<VarDecl>(VD)->isLocalVarDeclOrParm())
-    return true;
+  // The intervening-scope walk below exists to decide the case those exclude:
+  // a variable an intervening lambda may have COPY-CAPTURED, where which
+  // object is named depends on the captures in between.  A local static is
+  // never captured, so putting it through that walk asked a question with no
+  // answer and got none -- which is why it was constified when named directly
+  // in a predicate (the fast path above) and not when named from inside a
+  // lambda there.
+  //
+  // The non-local half of this used to return false, which is the pre-R9 rule
+  // ("only variables with automatic storage duration") in its second hiding
+  // place: it left namespace-scope variables, thread_locals and static data
+  // members unconstified no matter what getContractConstification decided.
+  if (const auto *Var = dyn_cast<VarDecl>(VD))
+    if (!Var->isLocalVarDeclOrParm() ||
+        Var->getStorageDuration() == SD_Static ||
+        Var->getStorageDuration() == SD_Thread)
+      return true;
 
   assert(VD);
   return getInterveningContractEntry(*this, VD) != nullptr;
