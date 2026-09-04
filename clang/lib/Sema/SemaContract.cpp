@@ -2039,6 +2039,70 @@ public:
     return true;
   }
 
+  // [expr.context]: the left operand of a comma is a discarded-value
+  // expression, and the lvalue-to-rvalue conversion is applied to one only
+  // when it is a volatile glvalue.  So by [basic.def.odr]/5 a parameter that
+  // is among its POTENTIAL RESULTS is not odr-used, and
+  // [dcl.contract.func]/7 does not reach it -- PR126897,
+  // `void f (bool b) post ((b, true)) {}`.
+  bool TraverseBinaryOperator(BinaryOperator *E) {
+    if (E->getOpcode() != BO_Comma)
+      return super::TraverseBinaryOperator(E);
+    if (!TraverseDiscardedValue(E->getLHS()))
+      return false;
+    return TraverseStmt(E->getRHS());
+  }
+
+  // Traverse E as a discarded-value expression.  Its potential results
+  // ([basic.def.odr]/2) are exempt; everything else in it is traversed
+  // normally, because a subexpression that is not a potential result -- an
+  // argument to a call, the condition of a ?: -- is evaluated and odr-uses
+  // whatever it names.  So `(f (b), true)` still diagnoses `b`.
+  //
+  // The AST already draws this line where the wording does: in `(b, true)`
+  // the operand is a bare lvalue DeclRefExpr, while in `(true, b)` the
+  // LValueToRValue conversion wraps the whole comma -- so the potential
+  // result there IS converted, and stays an odr-use.
+  bool TraverseDiscardedValue(Expr *E) {
+    if (!E)
+      return true;
+
+    Expr *S = E->IgnoreParens();
+
+    // A cast to void makes its operand a discarded-value expression
+    // ([expr.static.cast]).
+    if (auto *CE = dyn_cast<CastExpr>(S))
+      if (CE->getCastKind() == CK_ToVoid)
+        return TraverseDiscardedValue(CE->getSubExpr());
+
+    if (auto *BO = dyn_cast<BinaryOperator>(S))
+      if (BO->getOpcode() == BO_Comma) {
+        // `(a, b)` discarded: b supplies the potential results, and a is
+        // itself a discarded-value expression.  `(x, y, true)` parses as
+        // `((x, y), true)`, so this has to recurse.
+        if (!TraverseDiscardedValue(BO->getLHS()))
+          return false;
+        return TraverseDiscardedValue(BO->getRHS());
+      }
+
+    if (auto *CO = dyn_cast<ConditionalOperator>(S)) {
+      // The condition is evaluated for its value; the arms supply the
+      // potential results.
+      if (!TraverseStmt(CO->getCond()))
+        return false;
+      if (!TraverseDiscardedValue(CO->getTrueExpr()))
+        return false;
+      return TraverseDiscardedValue(CO->getFalseExpr());
+    }
+
+    // A potential result naming a parameter: exempt, and nothing below it
+    // needs visiting.
+    if (isa<DeclRefExpr>(S))
+      return true;
+
+    return TraverseStmt(E);
+  }
+
   bool TraversePackIndexingExpr(PackIndexingExpr *E) {
     if (!super::TraversePackIndexingExpr(E))
       return false;
