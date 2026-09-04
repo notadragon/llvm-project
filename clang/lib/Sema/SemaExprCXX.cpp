@@ -1106,10 +1106,20 @@ bool Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc,
 
 static QualType adjustCVQualifiersForCXXThisWithinLambda(
     ArrayRef<FunctionScopeInfo *> FunctionScopes, QualType ThisTy,
-    DeclContext *CurSemaContext, Sema &SemaRef) {
+    QualType UncontractedThisTy, DeclContext *CurSemaContext, Sema &SemaRef) {
   ASTContext &ASTCtx = SemaRef.Context;
 
-  QualType ClassType = ThisTy->getPointeeType();
+  // A by-copy '*this' capture is initialized from the enclosing object but
+  // yields a fresh one owned by the closure, so its constness is decided by
+  // the capturing lambda's own call operator -- not by any const the contract
+  // predicate imposed on the enclosing 'this'.  Start that path from the
+  // uncontracted type; [expr.prim.id.unqual]/3+e marks `++this->z` and `++z`
+  // OK inside `pre([=,&i,*this] mutable { ... })` for exactly this reason.
+  //
+  // Outside a contract the two types are the same, so nothing changes there,
+  // and a by-reference 'this' capture keeps the contract's const because it
+  // reaches the original object -- which Contracts/lambda.cpp pins.
+  QualType ClassType = UncontractedThisTy->getPointeeType();
   LambdaScopeInfo *CurLSI = nullptr;
   DeclContext *CurDC = CurSemaContext;
 
@@ -1242,6 +1252,7 @@ QualType Sema::getCurrentThisType() {
   // (via getCurrentContractEntry()) -- adjustCXXThisTypeForContracts
   // self-guards and only constifies when 'this' belongs to the contracted
   // function.
+  QualType UncontractedThisTy = ThisTy;
   if (!ThisTy.isNull() &&
       (currentEvaluationContext().isContractAssertionContext() ||
        getCurrentContractEntry()))
@@ -1251,8 +1262,8 @@ QualType Sema::getCurrentThisType() {
   // might need to be adjusted if the lambda or any of its enclosing lambda's
   // captures '*this' by copy.
   if (!ThisTy.isNull() && isLambdaCallOperator(CurContext))
-    return adjustCVQualifiersForCXXThisWithinLambda(FunctionScopes, ThisTy,
-                                                    CurContext, *this);
+    return adjustCVQualifiersForCXXThisWithinLambda(
+        FunctionScopes, ThisTy, UncontractedThisTy, CurContext, *this);
   return ThisTy;
 }
 

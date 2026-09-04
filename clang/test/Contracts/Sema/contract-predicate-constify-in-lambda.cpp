@@ -12,11 +12,17 @@
 // pushes its own.  So most of this file is a regression pin on the Clang side
 // of a bug that was real on the other.
 //
-// TWO SHAPES ARE NOT HERE, because Clang is wrong about them.  They are
-// XFAILed in contract-predicate-constify-in-lambda-gaps.cpp: a member reached
-// through a captured `*this` (which the paper marks OK and Clang rejects) and
-// a function-local static (which the paper makes an error and Clang accepts,
-// though it gets that one right when the static is named directly).
+// Two shapes here were wrong in opposite directions until the fixes this file
+// accompanies, and both are lambda-specific:
+//
+//   * a member reached through a CAPTURED `*this` was over-constified, though
+//     /3+e marks `++this->z` and `++z` "OK, captured *this" -- the rule
+//     constifies a VARIABLE declared outside the assertion, and a non-static
+//     data member of the captured object is not one; and
+//   * a FUNCTION-LOCAL STATIC was under-constified, though it is "a variable
+//     declared outside of C" like any other.  Naming it DIRECTLY in a
+//     predicate always worked, which is the control kept below: that is what
+//     made it a lambda gap rather than a storage-duration one.
 //
 // GCC mirror: g++.dg/contracts/cpp26/contract-predicate-constify-lambda.C
 
@@ -33,14 +39,18 @@ struct X {
 };
 
 struct Y {
+  int z = 0;
+
   void f(int i, int *p, int &r, X x, X *px)
-      pre([=, &i]() mutable {
+      pre([=, &i, *this]() mutable {
         // expected-error@+1 {{cannot assign to variable 'n' because it is considered 'const' inside of a contract}}
         ++n;
         // expected-error@+1 {{cannot assign to a variable captured by reference which was captured as const because it is inside a contract}}
         ++i;
-        ++p; // OK: a member of the closure type
-        ++r; // OK: a non-reference member of the closure type
+        ++p;       // OK: a member of the closure type
+        ++r;       // OK: a non-reference member of the closure type
+        ++this->z; // OK: the captured *this
+        ++z;       // OK: the captured *this
         (void)x;
         (void)px;
 
@@ -67,11 +77,15 @@ void from_lambda() {
   contract_assert([]() { ++t_n; return true; }());
   // expected-error@+1 {{cannot assign to variable 's' because it is considered 'const' inside of a contract}}
   contract_assert([]() { ++HasStatic::s; return true; }());
+
+  static int local_static = 0;
+  // expected-error@+1 {{cannot assign to variable 'local_static' because it is considered 'const' inside of a contract}}
+  contract_assert([&]() { ++local_static; return true; }());
 }
 
-// CONTROL: named directly in the predicate, all of them including a
-// function-local static -- which is the case that makes the lambda gap in the
-// companion file a lambda gap rather than a storage-duration one.
+// CONTROL: named directly in the predicate, including a function-local static.
+// This case always worked, which is what identified the failure above as a
+// LAMBDA gap rather than a storage-duration one.
 void named_directly() {
   static int local_static = 0;
   // expected-error@+1 {{cannot assign to variable 'n' because it is considered 'const' inside of a contract}}
