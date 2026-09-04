@@ -46,18 +46,20 @@ Some papers were called out as ready in P3850, others have been written and impl
 - P3400
   - The Dimensions label has not yet been implemented as its final design is being reconsidered
 
-## Known Issues
+## Open Upstream Bugs
 
-- Constification regression: after a trunk rebase, constification of local
-  variables and parameters in contract predicates is not applied correctly.
-  Affects plain functions, templates, and lambda `this`-captures.
-  (constification.cpp, templates.cpp, template-test2.cpp, lambda.cpp)
-- Sema regression: unexpected diagnostics on data member access and friendship
-  access checks in contract predicates after trunk rebase.
-  (contracts.cpp, friendship.cpp)
-- Module serialization: ContractSpecifierDecl deserialization crashes when
-  importing contracts with requires clauses from a module interface.
-  (p4283-modules.cpp)
+Bugs found during this implementation that reproduce on stock upstream
+Clang, independent of anything in this branch. Each links to a
+self-contained report-ready writeup plus a reproducer. A row is removed
+(and its file deleted) once the bug is fixed on upstream main, regardless
+of who fixed it or whether it was ever formally filed.
+
+| Bug | Summary | Status | Upstream Link | Details |
+|-----|---------|--------|----------------|---------|
+| CLANG-1 | Constant evaluator accepts converting to a virtual base through an object outside its lifetime | Fixed here | -- | [bug-reports/clang-01-constexpr-vbase-lifetime.md](bug-reports/clang-01-constexpr-vbase-lifetime.md) |
+| CLANG-5 | Returned object is not destroyed when a local's destructor throws during a return statement | Open | -- | [bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
+| CLANG-8 | `this` accepted in the declaration of an explicit-object member function | Open | -- | [bug-reports/clang-08-this-in-xobj-declaration.md](bug-reports/clang-08-this-in-xobj-declaration.md) |
+| CLANG-9 | Constexpr evaluator accepts forming a non-virtual-base or direct member's address before its non-trivial constructor begins | Open | -- | [bug-reports/clang-09-member-address-before-ctor.md](bug-reports/clang-09-member-address-before-ctor.md) |
 
 ## Contact
 
