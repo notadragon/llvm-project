@@ -32,6 +32,32 @@ contracts ones -- see
 [`../open-issues/README.md`](../open-issues/README.md). That file also carries
 the `Next ID` line both directories allocate from.
 
+## Checking whether a row still belongs here
+
+The removal rule above -- a row goes when upstream fixes it -- has no automatic
+trigger: upstream closing an issue is silent from here, and re-running the
+reproducers by hand is a thing nobody does. [`verify.sh`](verify.sh) does it
+instead. It measures every reproducer against both stock upstream trunk and
+this branch, and prints only what has moved since the checked-in baseline in
+[`verify-expected.txt`](verify-expected.txt):
+
+```
+./verify.sh              # report anything that moved
+./verify.sh --record     # re-baseline, then review the git diff
+./verify.sh -v CLANG-9   # show the diagnostics behind a moved digest
+```
+
+A move in the **stock** column is the event this table cares about. A move in
+the **branch** column is a regression or a fix here, and the Status column
+should follow it.
+
+Run it after every rebase, once the branch compiler is rebuilt *and* the stock
+nightly refreshed -- a stale nightly answers last week's question. The
+procedure is `notadragon_wg21`'s
+`src/pubs/impl/p3850impl/final-passes/rebase-runbook.md`; the cases and their
+flags are in [`verify-cases.txt`](verify-cases.txt). The GCC fork carries the
+same script over its own reproducers; keep the two in step.
+
 | Bug | Summary | Status | Upstream Link | Details |
 |-----|---------|--------|----------------|---------|
 | CLANG-1 | Constant evaluator accepts converting to a virtual base through an object outside its lifetime | Fixed here | None found (searched 2026-09-05) | [clang-01-constexpr-vbase-lifetime.md](clang-01-constexpr-vbase-lifetime.md) |

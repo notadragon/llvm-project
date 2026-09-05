@@ -1,0 +1,30 @@
+# Measured behaviour of every reproducer in this directory.
+#
+# Regenerate with ./verify.sh --record, and READ THE DIFF: a line
+# that moved in the STOCK column means upstream's behaviour changed,
+# which is the event that retires a row from README.md.  A line that
+# moved in the BRANCH column with stock unchanged is a regression
+# here, or a fix here, and the README Status column should follow.
+#
+# stock:  clang version 24.0.0git (https://github.com/llvm/llvm-project.git 3efd20d463e1b1210d2ff07cd79b68d6fa215f24)
+# branch: clang version 24.0.0git (git@bbgithub.dev.bloomberg.com:jberne4/llvm-project.git 2fa35885014e98a65510a3a2e048890239095e28)
+# dated:  2026-09-05
+#
+# id | stock | branch
+CLANG-1|clean|error[11:ad7fa67e]
+CLANG-2|clean exit:255 out:[clang-02-ubsan-bool-recover.c:38:11: runtime error: load of value 2, which is not a valid value for type '_Bool' SUMMARY: UndefinedBehaviorSanitizer: undefined-]|clean exit:255 out:[clang-02-ubsan-bool-recover.c:38:11: runtime error: load of value 2, which is not a valid value for type '_Bool' SUMMARY: UndefinedBehaviorSanitizer: undefined-]
+CLANG-5|clean exit:1 out:[]|clean exit:1 out:[]
+CLANG-5b|clean exit:7 out:[]|clean exit:7 out:[]
+CLANG-5b2|clean exit:7 out:[]|clean exit:7 out:[]
+CLANG-8-1|clean|clean
+CLANG-8-2|clean|clean
+CLANG-8-3|error[1:e0be54b7]|error[1:e0be54b7]
+CLANG-8-4|error[1:d2cec685]|error[1:d2cec685]
+CLANG-8-5|error[1:9374333b]|error[1:9374333b]
+CLANG-8-6|error[1:ffb3a036]|error[1:ffb3a036]
+CLANG-8-7|error[2:dea3a287]|error[2:dea3a287]
+CLANG-8-8|error[1:920d6b4f]|error[1:920d6b4f]
+CLANG-8-9|clean|clean
+CLANG-8-10|clean|clean
+CLANG-8-11|error[1:a5880d4e]|error[1:a5880d4e]
+CLANG-9|clean[1:d3f85603]|clean[1:d3f85603]

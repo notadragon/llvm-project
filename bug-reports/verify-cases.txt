@@ -1,0 +1,40 @@
+# One row per reproducer measurement: id | file | mode | flags
+#
+# Modes:  syntax   -fsyntax-only
+#         compile  -c
+#         link     -o a.out
+#         run      -o a.out, then execute; the runtime output is part of the
+#                  measurement, because these bugs compile clean and misbehave
+#
+# A mode may carry an "@c" suffix, meaning drive `clang` rather than `clang++`.
+# CLANG-2 is plain C and clang++ rejects -std=c17 outright.
+#
+# Flags are the ones the reproducer's own header comment records, and must
+# never include a branch-only option: stock has to be able to run the same
+# command, or the comparison means nothing.  None of these need -fcontracts --
+# every entry in this directory is a core-language bug by construction, since
+# contracts are not upstream in Clang and a contracts-dependent bug is not
+# filable (see ../open-issues/README.md).
+#
+# CLANG-8 is one row per -DCASE, because the bug is that the explicit-object
+# half of [expr.prim.this]/3 is unenforced while the static half is enforced:
+# a single row would average the two halves into one word and hide exactly the
+# asymmetry the reproducer was built to show.
+
+CLANG-1   | clang-01-constexpr-vbase-lifetime.cpp                 | syntax | -std=c++26
+CLANG-2   | clang-02-ubsan-bool-recover.c                         | run@c  | -std=c17 -fsanitize=bool -fsanitize-recover=bool -O0
+CLANG-5   | clang-05-retval-not-destroyed-on-throwing-cleanup.cpp | run    | -std=c++17
+CLANG-5b  | clang-05b-retval-leak-all-return-forms.cpp            | run    | -std=c++17 -O0
+CLANG-5b2 | clang-05b-retval-leak-all-return-forms.cpp            | run    | -std=c++17 -O2
+CLANG-8-1 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=1
+CLANG-8-2 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=2
+CLANG-8-3 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=3
+CLANG-8-4 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=4
+CLANG-8-5 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=5
+CLANG-8-6 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=6
+CLANG-8-7 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=7
+CLANG-8-8 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=8
+CLANG-8-9 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=9
+CLANG-8-10| clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=10
+CLANG-8-11| clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=11
+CLANG-9   | clang-09-member-address-before-ctor.cpp               | syntax | -std=c++26
