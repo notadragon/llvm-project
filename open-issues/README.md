@@ -32,13 +32,18 @@ means GitHub Issues was searched and nothing matched; `UNKNOWN` means nobody
 has looked.
 
 **Kind** is one of `defect` (wrong, and we intend to fix it), `deferred`
-(known, deliberately not fixed yet) or `divergence` (GCC and Clang disagree
-and the standard does not clearly settle which is right).
+(known, currently out of scope) or `divergence` (GCC and Clang disagree and
+the standard does not clearly settle which is right).
 
-| ID | Symptom | Kind | Workaround | Upstream | Details |
-|----|---------|------|------------|----------|---------|
-| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | do not rely on the recovered value; the report itself is identical on both | None found (searched 2026-09-05) | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02-ubsan-bool-recover.md) |
-| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | defect | none known; GCC does destroy it | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
-| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | defect | name the object parameter instead | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
-| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | defect | none; the program is accepted silently | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
-| CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | defect | declare the function at namespace scope and befriend that declaration | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |
+**A new issue is always recorded as `defect` when it is discovered.** It
+becomes `deferred` only when the user has explicitly said they do not want to
+expand scope far enough to fix it -- never by an agent's own judgement that a
+fix looks hard or invasive.
+
+| ID | Symptom | Kind | Upstream | Details |
+|----|---------|------|----------|---------|
+| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | None found (searched 2026-09-05) | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02-ubsan-bool-recover.md) |
+| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | deferred | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
+| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | deferred | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
+| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | deferred | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
+| CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | deferred | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |

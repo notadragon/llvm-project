@@ -1,6 +1,6 @@
 # CLANG-12: A contract mismatch between two friend declarations is accepted silently
 
-**Kind:** defect
+**Kind:** deferred
 **Status:** Open
 **Affects:** `-fcontracts`, C++26 and later; two friend declarations of the
 same function, in the same class, carrying different contract predicates
