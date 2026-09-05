@@ -2,7 +2,8 @@
 
 **Status:** Open (deliberately unfixed)
 **Component:** CodeGen / EH
-**Upstream Link:** --
+**Upstream Link:** UNKNOWN -- no search for an existing upstream report has
+been attempted yet
 
 ## Bug Report
 
