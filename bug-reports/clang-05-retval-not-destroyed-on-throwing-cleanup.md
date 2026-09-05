@@ -2,7 +2,16 @@
 
 **Status:** Open (deliberately unfixed)
 **Component:** CodeGen / EH
-**Upstream Link:** UNKNOWN -- no search for an existing upstream report has
+**Upstream Link:** [#12658](https://github.com/llvm/llvm-project/issues/12658) -- "clang fails to destroy return value
+when a destructor throws", **open, `confirmed`, filed 2012-03-17**, labels
+`clang:codegen` / `exception-safety`, 16 comments and a substantial CC list.
+Our exact bug, and thirteen years old.
+
+A second report of it, [#50865](https://github.com/llvm/llvm-project/issues/50865) (migrated from Bugzilla bz51523,
+citing [except.ctor]/2 as this writeup does), was **closed as a duplicate of
+#12658** -- so the canonical issue is #12658 and that is where anything we
+have to say belongs. Found 2026-09-05 by searching `"returned object"` in
+title
 been attempted yet
 
 ## Bug Report

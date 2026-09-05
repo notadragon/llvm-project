@@ -2,7 +2,17 @@
 
 **Status:** Open
 **Component:** clang / constexpr
-**Upstream Link:** UNKNOWN -- no search for an existing upstream report has
+**Upstream Link:** [#211286](https://github.com/llvm/llvm-project/issues/211286) -- **PARTIAL, not this bug.** "Calling
+member function before base subobject initialization in constant evaluation
+not rejected", open and `confirmed`. Same family (a subobject used before its
+initialization is not diagnosed in constant evaluation) but a different shape:
+it CALLS a member function where this one FORMS AN ADDRESS.
+
+Note the same report was filed against **both** trackers with identical text --
+it is [PR126357](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=126357) on the
+GCC side, linked the same way from GCC-2 there. Filing this one should cite
+it as related rather than duplicate it. Searched 2026-09-05; nothing covering
+the address-formation shape was found
 been attempted yet
 
 ## Bug Report

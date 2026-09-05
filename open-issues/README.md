@@ -25,14 +25,20 @@ IDs come from one sequence per compiler, shared with `bug-reports/`, and are
 never reused. Allocate from the line above and increment it. Both tables
 delete rows, so the highest ID visible in either is not a reliable counter.
 
+`--` in the Upstream column means the issue is ours alone with nothing
+upstream to link -- for a contracts-dependent issue that is always the case,
+since contracts are not upstream in Clang. `None found (searched <date>)`
+means GitHub Issues was searched and nothing matched; `UNKNOWN` means nobody
+has looked.
+
 **Kind** is one of `defect` (wrong, and we intend to fix it), `deferred`
 (known, deliberately not fixed yet) or `divergence` (GCC and Clang disagree
 and the standard does not clearly settle which is right).
 
 | ID | Symptom | Kind | Workaround | Upstream | Details |
 |----|---------|------|------------|----------|---------|
-| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | do not rely on the recovered value; the report itself is identical on both | UNKNOWN | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02-ubsan-bool-recover.md) |
-| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | defect | none known; GCC does destroy it | UNKNOWN | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
-| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | defect | name the object parameter instead | UNKNOWN | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
-| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | defect | none; the program is accepted silently | UNKNOWN | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
+| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | do not rely on the recovered value; the report itself is identical on both | None found (searched 2026-09-05) | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02-ubsan-bool-recover.md) |
+| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | defect | none known; GCC does destroy it | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
+| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | defect | name the object parameter instead | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
+| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | defect | none; the program is accepted silently | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
 | CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | defect | declare the function at namespace scope and befriend that declaration | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |

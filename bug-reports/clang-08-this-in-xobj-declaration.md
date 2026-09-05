@@ -2,7 +2,12 @@
 
 **Status:** Open
 **Component:** clang / Sema
-**Upstream Link:** UNKNOWN -- no search for an existing upstream report has
+**Upstream Link:** None found. Searched GitHub Issues 2026-09-05, including
+closed ones: Clang's own message
+`"cannot be used in a static member function declaration"` (zero hits
+anywhere), `"explicit object" this` in title, `"explicit object"
+"trailing return"`. The deducing-this issues that come back -- #105737,
+#84163, #99744, #140194 -- are all other defects in that feature
 been attempted yet
 
 ## Bug Report

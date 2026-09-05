@@ -2,8 +2,12 @@
 
 **Status:** Open (no fix intended here)
 **Component:** compiler-rt / UBSan, or codegen for `-fsanitize=bool`
-**Upstream Link:** UNKNOWN -- not filed; see "Why this is framed as a
-divergence"
+**Upstream Link:** None found. Searched GitHub Issues 2026-09-05, including
+closed ones: `"-fsanitize=bool"` (67 hits, none about what -recover leaves
+behind), `ubsan bool "invalid value" recover` (none), `sanitize-recover bool`
+in title (none). #215798 is the closest and is a different question -- a CHECK
+failing at -O0 versus -O2. See "Why this is framed as a divergence" below
+for why this may not warrant a report at all
 **Affects:** measured 2026-09-05 on our Clang against our GCC; originally
 found 2026-07 against system gcc 13.3.0. Plain C, no C++ and no contracts.
 

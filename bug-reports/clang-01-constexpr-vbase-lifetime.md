@@ -2,7 +2,11 @@
 
 **Status:** Fixed here (commit `8b33919f7aea`)
 **Component:** clang / constexpr
-**Upstream Link:** UNKNOWN -- no search for an existing upstream report has
+**Upstream Link:** None found. Searched GitHub Issues 2026-09-05, including
+closed ones: `constexpr "virtual base" lifetime`, `"outside its lifetime"` in
+title, `constexpr virtual base lifetime` in title. The near-misses are #97266
+(constexpr member function in a struct with a virtual base, a different
+rejection) and #56855 (a C diagnostics request). Neither is this
 been attempted yet
 
 ## Bug Report
