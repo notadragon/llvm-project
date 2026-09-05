@@ -33,6 +33,30 @@ struct ExplicitThis : S {
   void f(this ExplicitThis &self) pre(this->x == 0);
 };
 
+// Explicit `this` in a POSTCONDITION, and in one with a result-name.  A
+// postcondition is parsed on a different path -- the result name is a
+// declaration, and the predicate is dependent while it is being parsed -- so
+// the precondition case above is not enough on its own.  Added by the audit of
+// 2026-09-05, which found the explicit spelling covered only for `pre`.
+struct ExplicitThisPost : S {
+  // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+  void f(this ExplicitThisPost &self) post(this->x == 0);
+};
+
+struct ExplicitThisPostResult : S {
+  // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+  int f(this ExplicitThisPostResult &self) post(r : this->x == r);
+};
+
+// And in an assertion-statement, for the same reason the implicit spelling is
+// covered there.
+struct ExplicitThisAssert : S {
+  void f(this ExplicitThisAssert &self) {
+    // expected-error@+1 {{invalid use of 'this' in a function with an explicit object parameter}}
+    contract_assert(this->x == 0);
+  }
+};
+
 // An unqualified non-static data member in a precondition.
 struct ImplicitThisPre : S {
   // expected-error@+1 {{invalid use of member 'x' in explicit object member function}}

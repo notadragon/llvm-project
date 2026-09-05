@@ -46,6 +46,24 @@ struct S {
   void mem_this(int x) pre([this, x] { return record(x + m); }()) {}
 };
 
+// An assertion-statement in the body, which reaches the capture machinery by
+// a third path -- neither a function-contract-specifier on a free function nor
+// on a member -- and had no coverage until the audit of 2026-09-05.
+void in_assert(int x) {
+  int local = x + 1;
+  contract_assert([x] { return record(x); }());
+  contract_assert([&local] { return record(local); }());
+  contract_assert([=] { return record(x + local); }());
+}
+
+// A nested contract_assert inside a predicate lambda, NAMING THE CAPTURE.
+// GCC ICEs on exactly this shape (expand_expr_real_1: "Variables inherited
+// from containing functions should have been lowered by this point"), tracked
+// as GCC-32 in the gnu_gcc fork's open-issues/. Clang gets it right, and the
+// value check is what proves the capture -- not merely that it compiles.
+void nested_assert_on_capture(int x)
+    pre([x] { contract_assert(x >= 0); return record(x); }()) {}
+
 // A lambda's own precondition capturing that lambda's parameter.
 void lambda_own_pre() {
   auto l = [](int x) pre([x] { return record(x); }()) {};
@@ -89,6 +107,14 @@ int main() {
 
   lambda_own_pre();
   if (g_seen != 66)
+    __builtin_abort();
+
+  in_assert(120);
+  if (g_seen != 120 + 121)
+    __builtin_abort();
+
+  nested_assert_on_capture(131);
+  if (g_seen != 131)
     __builtin_abort();
 
   return 0;
