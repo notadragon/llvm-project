@@ -2126,6 +2126,22 @@ public:
     DS_NotConst = 2
   };
 
+  /// Is USAGE an odr-use of one of FD's own non-reference parameters?  That is
+  /// what makes [dcl.contract.func]'s const requirement apply at all, and it
+  /// is a separate question from whether any particular declaration's
+  /// parameter satisfies it -- which is why diagnoseRedeclParamConst needs it
+  /// too.
+  bool isOwnValueParmOdrUse(const ParmVarDecl *PVD,
+                            const DeclRefExpr *Usage) const {
+    if (PVD->getFunctionScopeIndex() >= FD->getNumParams() ||
+        FD->getParamDecl(PVD->getFunctionScopeIndex()) != PVD)
+      return false;
+    // [dcl.contract.func] p2900r8 --
+    //   If a  postcondition  odr-uses ([basic.def.odr]) a non-reference
+    //   parameter...
+    return !PVD->getType()->isReferenceType() && !Usage->isNonOdrUse();
+  }
+
   DiagSelector classifyDiagnosableParmVar(const ParmVarDecl *PVD,
                                           const DeclRefExpr *Usage) const {
     // We only care about parameter's for the function with the contracts we're
@@ -2181,6 +2197,12 @@ public:
     if (!PVD || PVD->getType()->isDependentType() || DiagnosedDecls.count(PVD))
       return true;
 
+    // Record it whether or not THIS declaration's parameter is const: the rule
+    // reaches the corresponding parameter on every declaration, and the one
+    // that violates it may have been merged away.
+    if (isOwnValueParmOdrUse(PVD, E))
+      OdrUsedParms.try_emplace(PVD->getFunctionScopeIndex(), E->getLocation());
+
     if (DiagSelector DiagSelect = classifyDiagnosableParmVar(PVD, E);
         DiagSelect != DS_None) {
       DiagnosedDecls.insert(PVD);
@@ -2199,11 +2221,109 @@ public:
     return true;
   }
 
+  /// Index -> location of the first odr-use, for each of FD's own
+  /// non-reference parameters a postcondition odr-uses.
+  llvm::MapVector<unsigned, SourceLocation> OdrUsedParms;
+
 private:
   DenseSet<ParmVarDecl *> DiagnosedDecls;
 };
 
 } // namespace
+
+/// [dcl.contract.func]: a parameter a postcondition odr-uses must have const
+/// type on that declaration "and the corresponding parameter on all
+/// declarations of f".  A declaration that violates it may no longer exist by
+/// the time the question can be answered: redeclarations are merged, one set
+/// of parameters survives, and with a DEPENDENT parameter type there is
+/// nothing to judge until the template arguments are known.  So consult the
+/// other declarations of the pattern here, substituting each one's written
+/// parameter type with this specialization's arguments.
+///
+/// Substituting is what makes this correct rather than approximate.  The
+/// declarations may disagree about writing `const` and still both be const
+/// after substitution -- `f<const int>` for `T a` and `T const a` -- so
+/// comparing the written qualifiers would reject a well-formed program.
+static void
+diagnoseRedeclParamConst(Sema &S, FunctionDecl *FD,
+                         const llvm::MapVector<unsigned, SourceLocation> &Used) {
+  if (Used.empty())
+    return;
+
+  // Only an instantiation can have lost a declaration this way.  Every
+  // declaration of a non-template function is checked as written, when it is
+  // written.
+  FunctionTemplateDecl *FTD = FD->getPrimaryTemplate();
+  if (!FTD || !FD->getTemplateSpecializationArgs())
+    return;
+
+  for (const auto &[Idx, UseLoc] : Used) {
+    // Already ill-formed on its own account and diagnosed there; saying it
+    // twice for one parameter helps nobody.  This exists for the case where
+    // the surviving parameter looks fine and another declaration did not.
+    if (!FD->getParamDecl(Idx)->getType().isConstQualified())
+      continue;
+
+    // redecls() on a RedeclarableTemplateDecl yields the base type.
+    for (auto *RD : FTD->redecls()) {
+      const FunctionDecl *Pattern =
+          cast<FunctionTemplateDecl>(RD)->getTemplatedDecl();
+
+      // A pack breaks the index correspondence this relies on: one written
+      // parameter becomes N in the instantiation, so Idx does not name the
+      // same parameter on both sides.  Packs are covered where they are
+      // expanded, not here.
+      if (Pattern->getNumParams() != FD->getNumParams())
+        continue;
+      if (Idx >= Pattern->getNumParams())
+        continue;
+
+      const ParmVarDecl *P = Pattern->getParamDecl(Idx);
+      if (P->isParameterPack())
+        continue;
+
+      QualType T = P->getType();
+      if (T->isReferenceType() || T->containsUnexpandedParameterPack())
+        continue;
+
+      if (T->isDependentType()) {
+        Sema::InstantiatingTemplate Inst(S, UseLoc, FD);
+        if (Inst.isInvalid())
+          return;
+        Sema::SFINAETrap Trap(S);
+        // Exactly one level, holding this function template's own arguments.
+        // The pattern belongs to an already-instantiated enclosing class if
+        // there is one, so its template parameters are at depth 0 either way;
+        // adding the class's arguments as an outer level made `U` in
+        // Foo<int>::bar<const int> resolve to the class's `int` and rejected a
+        // well-formed program.
+        MultiLevelTemplateArgumentList TemplateArgs(
+            FTD, FD->getTemplateSpecializationArgs()->asArray(),
+            /*Final=*/true);
+        QualType Subst =
+            S.SubstType(T, TemplateArgs, P->getLocation(), P->getDeclName());
+        if (Subst.isNull() || Trap.hasErrorOccurred())
+          continue;
+        // Still dependent means this declaration's parameter type mentions
+        // something these arguments do not supply; there is nothing to judge.
+        if (Subst->isDependentType())
+          continue;
+        T = Subst;
+      }
+
+      if (T.isConstQualified())
+        continue;
+
+      S.Diag(UseLoc, diag::err_contract_postcondition_parameter_type_invalid)
+          << FD->getParamDecl(Idx)->getIdentifier() << /*must be const*/ 2;
+      S.Diag(P->getTypeSpecStartLoc(), diag::note_parameter_type)
+          << T << P->getSourceRange();
+      FD->getContracts()->setInvalidDecl(true);
+      FD->setInvalidDecl(true);
+      break;
+    }
+  }
+}
 
 static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
                                ContractSpecifierDecl *CSD) {
@@ -2214,6 +2334,8 @@ static void diagnoseParamTypes(Sema &S, FunctionDecl *FD,
   ParamReferenceChecker Checker(S, FD);
   for (auto *CS : CSD->postconditions())
     Checker.TraverseContractStmt(CS);
+
+  diagnoseRedeclParamConst(S, FD, Checker.OdrUsedParms);
 }
 
 namespace {
