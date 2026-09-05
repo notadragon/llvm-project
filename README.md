@@ -46,12 +46,19 @@ Some papers were called out as ready in P3850, others have been written and impl
 - P3400
   - The Dimensions label has not yet been implemented as its final design is being reconsidered
 
-## Open Upstream Bugs
+## Known Bugs and Open Issues
 
-Bugs found during this implementation that reproduce on stock upstream
-Clang, independent of anything in this branch, are tracked in
-[bug-reports/README.md](bug-reports/README.md) (kept as a separate file
-alongside the per-bug writeups it links to).
+Two lists, answering two different questions. Each is kept as a separate file
+alongside the per-bug writeups it links to.
+
+- [open-issues/README.md](open-issues/README.md) -- **what is still broken on
+  this branch**, whatever its origin. Start here if you hit something: a row
+  means we already know, and says whether there is a way around it. A row is
+  deleted when we fix it. Contracts are not upstream in Clang, so most
+  contracts issues are branch-only and appear only here.
+- [bug-reports/README.md](bug-reports/README.md) -- bugs that reproduce on
+  **stock upstream Clang**, independent of anything in this branch, including
+  ones we have already fixed here. A row survives until upstream fixes it.
 
 ## Contact
 
