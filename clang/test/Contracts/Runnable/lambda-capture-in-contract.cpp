@@ -57,9 +57,9 @@ void in_assert(int x) {
 }
 
 // A nested contract_assert inside a predicate lambda, NAMING THE CAPTURE.
-// GCC ICEs on exactly this shape (expand_expr_real_1: "Variables inherited
-// from containing functions should have been lowered by this point"), tracked
-// as GCC-32 in the gnu_gcc fork's open-issues/. Clang gets it right, and the
+// GCC ICEd on exactly this shape (expand_expr_real_1: "Variables inherited
+// from containing functions should have been lowered by this point") until
+// the second layer of GCC-31 was fixed there. Clang gets it right, and the
 // value check is what proves the capture -- not merely that it compiles.
 void nested_assert_on_capture(int x)
     pre([x] { contract_assert(x >= 0); return record(x); }()) {}

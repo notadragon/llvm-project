@@ -19,7 +19,7 @@ Contracts are not upstream in Clang, so a contracts-dependent bug has nothing
 upstream to reproduce against and is not tracked in `bug-reports/`. Such
 issues are branch-only by definition and their writeups live here.
 
-**Next ID:** CLANG-12
+**Next ID:** CLANG-13
 
 IDs come from one sequence per compiler, shared with `bug-reports/`, and are
 never reused. Allocate from the line above and increment it. Both tables
@@ -35,3 +35,4 @@ and the standard does not clearly settle which is right).
 | CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | defect | none known; GCC does destroy it | UNKNOWN | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
 | CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | defect | name the object parameter instead | UNKNOWN | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
 | CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | defect | none; the program is accepted silently | UNKNOWN | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
+| CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | defect | declare the function at namespace scope and befriend that declaration | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |

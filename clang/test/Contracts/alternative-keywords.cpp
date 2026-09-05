@@ -44,10 +44,20 @@ void in_lambda(const int x) {
   (void)l(x);
 }
 
+// Inside a lambda written in a contract predicate that captures NOTHING,
+// naming a global instead. Mirrors the same pair in GCC's
+// contract-assert-alt-spelling.C.
+int g_alt_spelling_n = 0;
+
+void in_predicate_lambda_no_capture(const int x)
+    __pre([] { __contract_assert(g_alt_spelling_n >= 0); return true; }()) {
+  (void)x;
+}
+
 // Inside a lambda written in a contract predicate, the most indirect route.
-// The lambda captures, and the nested assert names the capture: GCC ICEs on
-// exactly this shape (GCC-32 in the gnu_gcc fork's open-issues/), so pinning
-// that Clang handles it is worth a row of its own.
+// The lambda captures, and the nested assert names the capture: GCC ICEd on
+// exactly this shape until the second layer of GCC-31 was fixed there, so
+// pinning that Clang handles it is worth a row of its own.
 void in_predicate_lambda(const int x)
     __pre([x] { __contract_assert(x >= 0); return x > 0; }()) {}
 
