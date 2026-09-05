@@ -121,6 +121,18 @@ Task result_only(int x) post(r : true) { co_return; }
 // of the const rule.
 int not_a_coroutine(const int x) post(x > 0) { return x; }
 
+// An UNEVALUATED naming of a parameter is not an odr-use, so it does not
+// trip this restriction either -- the same boundary the const rule has.  GCC
+// rejected all three of these until gnu_gcc e9b7222a73f, because one flag
+// drives both rules there and a decltype or requires-expression was wrongly
+// marking the parameter as used.  See
+// Contracts/Sema/postcondition-unevaluated-operand.cpp for the rest of that
+// family.
+template <typename T> bool pred();
+Task unevaluated_decltype(int x) post(pred<decltype(x)>()) { co_return; }
+Task unevaluated_sizeof(int x) post(sizeof(x) > 0) { co_return; }
+Task unevaluated_requires(int x) post(requires { +x; }) { co_return; }
+
 // The same restriction inside a template, where the function is only known
 // to be a coroutine once its body is parsed.  Deliberately not instantiated:
 // the GCC mirror found that an instantiation repeats the same diagnostic at

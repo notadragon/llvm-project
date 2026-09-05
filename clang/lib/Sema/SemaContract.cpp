@@ -2796,6 +2796,24 @@ bool Sema::isUsageAcrossContract(const ValueDecl *VD) {
         Var->getStorageDuration() == SD_Thread)
       return true;
 
+  // Nothing has pushed a function scope, so there is no scope stack to walk
+  // and nothing can lie between this use and the contract.  A contract scope
+  // is current -- checked at the top -- so the use is inside a predicate.
+  //
+  // This is the eager path: a free function's contracts are parsed in its
+  // declarator, and unlike the late-parsed path taken by a member function's
+  // (ParseContracts.cpp, CES_Function) nothing pushes a FunctionScopeInfo for
+  // it.  RebuildContractSpecifierForDecl asserts the same emptiness and pushes
+  // a scope of its own before it does any work.
+  //
+  // Reaching here at all requires an unevaluated operand in the predicate: the
+  // isContractAssertionContext() fast path above answers every use that is
+  // directly in the predicate.  A requires-expression is the case that gets
+  // this far, and it used to walk off the bottom of the scope stack and fail
+  // ScopeWalker::nextFuncScope's assertion.
+  if (FunctionScopes.empty())
+    return true;
+
   assert(VD);
   return getInterveningContractEntry(*this, VD) != nullptr;
 }

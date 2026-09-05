@@ -59,7 +59,6 @@ defect is a filed upstream bug on the GCC side.
 
 Not to be confused with what comment 1 of PR127196 raises -- a predicate
 naming a parameter only inside `decltype`. That is an unevaluated operand and
-therefore not an odr-use, so this rule does not reach it; Clang already gets
-that family right, as
-[`clang-10-requires-expr-in-contract-ice.md`](clang-10-requires-expr-in-contract-ice.md)
-records.
+therefore not an odr-use, so this rule does not reach it. Clang gets that
+whole family right; it is pinned by
+`clang/test/Contracts/Sema/postcondition-unevaluated-operand.cpp`.
