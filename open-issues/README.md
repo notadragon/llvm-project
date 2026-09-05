@@ -19,7 +19,7 @@ Contracts are not upstream in Clang, so a contracts-dependent bug has nothing
 upstream to reproduce against and is not tracked in `bug-reports/`. Such
 issues are branch-only by definition and their writeups live here.
 
-**Next ID:** CLANG-13
+**Next ID:** CLANG-14
 
 IDs come from one sequence per compiler, shared with `bug-reports/`, and are
 never reused. Allocate from the line above and increment it. Both tables
@@ -47,3 +47,4 @@ fix looks hard or invasive.
 | CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | deferred | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
 | CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | deferred | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
 | CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | deferred | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |
+| CLANG-13 | Instantiating one function's contracts from inside another contract's predicate asserts in `PushContractScope` | defect | -- | [clang-13-contract-instantiation-reentrancy.md](clang-13-contract-instantiation-reentrancy.md) |
