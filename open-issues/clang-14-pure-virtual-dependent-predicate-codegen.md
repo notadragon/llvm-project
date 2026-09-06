@@ -82,6 +82,47 @@ substitutes the contracts. So the condition is "no definition anywhere, plus a
 predicate that needs substituting", and `member` (`n >= 0` on a member of the
 dependent class) belongs in the trigger set alongside `sizeof (T)`.
 
+## Where it fails, and what is still unknown (2026-09-06)
+
+The stack is unambiguous about the *site*:
+
+```
+CodeGenModule::getOrEmitVirtualContractWrapper
+  CodeGenFunction::EmitVirtualContractWrapperBody
+    CodeGenFunction::EmitContractStmtAsFullStmt
+      CodeGenFunction::emitCheckForSemantic
+        EmitScalarExpr  ->  ScalarExprEmitter::VisitMemberExpr  ->  assert
+```
+
+The P3097 wrapper reads the method's contracts at CodeGen and emits the
+predicate. For a pure virtual they are still the pattern's dependent tree, so
+this is the same shape as GCC-34 -- a reader that does not need a definition,
+looking at contracts nobody substituted -- reached in Clang at a later stage.
+
+**What is measured:**
+
+* `MarkFunctionReferenced` has no pure-virtual early return before the
+  `OdrUse == OdrUseContext::Used` branch that calls
+  `InstantiateFunctionContractsOnUse`, so the hook is reached for this call.
+* Forcing an unambiguous odr-use first (`auto p = &A<int>::get;`) does **not**
+  help, nor does an explicit instantiation of the class template, nor giving
+  the pure virtual an out-of-line definition.
+* A **non-pure** virtual in a class template with no definition anywhere is
+  fine. Pure-ness is the discriminator, not absence of a definition.
+
+**What is not yet established** is whether the hook runs and bails on one of
+its guards, or runs successfully and CodeGen then reads a different declaration
+than the one that was substituted. The guards
+(`getTemplateInstantiationPattern`, `holdsPatternContractSpecifier`,
+`isDependentContext`) all appear to pass for `A<int>::get` on inspection, which
+mildly favours the second explanation -- but that is reading, not measurement,
+and settling it needs a `--debug` build with a breakpoint in
+`InstantiateFunctionContractsOnUse`. Do that before writing any fix: the two
+explanations have completely different fixes, and the comments in
+`InstantiateContractSpecifier` still refer to an
+`InstantiateVirtualFunctionContractsOnUse` that no longer exists, so the
+intended design here is not reliably documented.
+
 ## Provenance: pre-existing, not the CLANG-13 fix
 
 Measured rather than argued. The pre-CLANG-13-fix sources
