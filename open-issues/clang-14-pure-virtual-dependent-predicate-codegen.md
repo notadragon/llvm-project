@@ -155,22 +155,40 @@ void nocall (A<int> *p) { (void) p; } // gcc: silent  clang: silent
 
 So it is the *call* that makes the specification needed, and both compilers
 agree. The difference is in the wording, not the implementations -- the two
-rules use different triggers:
+rules use different triggers.
 
-* **[except.spec]p17** -- needed when the function "is the unique lookup result
-  or the selected member of a set of overloaded functions" **in an
-  expression**. Being named suffices; odr-use is not required. Clang quotes
-  this verbatim at the `ResolveExceptionSpec` call in
-  `SemaExprMember.cpp` (`BuildMemberExpr`).
-* **[dcl.contract.func]/9** -- needed when the function "is odr-used or
-  defined". And [basic.def.odr] specifically exempts a pure virtual whose name
-  is not explicitly qualified.
+Quoted from the current working draft as rendered at eel.is, checked
+2026-09-06. Paragraph numbers are working-draft numbers and will drift; the
+stable names will not.
 
-A call to a pure virtual must still *check* its contracts at run time, so /9's
-trigger looks too weak: it never makes the contracts of a pure virtual needed,
-in any translation unit. Worth raising as a core issue -- the fix is presumably
-to align /9 with p17's "named in an expression", or at least to add the
-potentially-evaluated call.
+* **[except.spec]/13** -- "An exception specification is considered to be
+  needed when: (13.1) in an expression, the function is selected by overload
+  resolution; (13.2) the function is odr-used; ..." Being selected in an
+  expression is its own trigger, listed *before* and separately from odr-use.
+* **[dcl.contract.func]/9** -- "The function contract assertions of a function
+  are considered to be needed ([temp.inst]) when the function is odr-used
+  ([basic.def.odr]) or the function is defined." No "named in an expression"
+  bullet.
+* **[basic.def.odr]/8** -- "A virtual member function is odr-used if it is not
+  pure." And /4.1: a function is named by an expression "... and either it is
+  not a pure virtual function or the expression is an id-expression naming the
+  function with an explicitly qualified name that does not form a pointer to
+  member."
+
+(Clang's comment at the `ResolveExceptionSpec` call in `SemaExprMember.cpp`
+cites this as "[except.spec]p17" and paraphrases the bullet as "the unique
+lookup result or the selected member of a set of overloaded functions". Both
+are stale against the current draft. The comment is still a correct guide to
+what the code is doing.)
+
+Put together: [basic.def.odr]/8 says a pure virtual is not odr-used, and
+[dcl.contract.func]/9 offers no other trigger, so **the contracts of a pure
+virtual are never "needed" in any translation unit** -- while a call to it must
+still check them at run time. [except.spec]/13.1 avoids the same trap by making
+selection in an expression its own trigger.
+
+Worth raising as a core issue. The obvious repair is to give /9 a bullet
+matching [except.spec]/13.1.
 
 The implementation should not wait on that. Whatever the wording ends up
 saying, calling a function in a potentially-evaluated expression has to require
