@@ -65,6 +65,42 @@ int use (A<int> &a) { return a.get (); }
 }  // namespace pure_virtual__call__codegen
 
 // --------------------------------------------------------------------------
+// A pure virtual in a class template read by its P3097 interface
+// wrapper.  There is no definition to instantiate, so the wrapper is the only
+// thing that will ever need these contracts.  This is where GCC-34 lived, and
+// where CLANG-14 still does for the dependent predicate.
+//
+// Predicate kind: dependent -- `sizeof (T) > 0`.  Phase: codegen.
+// --------------------------------------------------------------------------
+namespace pure_virtual__dependent__codegen {
+
+template <class T> struct A {
+  virtual int get () const pre (sizeof (T) > 0) = 0;
+  int n;
+};
+struct D : A<int> { int get () const override { return n; } };
+int use (A<int> &a) { return a.get (); }
+}  // namespace pure_virtual__dependent__codegen
+
+// --------------------------------------------------------------------------
+// A pure virtual in a class template read by its P3097 interface
+// wrapper.  There is no definition to instantiate, so the wrapper is the only
+// thing that will ever need these contracts.  This is where GCC-34 lived, and
+// where CLANG-14 still does for the dependent predicate.
+//
+// Predicate kind: member -- `n >= 0`.  Phase: codegen.
+// --------------------------------------------------------------------------
+namespace pure_virtual__member__codegen {
+
+template <class T> struct A {
+  virtual int get () const pre (n >= 0) = 0;
+  int n;
+};
+struct D : A<int> { int get () const override { return n; } };
+int use (A<int> &a) { return a.get (); }
+}  // namespace pure_virtual__member__codegen
+
+// --------------------------------------------------------------------------
 // A virtual with a definition, read by the same wrapper.  The control
 // for the pure case: here instantiating the definition would have substituted the
 // contracts anyway, so the wrapper must find them already done and not redo the
@@ -239,3 +275,39 @@ template struct A<int>;
 struct D : A<int> { int get () const override { return n; } };
 int use (A<int> &a) { return a.get (); }
 }  // namespace pure_virtual_explicit_inst__call__codegen
+
+// --------------------------------------------------------------------------
+// A pure virtual reached after an explicit instantiation of the class
+// template, which instantiates the members' declarations on a different schedule
+// from an implicit use.
+//
+// Predicate kind: dependent -- `sizeof (T) > 0`.  Phase: codegen.
+// --------------------------------------------------------------------------
+namespace pure_virtual_explicit_inst__dependent__codegen {
+
+template <class T> struct A {
+  virtual int get () const pre (sizeof (T) > 0) = 0;
+  int n;
+};
+template struct A<int>;
+struct D : A<int> { int get () const override { return n; } };
+int use (A<int> &a) { return a.get (); }
+}  // namespace pure_virtual_explicit_inst__dependent__codegen
+
+// --------------------------------------------------------------------------
+// A pure virtual reached after an explicit instantiation of the class
+// template, which instantiates the members' declarations on a different schedule
+// from an implicit use.
+//
+// Predicate kind: member -- `n >= 0`.  Phase: codegen.
+// --------------------------------------------------------------------------
+namespace pure_virtual_explicit_inst__member__codegen {
+
+template <class T> struct A {
+  virtual int get () const pre (n >= 0) = 0;
+  int n;
+};
+template struct A<int>;
+struct D : A<int> { int get () const override { return n; } };
+int use (A<int> &a) { return a.get (); }
+}  // namespace pure_virtual_explicit_inst__member__codegen

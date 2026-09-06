@@ -19181,13 +19181,41 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       (OdrUse == OdrUseContext::Used ||
        (NeededForConstantEvaluation && !Func->isPureVirtual()));
 
-  // [dcl.contract.func]/9: a function's contract assertions are needed when it
+  // [dcl.contract.func]: a function's contract assertions are needed when it
   // is odr-used, not only when it is defined.  Instantiate them here so that a
   // declaration-only template that is merely called still gets its predicate
   // substituted and checked, and so that a virtual function's interface
   // contracts exist for the P3097 wrapper around the vtable dispatch even if
   // its own definition is never instantiated.
-  if (OdrUse == OdrUseContext::Used)
+  //
+  // Odr-use alone is too narrow, because of pure virtual functions.  A pure
+  // virtual called by unqualified virtual dispatch is deliberately not
+  // odr-used: [basic.def.odr] says a function is odr-used when it is "named
+  // by a potentially evaluated expression", and excludes a pure virtual from
+  // being "named by" one unless the name is explicitly qualified.  So
+  // MarkMemberReferenced passes MightBeOdrUse = false and OdrUse is None
+  // here -- yet the call must still check the contracts, and nothing else
+  // will ever substitute them, a pure virtual having no definition to
+  // instantiate either.
+  //
+  // [dcl.contract.func] does not currently cover that; a core issue is being
+  // filed to add "in a potentially evaluated expression, the function is
+  // selected by overload resolution" alongside its existing odr-used and
+  // defined bullets.  [except.spec] already carries the equivalent bullet,
+  // which is why the exception specification of the very same pure virtual
+  // *is* resolved at the very same call.  Implemented ahead of the wording
+  // because P3097 does not work for pure virtual functions without it.
+  //
+  // isOdrUseContext answers "is this a potentially evaluated, non-dependent
+  // context", independently of whether the *definition* is needed.  So an
+  // unevaluated operand still does not need the contracts -- decltype,
+  // sizeof, noexcept and requires-expressions must not instantiate them.
+  bool ContractsNeeded = OdrUse == OdrUseContext::Used;
+  if (!ContractsNeeded)
+    if (const auto *MD = dyn_cast<CXXMethodDecl>(Func))
+      ContractsNeeded =
+          MD->isVirtual() && isOdrUseContext(*this) == OdrUseContext::Used;
+  if (ContractsNeeded)
     InstantiateFunctionContractsOnUse(Loc, Func);
 
   // C++14 [temp.expl.spec]p6:
