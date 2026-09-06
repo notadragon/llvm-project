@@ -32,6 +32,7 @@
 #include "clang/Sema/SemaOpenMP.h"
 #include "clang/Sema/SemaSwift.h"
 #include "clang/Sema/Template.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <optional>
@@ -6002,7 +6003,41 @@ void Sema::InstantiateFunctionContractsOnUse(
   if (Inst.isInvalid())
     return;
 
+  // Break cycles between contracts.  Substituting a predicate odr-uses what it
+  // calls, so two functions whose predicates call each other ask for each
+  // other's contracts without end.  Whichever request came first is still on
+  // the stack and will set this function's contracts when it returns, so the
+  // re-entrant one has nothing to add.
+  if (!ContractInstantiationsInProgress.insert(Function).second)
+    return;
+  llvm::scope_exit LeaveInProgress(
+      [&] { ContractInstantiationsInProgress.erase(Function); });
+
   Sema::ContextRAII SavedContext(*this, Function);
+
+  // Substitute in a function scope and an expression evaluation context of our
+  // own, rather than borrowing whatever the odr-use happened to occur in.
+  //
+  // This runs from MarkFunctionReferenced, so it is reachable while some
+  // *other* function's contract predicate is still being transformed: that
+  // predicate odr-uses a function which itself has contracts, and lands right
+  // here.  PushContractScope records its state on getCurFunction() and asserts
+  // that scope is not already inside a contract -- which the enclosing
+  // function's scope is.  The two functions are unrelated, and neither should
+  // see the other's scope, so give this substitution its own.
+  //
+  // The expression evaluation context matters for the same reason: entering
+  // Function resets the immediate-function-context tracking, so a predicate
+  // substituted from inside a consteval function's contract does not inherit
+  // that function's immediate context.
+  PushFunctionScope();
+  PushExpressionEvaluationContextForFunction(
+      ExpressionEvaluationContext::PotentiallyEvaluated, Function);
+  llvm::scope_exit LeaveFunctionScope([&] {
+    PopExpressionEvaluationContext();
+    PopFunctionScopeInfo();
+  });
+
   LocalInstantiationScope Scope(*this);
 
   MultiLevelTemplateArgumentList TemplateArgs = getTemplateInstantiationArgs(

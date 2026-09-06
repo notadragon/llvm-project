@@ -3361,6 +3361,15 @@ public:
   InstantiateFunctionContractsOnUse(SourceLocation PointOfInstantiation,
                                     FunctionDecl *Function);
 
+  /// Functions whose contracts are being instantiated right now.
+  ///
+  /// Contract instantiation re-enters itself: substituting a predicate
+  /// odr-uses the functions it calls, and those may have contracts of their
+  /// own.  Two predicates that call each other therefore form a genuine cycle,
+  /// which this breaks -- the inner request returns without doing anything,
+  /// and the outer one it is already inside finishes the job.
+  llvm::SmallPtrSet<const FunctionDecl *, 4> ContractInstantiationsInProgress;
+
   std::optional<unsigned>
   getFunctionScopeIndexForDeclaration(const ValueDecl *VD);
   const DeclContext *getDeclContextForFunctionScopeIndex(unsigned ScopeIndex);
