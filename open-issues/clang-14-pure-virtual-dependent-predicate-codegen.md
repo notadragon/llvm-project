@@ -141,6 +141,41 @@ non-dependent specifier even when the function's own definition is never
 instantiated". The definition is genuinely not needed; the **contracts** are,
 because P3097 evaluates them in the wrapper around the dispatch.
 
+## There is probably a wording defect behind this
+
+The exception specification of the same pure virtual **is** instantiated and
+validated at the same call, in both compilers. Measured with no contracts
+involved, plain C++23:
+
+```c++
+template <class T> struct A { virtual void g () noexcept (T::nonexistent) = 0; };
+void use (A<int> *p) { p->g (); }     // gcc: error   clang: error
+void nocall (A<int> *p) { (void) p; } // gcc: silent  clang: silent
+```
+
+So it is the *call* that makes the specification needed, and both compilers
+agree. The difference is in the wording, not the implementations -- the two
+rules use different triggers:
+
+* **[except.spec]p17** -- needed when the function "is the unique lookup result
+  or the selected member of a set of overloaded functions" **in an
+  expression**. Being named suffices; odr-use is not required. Clang quotes
+  this verbatim at the `ResolveExceptionSpec` call in
+  `SemaExprMember.cpp` (`BuildMemberExpr`).
+* **[dcl.contract.func]/9** -- needed when the function "is odr-used or
+  defined". And [basic.def.odr] specifically exempts a pure virtual whose name
+  is not explicitly qualified.
+
+A call to a pure virtual must still *check* its contracts at run time, so /9's
+trigger looks too weak: it never makes the contracts of a pure virtual needed,
+in any translation unit. Worth raising as a core issue -- the fix is presumably
+to align /9 with p17's "named in an expression", or at least to add the
+potentially-evaluated call.
+
+The implementation should not wait on that. Whatever the wording ends up
+saying, calling a function in a potentially-evaluated expression has to require
+its declaration and all of its parts to be valid.
+
 ## Proposed fix
 
 Ask the evaluation context directly rather than routing through odr-use, for
@@ -154,8 +189,15 @@ if (OdrUse == OdrUseContext::Used ||
 ```
 
 `isOdrUseContext` answers "would this be an odr-use if the definition were
-needed", so it still returns `None` in an unevaluated operand and `Dependent`
-in a dependent context. That matters: the `sfinae` group of the matrix pins
+needed" -- which is exactly "named in a potentially-evaluated expression", the
+trigger the wording ought to have. It still returns `None` in an unevaluated
+operand and `Dependent` in a dependent context.
+
+Note the deliberate asymmetry with the exception specification, which p17 makes
+needed even in an unevaluated operand (`noexcept (p->g ())` diagnoses). A
+contract is not: nothing evaluates it there, so nothing needs it. Potentially
+evaluated is the right line for contracts even though it is not the line for
+exception specifications. That matters: the `sfinae` group of the matrix pins
 that `decltype`, `sizeof`, `noexcept` and requires-expressions must **not**
 instantiate contracts, and this formulation preserves that by construction
 rather than by luck.
