@@ -82,7 +82,7 @@ substitutes the contracts. So the condition is "no definition anywhere, plus a
 predicate that needs substituting", and `member` (`n >= 0` on a member of the
 dependent class) belongs in the trigger set alongside `sizeof (T)`.
 
-## Where it fails, and what is still unknown (2026-09-06)
+## Root cause: SETTLED (2026-09-06)
 
 The stack is unambiguous about the *site*:
 
@@ -110,18 +110,55 @@ looking at contracts nobody substituted -- reached in Clang at a later stage.
 * A **non-pure** virtual in a class template with no definition anywhere is
   fine. Pure-ness is the discriminator, not absence of a definition.
 
-**What is not yet established** is whether the hook runs and bails on one of
-its guards, or runs successfully and CodeGen then reads a different declaration
-than the one that was substituted. The guards
-(`getTemplateInstantiationPattern`, `holdsPatternContractSpecifier`,
-`isDependentContext`) all appear to pass for `A<int>::get` on inspection, which
-mildly favours the second explanation -- but that is reading, not measurement,
-and settling it needs a `--debug` build with a breakpoint in
-`InstantiateFunctionContractsOnUse`. Do that before writing any fix: the two
-explanations have completely different fixes, and the comments in
-`InstantiateContractSpecifier` still refer to an
-`InstantiateVirtualFunctionContractsOnUse` that no longer exists, so the
-intended design here is not reliably documented.
+**Neither guess was right.** Measured with temporary tracing on a release
+build -- no debug build needed, contrary to the earlier note here.
+
+`InstantiateFunctionContractsOnUse` is **never called for the pure virtual at
+all**. Tracing every entry to it while compiling the reproducer shows only the
+constructors; `A<int>::get` never appears. Tracing `MarkFunctionReferenced`
+instead shows why:
+
+```
+CRASHING (pure):     A<int>::get (pure)  OdrUse=0   <- None
+WORKING  (non-pure): A<int>::get         OdrUse=3   <- Used
+```
+
+And Clang is **right** to say so. `MarkExprReferenced`'s caller
+(`SemaExpr.cpp`, ~21252) passes `MightBeOdrUse = false` for a virtual dispatch
+to a pure virtual, quoting the rule in its own comment:
+
+> ... is odr-used, unless it is a pure virtual function and its name is not
+> explicitly qualified.
+
+So `OdrUse` is `None`, and the hook -- gated on `OdrUse == OdrUseContext::Used`
+-- never runs. The non-pure case only works incidentally: its definition is
+odr-used by the vtable, which is a *different* odr-use that happens to
+substitute the contracts first.
+
+The gating is what defeats the intent already written into the hook's own
+comment: "a virtual function needs this ... so they must exist as a
+non-dependent specifier even when the function's own definition is never
+instantiated". The definition is genuinely not needed; the **contracts** are,
+because P3097 evaluates them in the wrapper around the dispatch.
+
+## Proposed fix
+
+Ask the evaluation context directly rather than routing through odr-use, for
+virtuals only:
+
+```c++
+if (OdrUse == OdrUseContext::Used ||
+    (isa<CXXMethodDecl>(Func) && cast<CXXMethodDecl>(Func)->isVirtual() &&
+     isOdrUseContext(*this) == OdrUseContext::Used))
+  InstantiateFunctionContractsOnUse(Loc, Func);
+```
+
+`isOdrUseContext` answers "would this be an odr-use if the definition were
+needed", so it still returns `None` in an unevaluated operand and `Dependent`
+in a dependent context. That matters: the `sfinae` group of the matrix pins
+that `decltype`, `sizeof`, `noexcept` and requires-expressions must **not**
+instantiate contracts, and this formulation preserves that by construction
+rather than by luck.
 
 ## Provenance: pre-existing, not the CLANG-13 fix
 

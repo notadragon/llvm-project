@@ -31,12 +31,13 @@ struct HasIt { bool nonexistent () const { return true; } };
 //
 // The function here is DECLARED ONLY, which is what separates this from the
 // cells around it -- there is no definition whose instantiation would reach the
-// predicate, so the odr-use is the only thing that can.  Clang diagnoses it; GCC
-// does not, and that gap is GCC-35.  Severity is limited to the diagnostic: with
-// callee-side checking and no definition in this translation unit GCC emits no
-// check either way, so nothing goes silently unchecked.  Contrast the
-// [dcl.contract.func]/7 const-parameter rule, which GCC *does* apply to exactly
-// this shape.
+// predicate, so the odr-use is the only thing that can.  And the odr-use may not
+// survive: if it is optimized away there is no undefined reference either, so
+// without this diagnostic the ill-formed predicate would go unreported in every
+// translation unit.
+//
+// GCC accepted this until GCC-35 was fixed (2026-09-06) by calling
+// maybe_instantiate_contracts from mark_used.  Clang has always diagnosed it.
 // --------------------------------------------------------------------------
 namespace odr_used_illformed_predicate_is_an_error {
 
