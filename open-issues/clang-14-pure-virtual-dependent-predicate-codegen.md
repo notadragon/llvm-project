@@ -157,38 +157,39 @@ So it is the *call* that makes the specification needed, and both compilers
 agree. The difference is in the wording, not the implementations -- the two
 rules use different triggers.
 
-Quoted from the current working draft as rendered at eel.is, checked
-2026-09-06. Paragraph numbers are working-draft numbers and will drift; the
-stable names will not.
+Quoted verbatim from the draft's LaTeX source, `../cplusplus_draft` at
+`c5d4aa74` (2026-08-06). Stable names are the durable reference; paragraph
+numbers are omitted deliberately, because they drift and nothing here needs
+them.
 
-* **[except.spec]/13** -- "An exception specification is considered to be
-  needed when: (13.1) in an expression, the function is selected by overload
-  resolution; (13.2) the function is odr-used; ..." Being selected in an
-  expression is its own trigger, listed *before* and separately from odr-use.
-* **[dcl.contract.func]/9** -- "The function contract assertions of a function
-  are considered to be needed ([temp.inst]) when the function is odr-used
-  ([basic.def.odr]) or the function is defined." No "named in an expression"
-  bullet.
-* **[basic.def.odr]/8** -- "A virtual member function is odr-used if it is not
-  pure." And /4.1: a function is named by an expression "... and either it is
-  not a pure virtual function or the expression is an id-expression naming the
-  function with an explicitly qualified name that does not form a pointer to
-  member."
+* **[dcl.contract.func]** -- "The function contract assertions of a function
+  are considered to be *needed* ([temp.inst]) when: the function is odr-used
+  ([basic.def.odr]) **or** the function is defined." Two bullets. No "named in
+  an expression".
+* **[except.spec]** -- "An exception specification is considered to be *needed*
+  when: in an expression, the function is selected by overload resolution
+  ([over.match], [over.over]); the function is odr-used ([term.odr.use]); ..."
+  Six bullets, and selection in an expression is the **first**, listed
+  separately from odr-use.
+* **[basic.def.odr]** -- "A virtual member function is odr-used if it is not
+  pure. A function is odr-used if it is named by a potentially evaluated
+  expression or conversion." And a function is *named by* an expression only
+  if "... either it is not a pure virtual function or the expression is an
+  *id-expression* naming the function with an explicitly qualified name that
+  does not form a pointer to member".
 
-(Clang's comment at the `ResolveExceptionSpec` call in `SemaExprMember.cpp`
-cites this as "[except.spec]p17" and paraphrases the bullet as "the unique
-lookup result or the selected member of a set of overloaded functions". Both
-are stale against the current draft. The comment is still a correct guide to
-what the code is doing.)
+Put together: a pure virtual called by unqualified virtual dispatch is not
+*named by* the expression, so it is not odr-used; and [dcl.contract.func]
+offers no trigger other than odr-use or definition. So **the contracts of a
+pure virtual are never "needed", in any translation unit** -- while a call to
+it must still check them at run time. [except.spec] avoids the same trap by
+making selection in an expression its own trigger.
 
-Put together: [basic.def.odr]/8 says a pure virtual is not odr-used, and
-[dcl.contract.func]/9 offers no other trigger, so **the contracts of a pure
-virtual are never "needed" in any translation unit** -- while a call to it must
-still check them at run time. [except.spec]/13.1 avoids the same trap by making
-selection in an expression its own trigger.
-
-Worth raising as a core issue. The obvious repair is to give /9 a bullet
-matching [except.spec]/13.1.
+Worth raising as a core issue. The obvious repair is to give
+[dcl.contract.func] a bullet matching [except.spec]'s first one. Note that
+[basic.def.odr] already has the phrase the implementation wants -- "named by a
+**potentially evaluated** expression or conversion" -- which is the line to
+draw for contracts even though [except.spec] draws a wider one.
 
 The implementation should not wait on that. Whatever the wording ends up
 saying, calling a function in a potentially-evaluated expression has to require
