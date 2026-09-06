@@ -59,6 +59,29 @@ call was enough.
 walked straight past this; it only surfaced when a *runnable* test tried to
 prove a pure virtual's interface contract actually fires.
 
+## Characterised further by the matrix (2026-09-06)
+
+`contract-matrix-gen.py`'s `readers` group crosses the reader, the producer and
+the predicate kind, and pins the boundary more sharply than the original
+reduction did:
+
+| producer | constant | call | dependent | member |
+|---|---|---|---|---|
+| pure virtual | ok | ok | **crash** | **crash** |
+| pure virtual, explicitly instantiated | ok | ok | **crash** | **crash** |
+| virtual with a definition | ok | ok | ok | ok |
+| virtual defined out-of-line | ok | ok | ok | ok |
+
+All at the codegen phase; every one of these is clean at `-fsyntax-only`.
+
+Two things fall out. Explicit instantiation of the class template does **not**
+rescue it -- the member declaration is instantiated but the pure virtual still
+has no definition. An out-of-line definition **does**, which is the tell: what
+matters is whether any definition is ever instantiated, because that is what
+substitutes the contracts. So the condition is "no definition anywhere, plus a
+predicate that needs substituting", and `member` (`n >= 0` on a member of the
+dependent class) belongs in the trigger set alongside `sizeof (T)`.
+
 ## Provenance: pre-existing, not the CLANG-13 fix
 
 Measured rather than argued. The pre-CLANG-13-fix sources
@@ -80,9 +103,17 @@ compilers were each broken here, in different halves, and the intersection
 Mirrored watch tests, opposite expectations as usual:
 
 * `clang/test/Contracts/OpenBugs/pure-virtual-dependent-predicate-codegen.cpp`
-  -- `XFAIL: *`.
+  -- `XFAIL: *`, the hand-written reduction.
 * `gcc/testsuite/g++.dg/contracts/cpp26/open-bug-pure-virtual-dependent-predicate-codegen.C`
   -- expected pass.
+* `clang/test/Contracts/OpenBugs/matrix-readers-openbug-clang-14.cpp` --
+  `XFAIL: *`, the four generated cells from the table above.
+* `gcc/testsuite/g++.dg/contracts/cpp26/matrix-readers-openbug-clang-14.C` --
+  expected pass.
+
+The generated pair regenerates from `contract-matrix-gen.py`, so when this is
+fixed the four cells move back into `matrix-readers-p3097-codegen` by rerunning
+`emit` rather than by hand-editing.
 
 ## Impact
 
