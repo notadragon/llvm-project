@@ -19198,8 +19198,9 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
   // will ever substitute them, a pure virtual having no definition to
   // instantiate either.
   //
-  // [dcl.contract.func] does not currently cover that; a core issue is being
-  // filed to add "in a potentially evaluated expression, the function is
+  // [dcl.contract.func] does not currently cover that.  A core issue --
+  // "function contract assertions aren't needed enough", filed 2026-09-06 --
+  // proposes adding "in a potentially evaluated expression, the function is
   // selected by overload resolution" alongside its existing odr-used and
   // defined bullets.  [except.spec] already carries the equivalent bullet,
   // which is why the exception specification of the very same pure virtual

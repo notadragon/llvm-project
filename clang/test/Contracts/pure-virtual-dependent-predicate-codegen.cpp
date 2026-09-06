@@ -17,9 +17,10 @@
 //
 // [dcl.contract.func] makes contracts needed only when the function "is
 // odr-used or the function is defined", so as written it never makes a pure
-// virtual's contracts needed at all -- a core issue is being filed to add a
-// bullet matching [except.spec]'s "in an expression, the function is selected
-// by overload resolution".  [except.spec] already has that bullet, which is
+// virtual's contracts needed at all.  A core issue -- "function contract
+// assertions aren't needed enough", filed 2026-09-06 -- proposes a bullet
+// matching [except.spec]'s "in an expression, the function is selected by
+// overload resolution", narrowed to potentially evaluated expressions.  [except.spec] already has that bullet, which is
 // why the exception specification of the same pure virtual was always
 // resolved at the same call while its contracts were not.
 //
