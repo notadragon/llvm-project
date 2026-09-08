@@ -20,7 +20,10 @@ from libcxx.header_information import (
 )
 
 for header in public_headers:
-    if header == "cassert":
+    # <cassert> and its C compatibility header <assert.h> are the two headers
+    # whose whole purpose is to define assert(), so the check below cannot
+    # apply to them.
+    if header in ("cassert", "assert.h"):
         continue
 
     print(

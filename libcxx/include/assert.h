@@ -7,6 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+#  pragma GCC system_header
+#endif
+
 // Include the C library's <assert.h> first so its definition of `assert` is in
 // place before the P3290 integration (below) redefines it.
 #include_next <assert.h>
