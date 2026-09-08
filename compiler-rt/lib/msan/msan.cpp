@@ -20,6 +20,7 @@
 #include "msan_thread.h"
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_flag_parser.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
@@ -252,29 +253,15 @@ static void InitializeFlags() {
 // without the handler).  Declared weak so a non-p3100 program reads 0 = stock.
 extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __msan_contract_semantic;
 
-enum {
-  kMsanContractStock = 0,
-  kMsanContractObserve = 1,
-  kMsanContractEnforce = 2,
-  kMsanContractQuick = 3,
-};
-
 static unsigned char MsanContractSemantic() {
   if (&__msan_contract_semantic == nullptr)
-    return kMsanContractStock;
+    return kContractRouteStock;
   return __msan_contract_semantic;
 }
 
 // Lazy report populator ABI (mirror of __cxa_contract_report_populator; layout
 // must match { const char* (*)(const void*), const void* }).
-struct MsanContractReportPopulator {
-  const char* (*populate)(const void* ctx);
-  const void* ctx;
-};
 
-extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
-    const char* comment, const char* file, unsigned line,
-    unsigned char semantic, const MsanContractReportPopulator* report);
 
 // v1 lazy populator: a concise, producer-owned description (full multi-line
 // capture is a documented follow-up).  The routed sanitizer emits nothing
@@ -300,14 +287,14 @@ void PrintWarningWithOrigin(uptr pc, uptr bp, u32 origin) {
   // (routing off) behavior below is byte-for-byte unchanged.
   {
     const unsigned char route = MsanContractSemantic();
-    if (route != kMsanContractStock) {
-      if (route == kMsanContractQuick)
+    if (route != kContractRouteStock) {
+      if (route == kContractRouteQuick)
         return;  // silent: no report, no handler; the noreturn caller Die()s
       const bool handler_linked =
           (&__cxa_contract_violation_sanitizer != nullptr);
       if (handler_linked &&
-          (route == kMsanContractObserve || route == kMsanContractEnforce)) {
-        MsanContractReportPopulator populator = {&msan_contract_report_populate,
+          (route == kContractRouteObserve || route == kContractRouteEnforce)) {
+        ContractReportPopulator populator = {&msan_contract_report_populate,
                                                  nullptr};
         __cxa_contract_violation_sanitizer("uninitialized-value", /*file=*/"",
                                            /*line=*/0, route, &populator);

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
@@ -70,16 +71,9 @@ void __tsan_on_report(const ReportDesc *rep) {
 // -fcontracts-p4298; quick_enforce terminates without the handler).
 extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __tsan_contract_semantic;
 
-enum {
-  kTsanContractStock = 0,
-  kTsanContractObserve = 1,
-  kTsanContractEnforce = 2,
-  kTsanContractQuick = 3,
-};
-
 static unsigned char TsanContractSemantic() {
   if (&__tsan_contract_semantic == nullptr)
-    return kTsanContractStock;
+    return kContractRouteStock;
   return __tsan_contract_semantic;
 }
 
@@ -87,19 +81,12 @@ static unsigned char TsanContractSemantic() {
 // libcontracts/contracts-abi.h; layout must match
 // { const char* (*)(const void*), const void* }).  libtsan stays free-standing,
 // so we redeclare rather than include the C++ runtime header.
-struct TsanContractReportPopulator {
-  const char* (*populate)(const void* ctx);
-  const void* ctx;
-};
 
 // The contract-violation report leg, provided by the C++ runtime (libstdc++/
 // libc++).  Weak: absent when the C++ contracts runtime is not linked, in which
 // case we fall back to stock behavior rather than call a null pointer.  Builds
 // an implicit contract_violation and invokes the handler; always returns
 // (termination for enforce is performed here by us).
-extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
-    const char* comment, const char* file, unsigned line,
-    unsigned char semantic, const TsanContractReportPopulator* report);
 
 // v1 lazy populator: returns a concise, producer-owned description of the data
 // race on demand (only if the handler calls contract_violation::report()).
@@ -791,22 +778,22 @@ bool OutputReport(ThreadState *thr, ScopedReport &srep) {
   // the code below is byte-for-byte unchanged.
   {
     const unsigned char route = TsanContractSemantic();
-    if (route != kTsanContractStock) {
+    if (route != kContractRouteStock) {
       const bool handler_linked =
           (&__cxa_contract_violation_sanitizer != nullptr);
-      if (route == kTsanContractQuick) {
+      if (route == kContractRouteQuick) {
         thr->current_report = nullptr;
         Die();  // silent terminate: no handler, no output
       }
       if (handler_linked &&
-          (route == kTsanContractObserve || route == kTsanContractEnforce)) {
+          (route == kContractRouteObserve || route == kContractRouteEnforce)) {
         TsanContractReportCtx report_ctx = {rep};
-        TsanContractReportPopulator report_populator = {
+        ContractReportPopulator report_populator = {
             &tsan_contract_report_populate, &report_ctx};
         __cxa_contract_violation_sanitizer("data-race", /*file=*/"", /*line=*/0,
                                            route, &report_populator);
         thr->current_report = nullptr;
-        if (route == kTsanContractObserve)
+        if (route == kContractRouteObserve)
           return false;  // continue; not counted -> no forced nonzero exit
         Die();           // noexcept_enforce: terminate; handler owns output
       }

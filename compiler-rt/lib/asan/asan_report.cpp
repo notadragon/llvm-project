@@ -23,6 +23,7 @@
 #include "asan_thread.h"
 #include "lsan/lsan_common.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_file.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
@@ -76,13 +77,6 @@ extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char
 extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char
     __asan_contract_semantic_pointer_subtract;
 
-enum {
-  kAsanContractStock = 0,
-  kAsanContractObserve = 1,
-  kAsanContractEnforce = 2,
-  kAsanContractQuick = 3,
-};
-
 // Which routed check a report belongs to -- selects which wire byte governs it.
 // kAsanCheckAddress covers every ordinary ASan error (the address byte); the
 // pointer-pair reports select their own byte.  All existing report sites use
@@ -100,41 +94,23 @@ static unsigned char AsanContractSemantic(
   switch (check) {
     case kAsanCheckPointerCompare:
       if (&__asan_contract_semantic_pointer_compare == nullptr)
-        return kAsanContractStock;
+        return kContractRouteStock;
       return __asan_contract_semantic_pointer_compare;
     case kAsanCheckPointerSubtract:
       if (&__asan_contract_semantic_pointer_subtract == nullptr)
-        return kAsanContractStock;
+        return kContractRouteStock;
       return __asan_contract_semantic_pointer_subtract;
     case kAsanCheckAddress:
       break;
   }
   if (&__asan_contract_semantic == nullptr)
-    return kAsanContractStock;
+    return kContractRouteStock;
   return __asan_contract_semantic;
 }
 
-// The lazy report populator ABI struct (mirror of
-// __cxa_contract_report_populator in libcontracts/contracts-abi.h and libc++
-// __contracts/abi.h).  We redeclare it here rather than including the C++
-// runtime header so this file stays free-standing; the layout must match {
-// const char* (*)(const void*), const void* }.
-struct AsanContractReportPopulator {
-  const char* (*populate)(const void* ctx);
-  const void* ctx;
-};
-
-// Task 2.2 / RF5: the contract-violation report leg, provided by the C++
-// runtime (libc++).  Declared weak: if the C++ contracts runtime is not linked
-// the symbol is absent, and we must fall back to stock behavior rather than
-// call a null pointer.  Builds an implicit contract_violation and invokes the
-// handler; always returns (termination for enforce is performed here by us).
-// The final argument is an optional lazy report populator (CXA_FIELD_REPORT):
-// the handler calls contract_violation::report(), which invokes populate(ctx)
-// on demand.
-extern "C" SANITIZER_WEAK_ATTRIBUTE void __cxa_contract_violation_sanitizer(
-    const char* comment, const char* file, unsigned line,
-    unsigned char semantic, const AsanContractReportPopulator* report);
+// ContractReportPopulator and __cxa_contract_violation_sanitizer come from
+// sanitizer_contract_routing.h.  The handler always returns; termination for
+// the enforce route is performed here.
 
 // RF5: lazy populator context.  Caches the rendered report so repeat report()
 // calls within one handler invocation are cheap.  Lives on the dtor stack frame
@@ -272,7 +248,7 @@ class ScopedInErrorReport {
     // all output -- the sanitizer must emit NOTHING before it.  This "=====\n"
     // banner is the first Printf of any report, so suppress it when routing is
     // active.  Stock behavior (routing off) is byte-for-byte unchanged.
-    if (AsanContractSemantic(contract_check_) == kAsanContractStock)
+    if (AsanContractSemantic(contract_check_) == kContractRouteStock)
       Printf(
           "================================================================="
           "\n");
@@ -290,11 +266,11 @@ class ScopedInErrorReport {
     const bool contract_handler_linked =
         (&__cxa_contract_violation_sanitizer != nullptr);
     const bool contract_route_handler =
-        (kContractRoute == kAsanContractObserve ||
-         kContractRoute == kAsanContractEnforce) &&
+        (kContractRoute == kContractRouteObserve ||
+         kContractRoute == kContractRouteEnforce) &&
         contract_handler_linked;
-    const bool contract_route_quick = (kContractRoute == kAsanContractQuick);
-    const bool contract_routed = (kContractRoute != kAsanContractStock);
+    const bool contract_route_quick = (kContractRoute == kContractRouteQuick);
+    const bool contract_routed = (kContractRoute != kContractRouteStock);
 
     // P3100 Bug #3: on the contract-routed path the configured semantic ALONE
     // decides behavior -- it must not depend on ASAN_OPTIONS.  So skip the
@@ -348,13 +324,13 @@ class ScopedInErrorReport {
       // The enclosing ScopedErrorReportLock already serializes all reporting,
       // so no new deadlock surface is introduced.
       AsanContractReportCtx report_ctx = {/*rendered=*/nullptr};
-      AsanContractReportPopulator report_populator = {
+      ContractReportPopulator report_populator = {
           &asan_contract_report_populate, &report_ctx};
       __cxa_contract_violation_sanitizer(contract_comment, /*file=*/"",
                                          /*line=*/0, kContractRoute,
                                          &report_populator);
       asanThreadRegistry().Unlock();
-      if (kContractRoute == kAsanContractObserve) {
+      if (kContractRoute == kContractRouteObserve) {
         // noexcept_observe = continue: reset the error object and return
         // without terminating, regardless of halt_on_error_.
         internal_memset(&current_error_, 0, sizeof(current_error_));
@@ -791,7 +767,7 @@ static bool SuppressErrorReport(uptr pc) {
   // regardless of the suppress_equal_pcs flag -- so behavior depends only on
   // the configured semantic, not ASAN_OPTIONS.  Off the routed path the flag is
   // honored exactly as before.
-  const bool routed = (AsanContractSemantic() != kAsanContractStock);
+  const bool routed = (AsanContractSemantic() != kContractRouteStock);
   if (!routed && !common_flags()->suppress_equal_pcs)
     return false;
   for (unsigned i = 0; i < kAsanBuggyPcPoolSize; i++) {
@@ -858,8 +834,8 @@ void NOINLINE __asan_set_error_report_callback(void (*callback)(const char*)) {
   // -fsanitize-noncontract-callbacks, or a non-p3100 program), the descriptor
   // is absent, AsanContractSemantic() reads stock, and behavior is unchanged.
   const unsigned char route = AsanContractSemantic();
-  if (route == kAsanContractObserve || route == kAsanContractEnforce ||
-      route == kAsanContractQuick) {
+  if (route == kContractRouteObserve || route == kContractRouteEnforce ||
+      route == kContractRouteQuick) {
     Report(
         "ERROR: AddressSanitizer: stock error-report callbacks are disabled "
         "under contract routing (-fcontracts-p3100); rebuild with "

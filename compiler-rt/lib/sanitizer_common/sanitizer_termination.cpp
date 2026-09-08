@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common.h"
+#include "sanitizer_contract_routing.h"
 #include "sanitizer_libc.h"
 
 namespace __sanitizer {
@@ -110,9 +111,10 @@ extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __asan_contract_semantic;
 extern "C" {
 SANITIZER_INTERFACE_ATTRIBUTE
 void __sanitizer_set_death_callback(void (*callback)(void)) {
-  const unsigned char route =
-      (&__asan_contract_semantic == nullptr) ? 0 : __asan_contract_semantic;
-  if (route == 1 || route == 2) {
+  const unsigned char route = (&__asan_contract_semantic == nullptr)
+                                  ? kContractRouteStock
+                                  : __asan_contract_semantic;
+  if (route == kContractRouteObserve || route == kContractRouteEnforce) {
     Report(
         "ERROR: AddressSanitizer: stock death callbacks are disabled under "
         "contract routing (-fcontracts-p3100); rebuild with "

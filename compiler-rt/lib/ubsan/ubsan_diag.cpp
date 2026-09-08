@@ -17,6 +17,7 @@
 #include "ubsan_init.h"
 #include "ubsan_monitor.h"
 
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "sanitizer_common/sanitizer_report_decorator.h"
@@ -57,13 +58,6 @@ SANITIZER_INTERFACE_WEAK_DEF(const char *, __ubsan_default_suppressions, void) {
 namespace {
 // Wire encoding, identical to __asan_contract_semantic (asan_report.cpp) and
 // the compiler side (gcc/cp/decl2.cc emit_ubsan_contract_semantic_descriptor).
-enum {
-  kUbsanContractStock = 0,   // routing off: stock behavior
-  kUbsanContractObserve = 1, // noexcept_observe: call handler, then continue
-  kUbsanContractEnforce = 2, // noexcept_enforce: call handler, then terminate
-  kUbsanContractQuick = 3,   // quick_enforce: terminate WITHOUT the handler
-};
-
 // Routed-check ids indexing the per-TU weak table __ubsan_contract_semantic[].
 // KEEP IN SYNC with gcc/cp/decl2.cc (the RUC_* / RUC_COUNT mirror).  Each entry
 // is one -fsanitize= runtime check routed to the contract-violation handler;
@@ -184,9 +178,9 @@ extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __ubsan_contract_semantic[];
 // is absent or RUC is not a routed check).
 static unsigned char UbsanContractSemantic(int ruc) {
   if (ruc < 0 || ruc >= RUC_COUNT)
-    return kUbsanContractStock;
+    return kContractRouteStock;
   if (&__ubsan_contract_semantic == nullptr)
-    return kUbsanContractStock;
+    return kContractRouteStock;
   return __ubsan_contract_semantic[ruc];
 }
 
@@ -194,10 +188,6 @@ static unsigned char UbsanContractSemantic(int ruc) {
 // __cxa_contract_report_populator in libstdc++ bits/contracts_abi.h and the
 // AsanContractReportPopulator in asan_report.cpp).  Layout must be { const
 // char* (*)(const void*), const void* }.
-struct UbsanContractReportPopulator {
-  const char *(*populate)(const void *ctx);
-  const void *ctx;
-};
 struct UbsanContractReportCtx {
   const char *rendered; // the already-captured NUL-terminated report text
 };
@@ -210,10 +200,6 @@ struct UbsanContractReportCtx {
 // report populator (CXA_FIELD_REPORT): the handler's
 // contract_violation::report() invokes populate(ctx) on demand.  Same
 // symbol/signature as the ASan path.
-extern "C" SANITIZER_WEAK_ATTRIBUTE void
-__cxa_contract_violation_sanitizer(const char *comment, const char *file,
-                                   unsigned line, unsigned char semantic,
-                                   const UbsanContractReportPopulator *report);
 
 // Live capture of the rendered UBSan text on the routed path.  Unlike ASan
 // (whose error object is replayable, so it renders on demand), a UBSan Diag
@@ -636,7 +622,7 @@ ScopedReport::ScopedReport(ReportOptions Opts, Location SummaryLoc,
   // any routed report, so the destructor can hand it to the contract-violation
   // handler.  The report lock is already held (member init above), which
   // serializes access to the capture statics.
-  if (contract_wire_ != kUbsanContractStock)
+  if (contract_wire_ != kContractRouteStock)
     ContractCaptureBegin();
 }
 
@@ -648,17 +634,17 @@ ScopedReport::~ScopedReport() {
   // we dispatch that to the handler (observe/enforce) or terminate silently
   // (quick).
   const unsigned char route = contract_wire_;
-  if (route != kUbsanContractStock) {
+  if (route != kContractRouteStock) {
     ContractCaptureEnd();
     const bool handler_linked =
         (&__cxa_contract_violation_sanitizer != nullptr);
 
-    if (route == kUbsanContractQuick) {
+    if (route == kContractRouteQuick) {
       // quick_enforce: terminate silently -- no handler, no report, no output.
       Die();
     }
 
-    if ((route == kUbsanContractObserve || route == kUbsanContractEnforce) &&
+    if ((route == kContractRouteObserve || route == kContractRouteEnforce) &&
         handler_linked) {
       // UBSan knows the concrete error and its source location -- pass both so
       // the contract_violation carries a real file:line (better fidelity than
@@ -675,10 +661,10 @@ ScopedReport::~ScopedReport() {
         }
       }
       UbsanContractReportCtx ctx = {/*rendered=*/g_contract_capture};
-      UbsanContractReportPopulator pop = {&ubsan_contract_report_populate,
+      ContractReportPopulator pop = {&ubsan_contract_report_populate,
                                           &ctx};
       __cxa_contract_violation_sanitizer(comment, file, line, route, &pop);
-      if (route == kUbsanContractObserve)
+      if (route == kContractRouteObserve)
         return; // noexcept_observe: continue past the violation.
       // noexcept_enforce: terminate.  The handler owns all output on this path,
       // so emit no extra text.
