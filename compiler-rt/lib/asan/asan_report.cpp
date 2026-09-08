@@ -28,7 +28,6 @@
 #include "sanitizer_common/sanitizer_interface_internal.h"
 #include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
-#include "sanitizer_common/sanitizer_posix.h"
 #include "sanitizer_common/sanitizer_report_decorator.h"
 #include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
@@ -444,7 +443,8 @@ ErrorDescription ScopedInErrorReport::current_error_(LINKER_INITIALIZED);
 
 // RF5 lazy report populator (RF1 buffer-only render mechanism).  Renders the
 // current ASan error into the file-local error_message_buffer with sink 1 (the
-// report fd) temporarily redirected to /dev/null, so NOTHING reaches stderr;
+// report fd) temporarily redirected to /dev/null, so nothing reaches stderr
+// where that redirect is available (see below);
 // then copies the accumulated text out NUL-terminated into producer-owned
 // storage.  Runs only when the contract handler calls report(); the result is
 // cached in the ctx so repeat calls within one handler invocation are cheap.
@@ -466,6 +466,12 @@ static const char* asan_contract_report_populate(const void* ctx_v) {
 
   // Redirect the report fd (sink 1) to /dev/null around Print() so the fully
   // rendered report only accumulates into error_message_buffer (sink 2).
+  //
+  // Where "/dev/null" does not name the null device, OpenFile returns
+  // kInvalidFd and every use below is guarded, so the redirect is simply
+  // skipped: the report still renders into the buffer, but it also reaches the
+  // report fd.  Degraded rather than broken, and the alternative -- a
+  // platform-specific null-device name -- is not worth carrying here.
   fd_t devnull = OpenFile("/dev/null", WrOnly);
   fd_t saved_fd;
   uptr saved_fd_pid;
@@ -497,7 +503,7 @@ static const char* asan_contract_report_populate(const void* ctx_v) {
     report_file.fd_pid = saved_fd_pid;
   }
   if (devnull != kInvalidFd)
-    internal_close(devnull);
+    CloseFile(devnull);
 
   // Copy the accumulated text out NUL-terminated into producer-owned storage.
   // A single static buffer suffices: all error reporting is serialized by the
