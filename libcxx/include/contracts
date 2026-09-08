@@ -211,37 +211,37 @@ inline constexpr empty_label_t empty_label{};
 // usable that way, whether because it is non-const or because it is
 // inaccessible, means the type simply does not participate in the facet.
 
-template<typename _T>
-concept assertion_control_object = requires { typename _T::assertion_control_object; };
+template<typename _Tp>
+concept assertion_control_object = requires { typename _Tp::assertion_control_object; };
 
-template<typename _T>
+template<typename _Tp>
 concept semantic_computation_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t, contracts::evaluation_semantic __s) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t, contracts::evaluation_semantic __s) {
     contracts::evaluation_semantic(__t.compute_semantic(__s));
   };
 
-template<typename _T>
+template<typename _Tp>
 concept allowed_semantics_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t) {
     requires __is_const(decltype(__t.allowed_semantics));
     contracts::evaluation_semantic_set({__t.allowed_semantics});
   };
 
-template<typename _T>
+template<typename _Tp>
 concept local_violation_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t, const contracts::contract_violation& __v) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t, const contracts::contract_violation& __v) {
     __t.handle_contract_violation(__v);
     requires __is_same(decltype(__t.handle_contract_violation(__v)), void) ||
              __is_convertible(decltype(__t.handle_contract_violation(__v)), contracts::violation_handled);
   };
 
-template<typename _T>
+template<typename _Tp>
 concept queryable_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t, const void* __key, std::size_t __index) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t, const void* __key, std::size_t __index) {
     __t.query(__key, __index);
     requires __is_same(decltype(__t.query(__key, __index)), void*);
   };
@@ -251,43 +251,43 @@ concept queryable_label =
 // to const char*, which avoids pulling <ranges> and <string_view> into this
 // header and matches what the rest of the implementation can consume --
 // __group_count is sizeof-based and so requires an array regardless.
-template<typename _T>
+template<typename _Tp>
 concept identification_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t) {
     requires __is_const(decltype(__t.group_names));
     __t.group_names[0];
     requires __is_convertible(decltype(__t.group_names[0]), const char*);
   };
 
-template<typename _T>
+template<typename _Tp>
 concept compute_comment_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t, const char* __c) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t, const char* __c) {
     requires __is_convertible(decltype(__t.compute_comment(__c)), const char*);
   };
 
-template<typename _T>
+template<typename _Tp>
 concept compute_message_label =
-  assertion_control_object<_T> &&
-  requires(const _T __t, const char* __m) {
+  assertion_control_object<_Tp> &&
+  requires(const _Tp __t, const char* __m) {
     requires __is_convertible(decltype(__t.compute_message(__m)), const char*);
   };
 
 // A minimal index sequence.  <utility> is deliberately not included here.
-template<class _Tp, _Tp... _I>
+template<class _Tp, _Tp... _Ip>
 struct __gn_seq {};
 
-template<unsigned _N>
-using __make_gn_seq = __make_integer_seq<__gn_seq, unsigned, _N>;
+template<unsigned _Np>
+using __make_gn_seq = __make_integer_seq<__gn_seq, unsigned, _Np>;
 
-template<unsigned _N>
+template<unsigned _Np>
 struct assertion_group_label {
-  using assertion_control_object = assertion_group_label<_N>;
-  const char group_names[1][_N];
+  using assertion_control_object = assertion_group_label<_Np>;
+  const char group_names[1][_Np];
 
-  constexpr assertion_group_label(const char (&__name)[_N])
-    : assertion_group_label(__name, __make_gn_seq<_N>{}) {}
+  constexpr assertion_group_label(const char (&__name)[_Np])
+    : assertion_group_label(__name, __make_gn_seq<_Np>{}) {}
 
 private:
   // A const member cannot be filled by assignment in the constructor body, so
@@ -295,28 +295,28 @@ private:
   // The private delegating constructor does not stop this being a structural
   // type: that constrains members, not constructors, and ""group needs the
   // type as a non-type template parameter.
-  template<unsigned... _I>
-  constexpr assertion_group_label(const char (&__name)[_N],
-                                  __gn_seq<unsigned, _I...>)
-    : group_names{{__name[_I]...}} {}
+  template<unsigned... _Ip>
+  constexpr assertion_group_label(const char (&__name)[_Np],
+                                  __gn_seq<unsigned, _Ip...>)
+    : group_names{{__name[_Ip]...}} {}
 };
 
-template<assertion_group_label _G>
-constexpr auto operator"" group() { return _G; }
+template<assertion_group_label _Gp>
+constexpr auto operator"" group() { return _Gp; }
 
-template<typename _T>
+template<typename _Tp>
 constexpr unsigned __group_count = 0;
 
-template<identification_label _T>
-constexpr unsigned __group_count<_T> =
-  sizeof(_T::group_names) / sizeof(_T::group_names[0]);
+template<identification_label _Tp>
+constexpr unsigned __group_count<_Tp> =
+  sizeof(_Tp::group_names) / sizeof(_Tp::group_names[0]);
 
-template<typename _T>
+template<typename _Tp>
 constexpr unsigned __group_max_len = 1;
 
-template<identification_label _T>
-constexpr unsigned __group_max_len<_T> =
-  sizeof(_T::group_names[0]);
+template<identification_label _Tp>
+constexpr unsigned __group_max_len<_Tp> =
+  sizeof(_Tp::group_names[0]);
 
 struct review_t {
   using assertion_control_object = review_t;
@@ -452,10 +452,10 @@ private:
     return __b;
   }
 
-  template<unsigned... _I>
+  template<unsigned... _Ip>
   constexpr __combined_identification_label(const __gn_buf<__lc, __ml>& __b,
-                                            __gn_seq<unsigned, _I...>)
-    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
+                                            __gn_seq<unsigned, _Ip...>)
+    : group_names{__b.__a[_Ip / __ml][_Ip % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
@@ -476,10 +476,10 @@ private:
     return __b;
   }
 
-  template<unsigned... _I>
+  template<unsigned... _Ip>
   constexpr __combined_identification_label(const __gn_buf<__rc, __ml>& __b,
-                                            __gn_seq<unsigned, _I...>)
-    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
+                                            __gn_seq<unsigned, _Ip...>)
+    : group_names{__b.__a[_Ip / __ml][_Ip % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
@@ -506,10 +506,10 @@ private:
     return __b;
   }
 
-  template<unsigned... _I>
+  template<unsigned... _Ip>
   constexpr __combined_identification_label(const __gn_buf<__tc, __ml>& __b,
-                                            __gn_seq<unsigned, _I...>)
-    : group_names{__b.__a[_I / __ml][_I % __ml]...} {}
+                                            __gn_seq<unsigned, _Ip...>)
+    : group_names{__b.__a[_Ip / __ml][_Ip % __ml]...} {}
 };
 
 template<typename _Lhs, typename _Rhs>
