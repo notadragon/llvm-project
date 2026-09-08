@@ -43,7 +43,7 @@ class Scope {
 public:
   /// ScopeFlags - These are bitfields that are or'd together when creating a
   /// scope, which defines the sorts of things the scope contains.
-  enum ScopeFlags : unsigned long {
+  enum ScopeFlags : uint64_t {
     // A bitfield value representing no scopes.
     NoScope = 0,
 
@@ -175,15 +175,18 @@ public:
     /// result-name rules apply to that predicate alone, not to any scope a
     /// lambda or statement-expression inside it may open.
     ContractAssertScope = 0x100000000,
-
-    /// This is the scope of a condition variable (e.g. the declaration in
-    /// `if (T x = ...)`), where 'continue' is disallowed despite being a
-    /// continue scope.  (efcs used 0x2000000, which upstream reassigned to
-    /// ExpansionStmtScope, so this flag was relocated to a free bit.)
-    ConditionVarScope = 0x200000000,
   };
   using UT = std::underlying_type_t<ScopeFlags>;
   static_assert(std::is_unsigned_v<UT>, "ScopeFlags must be an unsigned type");
+  // ContractAssertScope is bit 32, so the underlying type must be wider than
+  // 32 bits.  This was `unsigned long`, which is 32 bits on LLP64 -- the
+  // enumerator was then not representable in the enum's own fixed underlying
+  // type and Clang would not build on Windows.  Assert the width, not just the
+  // signedness: signedness was already asserted here and did not catch it.
+  static_assert(sizeof(UT) * 8 > 32,
+                "ScopeFlags needs an underlying type wider than 32 bits");
+  static_assert(ContractAssertScope == (UT{1} << 32),
+                "ContractAssertScope must be representable");
 
 private:
   /// The parent scope for this scope.  This is null for the translation-unit
@@ -192,7 +195,7 @@ private:
 
   /// Flags - This contains a set of ScopeFlags, which indicates how the scope
   /// interrelates with other control flow statements.
-  unsigned long Flags;
+  uint64_t Flags;
 
   /// Depth - This is the depth of this scope.  The translation-unit scope has
   /// depth 0.
@@ -276,18 +279,18 @@ private:
   /// directly precedes it, if any.
   LabelDecl *PrecedingLabel;
 
-  void setFlags(Scope *Parent, unsigned long F);
+  void setFlags(Scope *Parent, uint64_t F);
 
 public:
-  Scope(Scope *Parent, unsigned long ScopeFlags, DiagnosticsEngine &Diag)
+  Scope(Scope *Parent, uint64_t ScopeFlags, DiagnosticsEngine &Diag)
       : ErrorTrap(Diag) {
     Init(Parent, ScopeFlags);
   }
 
   /// getFlags - Return the flags for this scope.
-  unsigned long getFlags() const { return Flags; }
+  uint64_t getFlags() const { return Flags; }
 
-  void setFlags(unsigned long F) { setFlags(getParent(), F); }
+  void setFlags(uint64_t F) { setFlags(getParent(), F); }
 
   /// Get the label that precedes this scope.
   LabelDecl *getPrecedingLabel() const { return PrecedingLabel; }
@@ -321,15 +324,6 @@ public:
   bool isExpansionStmtScope() const {
     return getFlags() & Scope::ExpansionStmtScope;
   }
-
-  // Set whether we're in the scope of a condition variable, where 'continue'
-  // is disallowed despite being a continue scope.
-  void setIsConditionVarScope(bool InConditionVarScope) {
-    Flags = (Flags & ~ConditionVarScope) |
-            (InConditionVarScope ? ConditionVarScope : NoScope);
-  }
-
-  bool isConditionVarScope() const { return Flags & ConditionVarScope; }
 
   void setIsContractScope(bool InContractScope) {
     Flags = (Flags & ~ContractAssertScope) |
@@ -701,11 +695,11 @@ public:
   void applyNRVO();
 
   /// Init - This is used by the parser to implement scope caching.
-  void Init(Scope *parent, unsigned long flags);
+  void Init(Scope *parent, uint64_t flags);
 
   /// Sets up the specified scope flags and adjusts the scope state
   /// variables accordingly.
-  void AddFlags(unsigned long Flags);
+  void AddFlags(uint64_t Flags);
 
   void dumpImpl(raw_ostream &OS) const;
   void dump() const;
