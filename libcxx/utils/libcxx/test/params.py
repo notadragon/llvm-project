@@ -479,12 +479,25 @@ DEFAULT_PARAMETERS = [
     Parameter(
         name="use-contracts",
         type=bool,
-        default=True,
-        help="Whether to enable contracts when compiling the test suite.",
+        default=False,
+        help="Whether to compile the whole test suite with contracts enabled. "
+             "Off by default so that a plain check-cxx tests libc++ as shipped; "
+             "pass --param use-contracts=True for the contracts-enabled run.",
+        # This controls the suite-wide compile flags only.  The `contracts`
+        # FEATURE is probed independently in features/misc.py, because it means
+        # "the compiler supports contracts" -- the std/contracts tests gate on
+        # it and bring their own -fcontracts via ADDITIONAL_COMPILE_FLAGS.
+        # Bundling the feature in here meant turning the flags off silently
+        # skipped the only two tests that exercise <contracts>.
         actions=lambda use_contracts: [] if not use_contracts else [
+            # Distinct from the `contracts` feature: this one means the SUITE is
+            # being compiled with contracts enforced, which a handful of tests
+            # legitimately cannot satisfy (a contract firing during constant
+            # evaluation changes their expected diagnostics).  They gate on this,
+            # not on `contracts`.
+            AddFeature("contracts-enabled"),
             AddCompileFlag("-fcontracts"),
             AddCompileFlag('-fcolor-diagnostics'),
-            AddFeature("contracts"),
             AddCompileFlag("-fcontract-group-evaluation-semantic=std:enforce"),
         ]
     ),
