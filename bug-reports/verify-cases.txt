@@ -21,20 +21,20 @@
 # a single row would average the two halves into one word and hide exactly the
 # asymmetry the reproducer was built to show.
 
-CLANG-1   | clang-01-constexpr-vbase-lifetime.cpp                 | syntax | -std=c++26
-CLANG-2   | clang-02-ubsan-bool-recover.c                         | run@c  | -std=c17 -fsanitize=bool -fsanitize-recover=bool -O0
-CLANG-5   | clang-05-retval-not-destroyed-on-throwing-cleanup.cpp | run    | -std=c++17
-CLANG-5b  | clang-05b-retval-leak-all-return-forms.cpp            | run    | -std=c++17 -O0
-CLANG-5b2 | clang-05b-retval-leak-all-return-forms.cpp            | run    | -std=c++17 -O2
-CLANG-8-1 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=1
-CLANG-8-2 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=2
-CLANG-8-3 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=3
-CLANG-8-4 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=4
-CLANG-8-5 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=5
-CLANG-8-6 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=6
-CLANG-8-7 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=7
-CLANG-8-8 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=8
-CLANG-8-9 | clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=9
-CLANG-8-10| clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=10
-CLANG-8-11| clang-08-this-in-xobj-declaration.cpp                 | syntax | -std=c++23 -DCASE=11
-CLANG-9   | clang-09-member-address-before-ctor.cpp               | syntax | -std=c++26
+CLANG-1   | clang-01/clang-01-constexpr-vbase-lifetime.cpp        | syntax | -std=c++26
+CLANG-2   | clang-02/clang-02-ubsan-bool-recover.c                | run@c  | -std=c17 -fsanitize=bool -fsanitize-recover=bool -O0
+CLANG-5   | clang-05/clang-05-retval-not-destroyed-on-throwing-cleanup.cpp | run    | -std=c++17
+CLANG-5b  | clang-05/clang-05b-retval-leak-all-return-forms.cpp   | run    | -std=c++17 -O0
+CLANG-5b2 | clang-05/clang-05b-retval-leak-all-return-forms.cpp   | run    | -std=c++17 -O2
+CLANG-8-1 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=1
+CLANG-8-2 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=2
+CLANG-8-3 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=3
+CLANG-8-4 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=4
+CLANG-8-5 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=5
+CLANG-8-6 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=6
+CLANG-8-7 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=7
+CLANG-8-8 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=8
+CLANG-8-9 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=9
+CLANG-8-10| clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=10
+CLANG-8-11| clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=11
+CLANG-9   | clang-09/clang-09-member-address-before-ctor.cpp      | syntax | -std=c++26

@@ -21,6 +21,19 @@ issues are branch-only by definition and their writeups live here.
 
 **Next ID:** CLANG-15
 
+## Layout
+
+One directory per issue, `clang-NN/`, the same shape as
+[`../bug-reports/`](../bug-reports/README.md) -- so a reader who has learned
+one directory has learned the other, and an issue that turns out to
+reproduce on stock can move across without being reshaped.
+
+Nothing here is ever attached to anything upstream: a row in this file is
+either branch-only or an upstream bug we have not fixed, whose report lives
+in `bug-reports/`. So every file here keeps its prefix, and the
+prefix-means-do-not-attach rule that governs `bug-reports/` has nothing to
+decide in this directory.
+
 IDs come from one sequence per compiler, shared with `bug-reports/`, and are
 never reused. Allocate from the line above and increment it. Both tables
 delete rows, so the highest ID visible in either is not a reliable counter.
@@ -42,8 +55,8 @@ fix looks hard or invasive.
 
 | ID | Symptom | Kind | Upstream | Details |
 |----|---------|------|----------|---------|
-| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | None found (searched 2026-09-05) | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02-ubsan-bool-recover.md) |
-| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | deferred | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
-| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | deferred | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08-this-in-xobj-declaration.md) |
-| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | deferred | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09-member-address-before-ctor.md) |
-| CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | deferred | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12-deferred-friend-contract-mismatch.md) |
+| CLANG-2 | Under `-fsanitize=bool -fsanitize-recover=bool`, an invalid `_Bool` load keeps its raw bits and reads as true; GCC coerces it to `false` | divergence | None found (searched 2026-09-05) | [../bug-reports/clang-02-ubsan-bool-recover.md](../bug-reports/clang-02/clang-02-ubsan-bool-recover.md) |
+| CLANG-5 | A by-value return object is never destroyed when a local's destructor throws after it is built | deferred | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [../bug-reports/clang-05-retval-not-destroyed-on-throwing-cleanup.md](../bug-reports/clang-05/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
+| CLANG-8 | `this` is accepted in the declaration of an explicit-object member function, where it is ill-formed | deferred | None found (searched 2026-09-05) | [../bug-reports/clang-08-this-in-xobj-declaration.md](../bug-reports/clang-08/clang-08-this-in-xobj-declaration.md) |
+| CLANG-9 | Constant evaluation accepts forming a member's or non-virtual base's address before its constructor begins | deferred | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial) | [../bug-reports/clang-09-member-address-before-ctor.md](../bug-reports/clang-09/clang-09-member-address-before-ctor.md) |
+| CLANG-12 | Two friend declarations of one function with contradictory contracts are accepted silently | deferred | -- | [clang-12-deferred-friend-contract-mismatch.md](clang-12/clang-12-deferred-friend-contract-mismatch.md) |

@@ -32,6 +32,30 @@ contracts ones -- see
 [`../open-issues/README.md`](../open-issues/README.md). That file also carries
 the `Next ID` line both directories allocate from.
 
+## Layout: the `clang-NN-` prefix means "do not attach this"
+
+One directory per bug, `clang-NN/`, matching
+[the GCC fork's `bug-reports/`](../../gnu_gcc/bug-reports/README.md), and
+within it the **filename prefix says whether a file is for upstream or for
+us**: an unprefixed name is meant to go on the issue, a prefixed one is
+ours. Our numbering is internal -- "CLANG-5" means nothing to anyone
+upstream -- so letting it reach a filename someone else reads only invites
+confusion about what the number refers to.
+
+**Every file here still carries the prefix**, and that is correct rather
+than pending: no Clang writeup has been rewritten into submission form yet,
+so none of them designates which files to attach, and marking one "attach
+me" on the strength of it being the only reproducer would be a guess. The
+prefix comes off a file when a report names it as an attachment.
+
+Note that the two trackers differ here. The GCC fork's reports carry a
+Bugzilla field table and an Attachments table with a description per file,
+because Bugzilla has both of those as form fields. GitHub Issues has
+neither: there is a title, a Markdown body, and files attached by dropping
+them in. So the Clang equivalent, when written, is a body to paste rather
+than a form to fill -- and Markdown works there, which it does not on
+Bugzilla.
+
 ## Checking whether a row still belongs here
 
 The removal rule above -- a row goes when upstream fixes it -- has no automatic
@@ -60,8 +84,8 @@ same script over its own reproducers; keep the two in step.
 
 | Bug | Summary | Status | Upstream Link | Details |
 |-----|---------|--------|----------------|---------|
-| CLANG-1 | Constant evaluator accepts converting to a virtual base through an object outside its lifetime | Fixed here | None found (searched 2026-09-05) | [clang-01-constexpr-vbase-lifetime.md](clang-01-constexpr-vbase-lifetime.md) |
-| CLANG-2 | Recovering from an invalid `_Bool` load leaves the invalid bits in place, where GCC coerces to `false` | Open | None found (searched 2026-09-05) | [clang-02-ubsan-bool-recover.md](clang-02-ubsan-bool-recover.md) |
-| CLANG-5 | Returned object is not destroyed when a local's destructor throws during a return statement | Open | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [clang-05-retval-not-destroyed-on-throwing-cleanup.md](clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
-| CLANG-8 | `this` accepted in the declaration of an explicit-object member function | Open | None found (searched 2026-09-05) | [clang-08-this-in-xobj-declaration.md](clang-08-this-in-xobj-declaration.md) |
-| CLANG-9 | Constexpr evaluator accepts forming a non-virtual-base or direct member's address before its non-trivial constructor begins | Open | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial -- see below) | [clang-09-member-address-before-ctor.md](clang-09-member-address-before-ctor.md) |
+| CLANG-1 | Constant evaluator accepts converting to a virtual base through an object outside its lifetime | Fixed here | None found (searched 2026-09-05) | [clang-01-constexpr-vbase-lifetime.md](clang-01/clang-01-constexpr-vbase-lifetime.md) |
+| CLANG-2 | Recovering from an invalid `_Bool` load leaves the invalid bits in place, where GCC coerces to `false` | Open | None found (searched 2026-09-05) | [clang-02-ubsan-bool-recover.md](clang-02/clang-02-ubsan-bool-recover.md) |
+| CLANG-5 | Returned object is not destroyed when a local's destructor throws during a return statement | Open | [#12658](https://github.com/llvm/llvm-project/issues/12658) | [clang-05-retval-not-destroyed-on-throwing-cleanup.md](clang-05/clang-05-retval-not-destroyed-on-throwing-cleanup.md) |
+| CLANG-8 | `this` accepted in the declaration of an explicit-object member function | Open | None found (searched 2026-09-05) | [clang-08-this-in-xobj-declaration.md](clang-08/clang-08-this-in-xobj-declaration.md) |
+| CLANG-9 | Constexpr evaluator accepts forming a non-virtual-base or direct member's address before its non-trivial constructor begins | Open | [#211286](https://github.com/llvm/llvm-project/issues/211286) (partial -- see below) | [clang-09-member-address-before-ctor.md](clang-09/clang-09-member-address-before-ctor.md) |
