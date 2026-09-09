@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (Clang): the ASan pointer-subtract check (subtracting two
+// P3100 (Clang): the ASan pointer-subtract check (subtracting two
 // pointers into different objects -- expr.add.sub.diff.pointers UB) is routed to
 // the contract-violation handler via its OWN wire byte
 // (__asan_contract_semantic_pointer_subtract), independent of the address

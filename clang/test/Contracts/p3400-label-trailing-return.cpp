@@ -4,7 +4,7 @@
 // A P3400 assertion-control label on a contract that follows a trailing return
 // type was dropped: the trailing-return type-id's abstract-declarator parse
 // swallowed `pre<lbl>` (a labelled contract looks like a template-id), so the
-// enclosing declarator never saw the contract. Mirrors gnu_gcc b6648b3d7d4.
+// enclosing declarator never saw the contract. Mirrors.
 
 struct L { using assertion_control_object = L; };
 constexpr L lbl{};

@@ -6,7 +6,7 @@
 // custom type with .size()/.data() members reaches the handler as text.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-message-cexpr-str.C)
 //
-// (Previously BUG-13: a non-string-literal message crashed the parser and, once
+// (Previously: a non-string-literal message crashed the parser and, once
 // that was fixed, was delivered empty.  Now the message is parsed in a
 // constant-evaluated context and its .size()/.data() are extracted like a
 // static_assert message.)

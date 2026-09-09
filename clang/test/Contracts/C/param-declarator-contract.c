@@ -5,7 +5,7 @@
 //
 // GCC had the same construct silently mis-attach the parameter's contract
 // to the *enclosing* function, so `_Pre (0)` fired against a function that
-// had no precondition at all (gnu_gcc ac57d42a0de).  Both compilers now
+// had no precondition at all .  Both compilers now
 // ignore it and say so.
 
 // RUN: %clang -fcontracts-p4299 -fcontract-evaluation-semantic=observe -Xclang -verify %libcxx_flags %s -o %t && %t

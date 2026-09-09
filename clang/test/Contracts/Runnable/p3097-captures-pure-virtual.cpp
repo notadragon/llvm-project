@@ -7,7 +7,7 @@
 // with correct call-time captures on both polymorphic dispatch and a qualified
 // call to the pure-virtual's own definition.
 //
-// (Previously BUG-6: the capturing postcondition on a pure virtual with an
+// (Previously: the capturing postcondition on a pure virtual with an
 // out-of-line definition read 'old' as uninitialized storage, producing a
 // spurious violation on the qualified call.  The real cause was general to any
 // declaration/definition split: RebuildContractSpecifierForDecl copied the

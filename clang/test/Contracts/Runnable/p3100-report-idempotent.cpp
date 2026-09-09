@@ -2,7 +2,7 @@
 // RUN:   -fcontracts-p4301 -fsanitize=address %libcxx_flags -o %t \
 // RUN:   && not %t 2>&1 | FileCheck %s
 
-// E8: contract_violation::report() is idempotent -- calling it more than once
+// contract_violation::report() is idempotent -- calling it more than once
 // returns the same rendered diagnostic (the lazy populator result is cached, not
 // regenerated).  White-boxed on the ASan-routed P3100 path, which installs a
 // real lazy report populator.  Under the default noexcept_enforce the program

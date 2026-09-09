@@ -1,4 +1,4 @@
-// P3100 RF5 (UBSan runtime routing): on the routed alignment path the sanitizer
+// P3100 (UBSan runtime routing): on the routed alignment path the sanitizer
 // emits NOTHING itself; the report leg captures the rendered UBSan text live and
 // registers a lazy populator, which the handler renders ON DEMAND via
 // contract_violation::report().  Proves (a) nothing before the handler and

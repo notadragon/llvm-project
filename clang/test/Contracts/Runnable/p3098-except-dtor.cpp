@@ -5,7 +5,7 @@
 // P3098: an exception thrown by a capture's destructor propagates after the
 // predicate has been evaluated.  (GCC mirror: p3098-except-dtor.C)
 //
-// BUG-11 (Clang, fixed): the destructor exception used to occur BEFORE the
+// Clang, fixed: the destructor exception used to occur BEFORE the
 // predicate was evaluated -- the predicate never ran (predicate_count == 0)
 // though the throw (e == 1) was caught.  GCC evaluates the predicate first
 // (predicate_count == 1), per the P3098 "all predicates, then destroy in

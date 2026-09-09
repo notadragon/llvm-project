@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (Clang): the ASan pointer-compare check (comparing two pointers
+// P3100 (Clang): the ASan pointer-compare check (comparing two pointers
 // into different objects -- [expr.rel] UB) is routed to the contract-violation
 // handler.  These pointer-pair checks report through the SAME ASan
 // ScopedInErrorReport path as address errors, but via their OWN wire byte

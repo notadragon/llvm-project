@@ -1,4 +1,4 @@
-// P3100 Task 2.2 (CL2): under -fcontracts-p3100, an ASan-detected error is
+// P3100: under -fcontracts-p3100, an ASan-detected error is
 // routed to the contract-violation handler.  With the address check resolved to
 // noexcept_enforce (the default under -fcontracts-p4298), the handler runs
 // (reporting the violation as an implicit contract assertion, kind=7,

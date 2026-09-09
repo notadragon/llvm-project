@@ -1,4 +1,4 @@
-// P3100 Bug #3 (routed behavior depends ONLY on the configured semantic, not on
+// P3100 (routed behavior depends ONLY on the configured semantic, not on
 // ASAN_OPTIONS).  Before the fix, compiler-rt's ScopedInErrorReport consulted
 // halt_on_error_ and the one-shot __sanitizer_acquire_crash_state() latch before
 // the routing branches, so under halt_on_error=1 the SECOND distinct-site

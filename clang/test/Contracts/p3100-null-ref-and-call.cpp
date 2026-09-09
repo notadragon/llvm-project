@@ -17,7 +17,7 @@
 // GCC, not a missing check.
 //
 // GCC mirror: g++.dg/contracts/cpp26/p3100-null-ref-and-call.C
-// (gnu_gcc b20fde9aff5).
+// .
 
 struct S {
   int m;

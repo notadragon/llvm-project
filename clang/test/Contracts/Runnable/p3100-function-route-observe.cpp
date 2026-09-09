@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): the function check
+// P3100 (UBSan runtime routing): the function check
 // (-fsanitize=function) routes to the contract-violation handler when a function
 // is called through a pointer of the wrong type.  -fsanitize=function is
 // Clang-only (GCC has no such check), so this routed check has no GCC

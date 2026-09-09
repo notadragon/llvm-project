@@ -4,7 +4,7 @@
 // assertion_control_object, so it must be rejected as a label.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-label-operators.C)
 //
-// (Previously BUG-16: Clang did not validate that an assertion-control label is
+// (Previously: Clang did not validate that an assertion-control label is
 // an assertion_control_object -- a bool-valued expression was accepted as a
 // label.  Clang now requires the label to be a class type with an
 // 'assertion_control_object' member type.)

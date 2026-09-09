@@ -1,4 +1,4 @@
-// P4301 x P3100 (CL2): with NO user handle_contract_violation, a routed ASan
+// P4301 x P3100: with NO user handle_contract_violation, a routed ASan
 // violation is delivered to the library's *default* handler, which calls
 // report() itself and prints the full ASan diagnostic (heap-buffer-overflow, a
 // "#0 " frame) ahead of its own basic contract-violation line, then terminates

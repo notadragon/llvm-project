@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): the pointer-overflow check
+// P3100 (UBSan runtime routing): the pointer-overflow check
 // (-fsanitize=pointer-overflow) routes to the contract-violation handler.  With
 // the check resolved to noexcept_observe the handler runs (kind=7, semantic=6)
 // and the program CONTINUES.  (Clang flags applying a non-zero offset to a null

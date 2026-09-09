@@ -4,7 +4,7 @@
 
 // P3097+P3098+P3099: a virtual function whose postcondition has BOTH a capture
 // and a user-defined message; the violation carries the message and sees the
-// captured value.  Clang handles this correctly; GCC currently ICEs (BUG-3, see
+// captured value.  Clang handles this correctly; GCC currently ICEs (see
 // wg21 testing-gap-catalogue.md sec 10) -- this Clang mirror is a passing
 // regression test documenting the asymmetry.
 

@@ -1,4 +1,4 @@
-// P3100 Task 2.1 (CL2): under -fcontracts-p3100, resolving the address check to
+// P3100: under -fcontracts-p3100, resolving the address check to
 // assume suppresses ASan instrumentation entirely -- byte-identical to a build
 // without -fsanitize=address for that check.  No __asan_report* calls are
 // emitted, so the out-of-bounds access is NOT detected and the program runs to

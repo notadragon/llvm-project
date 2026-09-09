@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): with nonnull-attribute resolved to
+// P3100 (UBSan runtime routing): with nonnull-attribute resolved to
 // noexcept_enforce the handler runs (kind=7, semantic=7) then the program
 // TERMINATES.
 

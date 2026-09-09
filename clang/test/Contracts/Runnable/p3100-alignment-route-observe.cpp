@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): the alignment check
+// P3100 (UBSan runtime routing): the alignment check
 // (-fsanitize=alignment) routes to the contract-violation handler.  With the
 // check resolved to noexcept_observe (via -fsanitize-recover=alignment +
 // -fcontracts-p4298) the handler runs (kind=7, semantic=6) and the program

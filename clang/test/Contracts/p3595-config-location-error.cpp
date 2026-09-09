@@ -6,7 +6,7 @@
 // (":10x" trailing junk, ":1-2z" trailing junk after a range, ":5-" a range
 // with no upper bound) must not send the parser into an infinite loop.
 //
-// KNOWN DIVERGENCE from GCC (final-passes cross-compiler-mirror #8/#9): GCC
+// KNOWN DIVERGENCE from GCC: GCC
 // diagnoses each malformed range against the JSON source and skips the entry;
 // Clang's location parser (llvm::StringRef::split + getAsInteger) cannot hang
 // and silently coerces malformed input (leaving the parsed value at 0) rather

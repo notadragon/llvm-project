@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): the object-size check
+// P3100 (UBSan runtime routing): the object-size check
 // (-fsanitize=object-size) routes to the contract-violation handler.  With the
 // check resolved to noexcept_observe the handler runs (kind=7, semantic=6) and
 // the program CONTINUES.  object-size needs __builtin_object_size, emitted only

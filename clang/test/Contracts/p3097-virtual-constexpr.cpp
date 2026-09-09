@@ -4,7 +4,7 @@
 // called through a base reference in a constant expression.  Virtual calls are
 // permitted in constant expressions since C++20, so this should be usable at
 // compile time (the postcondition holds here).  (GCC mirror:
-// p3097-virtual-constexpr.C; GCC currently rejects this as BUG-9.)
+// p3097-virtual-constexpr.C; GCC currently rejects this.)
 
 // expected-no-diagnostics
 struct Base {

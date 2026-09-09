@@ -8,7 +8,7 @@
 // or discard the contract per the satisfaction result.  No Clang bug found (the
 // GCC ICE, F20/4de84a00652, did not reproduce).
 //
-// KNOWN DIVERGENCE (cross-compiler-mirror #15): Clang requires an extra pair of
+// KNOWN DIVERGENCE: Clang requires an extra pair of
 // parentheses around a negation or a comparison constraint in a contract
 // requires-clause (e.g. requires ((!C<T>)) / requires ((sizeof(T) >= 4))),
 // applying the concepts primary-expression rule; GCC accepts them with just the

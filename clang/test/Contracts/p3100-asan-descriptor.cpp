@@ -1,4 +1,4 @@
-// P3100 Task 2.1 (CL2): the front end emits a per-TU weak byte
+// P3100: the front end emits a per-TU weak byte
 // __asan_contract_semantic conveying the resolved contract-evaluation semantic
 // for the routed address check to the compiler-rt runtime.  Wire encoding
 // (byte-identical to GCC): 1 = noexcept_observe, 2 = noexcept_enforce,
@@ -45,10 +45,10 @@
 // RUN:   | FileCheck %s --check-prefix=STOCK
 // STOCK-NOT: @__asan_contract_semantic
 
-// P3100 Task 3.1: -fsanitize-noncontract-callbacks is the global opt-out.
+// P3100: -fsanitize-noncontract-callbacks is the global opt-out.
 // Even with -fcontracts-p3100 and a routed semantic, the opt-out suppresses
 // descriptor emission entirely -- so the runtime reads stock (0) and, because
-// the runtime guardrail (Task 3.2) keys off the same descriptor, the guardrail
+// the runtime guardrail keys off the same descriptor, the guardrail
 // disengages too.
 // RUN: %clang_cc1 -std=c++26 -triple x86_64-linux-gnu -emit-llvm -o - \
 // RUN:   -fcontracts -fcontracts-p3100 -fcontracts-p4298 \

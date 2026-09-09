@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing):
+// P3100 (UBSan runtime routing):
 // -fsanitize-semantic=alignment:quick_enforce terminates WITHOUT calling the
 // handler and WITHOUT any output -- the routed runtime Die()s silently.
 // quick_enforce needs no -fcontracts-p4298.

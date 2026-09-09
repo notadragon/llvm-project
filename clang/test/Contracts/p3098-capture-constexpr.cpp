@@ -4,10 +4,10 @@
 // The capture snapshots a constant parameter, so the predicate is
 // constant-evaluable and this call should compile cleanly.
 //
-// BUG-8 (Clang, fixed): captures used to be unusable during constant
+// Clang, fixed: captures used to be unusable during constant
 // evaluation -- Clang ICE'd in the constant evaluator (ExprConstant.cpp
 // "missing value for local variable"). GCC still rejects this with
-// "contract condition is not constant" (BUG-8 remains open on GCC). See
+// "contract condition is not constant" (this remains open on GCC). See
 // wg21 testing-gap-catalogue.md section 10.
 
 // expected-no-diagnostics

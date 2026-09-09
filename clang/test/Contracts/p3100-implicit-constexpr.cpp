@@ -2,7 +2,7 @@
 // RUN:   -fcontract-evaluation-semantic=observe %libcxx_flags -fsyntax-only \
 // RUN:   2>&1 | FileCheck %s
 
-// E6: a P3100 implicit UB check does not participate in constant evaluation.
+// a P3100 implicit UB check does not participate in constant evaluation.
 // The constexpr evaluator still rejects the undefined operation directly; the
 // configured contract semantic (observe) does not turn the UB into a
 // recoverable contract violation.  (P3100 instrumentation is a runtime facility;

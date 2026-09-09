@@ -6,7 +6,7 @@
 // compute_comment).
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-group-with-facets.C)
 //
-// (Previously BUG-15: operator|-combined labels did not propagate group_names,
+// (Previously: operator|-combined labels did not propagate group_names,
 // so the "safety" group config never applied to these combined labels.
 // extractGroupNames now reads group_names from the __combined_identification_label
 // base subobject, including nested combinations.)

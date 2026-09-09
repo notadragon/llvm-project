@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): with the vptr check resolved to
+// P3100 (UBSan runtime routing): with the vptr check resolved to
 // noexcept_enforce the handler runs (kind=7, semantic=7) and the program then
 // TERMINATES.  The terminating semantic rides the sanitizer's NON-recovering
 // (abort) code path.  (vptr is recover-by-default, so the enforce semantic must

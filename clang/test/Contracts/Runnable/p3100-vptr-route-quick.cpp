@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): -fsanitize-semantic=vptr:quick_enforce
+// P3100 (UBSan runtime routing): -fsanitize-semantic=vptr:quick_enforce
 // terminates WITHOUT calling the handler and WITHOUT any output -- the routed
 // runtime Die()s silently.  quick_enforce needs no -fcontracts-p4298 (no handler
 // is involved) and is available even though native vptr has no trap mode.

@@ -12,7 +12,7 @@
 // substitutes their written parameter types.
 //
 // Mirror of gcc/testsuite/g++.dg/contracts/cpp26/pr127196.C (GCC PR127196,
-// fixed there in gnu_gcc 13da4a8bb32).
+// fixed there).
 
 // The report's own case: the contract is on the non-const declaration, the
 // definition is const.  Accepted before this was fixed.

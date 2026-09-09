@@ -19,7 +19,7 @@
 // must not turn into "stop checking".
 //
 // GCC mirror: g++.dg/asan/p3100-asan-route-observe-repeat.C
-// (gnu_gcc 75813de1471), where the runtime source is identical.
+// , where the runtime source is identical.
 
 #include <contracts>
 #include <cstdio>

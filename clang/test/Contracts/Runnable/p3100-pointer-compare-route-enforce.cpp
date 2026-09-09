@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (Clang): the ASan pointer-compare check ([expr.rel] UB) routed
+// P3100 (Clang): the ASan pointer-compare check ([expr.rel] UB) routed
 // to the contract-violation handler.  With the default (no -fsanitize-recover=)
 // + -fcontracts-p4298 the check resolves to noexcept_enforce: the handler runs
 // (kind=7, semantic=7), then the program TERMINATES.  Governed by the

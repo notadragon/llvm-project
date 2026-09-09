@@ -123,7 +123,7 @@ int not_a_coroutine(const int x) post(x > 0) { return x; }
 
 // An UNEVALUATED naming of a parameter is not an odr-use, so it does not
 // trip this restriction either -- the same boundary the const rule has.  GCC
-// rejected all three of these until gnu_gcc e9b7222a73f, because one flag
+// rejected all three of these until it was fixed on the GCC side, because one flag
 // drives both rules there and a decltype or requires-expression was wrongly
 // marking the parameter as used.  See
 // Contracts/Sema/postcondition-unevaluated-operand.cpp for the rest of that

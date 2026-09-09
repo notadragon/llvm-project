@@ -13,7 +13,7 @@
 // landed in the slot correctly -- but the epilogue had already materialised
 // the value it was about to return, and returned that stale copy.  The fix is
 // to re-read the slot after the postconditions have run.  GCC makes the same
-// mutations observable (gnu_gcc 20eed05e8c4 / 0377d4408ab).
+// mutations observable (as GCC does).
 //
 // This file covers results returned directly.  A CLASS-typed result is still
 // bound to a copy and its mutations are still lost; that gap is pinned

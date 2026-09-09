@@ -6,7 +6,7 @@
 // evaluation_exception violation; under observe the handler runs, the predicate
 // is skipped, and execution continues.  (GCC mirror: p3098-except-init.C)
 //
-// BUG-2 (Clang, fixed): the capture-init exception used to propagate and
+// Clang, fixed: the capture-init exception used to propagate and
 // terminate instead of being converted to a violation.  See wg21
 // testing-gap-catalogue.md section 10.
 

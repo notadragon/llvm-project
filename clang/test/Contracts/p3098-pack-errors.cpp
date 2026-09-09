@@ -3,7 +3,7 @@
 // P3098: invalid pack-capture syntax must be diagnosed.
 // (GCC mirror: g++.dg/contracts/cpp26/p3098-pack-errors.C)
 //
-// (Previously BUG-14: Clang did not diagnose these ill-formed pack captures --
+// (Previously: Clang did not diagnose these ill-formed pack captures --
 // both declarations below were silently accepted.  ActOnPostconditionCapture
 // now rejects a pack-expansion capture whose captured parameter is not a pack,
 // and a pack init-capture whose initializer contains no unexpanded pack.)

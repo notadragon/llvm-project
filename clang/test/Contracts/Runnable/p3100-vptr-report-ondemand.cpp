@@ -1,4 +1,4 @@
-// P3100 RF5 (UBSan runtime routing): on the routed vptr path the sanitizer emits
+// P3100 (UBSan runtime routing): on the routed vptr path the sanitizer emits
 // NOTHING itself.  The report leg captures the rendered UBSan text live and the
 // handler renders it ON DEMAND via contract_violation::report().  This proves
 // the full vptr diagnostic appears only between the handler's REPORT markers.

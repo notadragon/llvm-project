@@ -1,4 +1,4 @@
-// P3100 Task 4.1: -fsanitize-semantic= for the routed UBSan alignment check --
+// P3100: -fsanitize-semantic= for the routed UBSan alignment check --
 // driver diagnostics, the recover-vs-abort code-path selection, and semantic
 // print.  Representative of the batch of routed UBSan checks (alignment,
 // object-size, nonnull-attribute, returns-nonnull-attribute, pointer-overflow);

@@ -1,7 +1,7 @@
-// P3100 Task 4.1 / RF5 (CL2): with -fcontracts-p3100 but WITHOUT
+// P3100: with -fcontracts-p3100 but WITHOUT
 // -fcontracts-p4298, the default -fsanitize=address resolves the routed address
 // check to quick_enforce: the program TERMINATES and the contract-violation
-// handler is NEVER called.  As of RF5 the sanitizer emits NOTHING on the routed
+// handler is NEVER called.  The sanitizer emits NOTHING on the routed
 // path, so quick_enforce is a SILENT fast terminate: no ASan report, no
 // "ABORTING" line, and no handler output at all.
 

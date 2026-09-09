@@ -5,7 +5,7 @@
 // P3099: message() is nullptr when no message is supplied; comment() still works.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-message-nullptr.C)
 //
-// (Previously BUG-10: for a contract with NO message, message() returned a
+// (Previously: for a contract with NO message, message() returned a
 // non-null empty string, indistinguishable from an explicit empty message.
 // BuildViolationObject now emits a null __message_ pointer unless the contract
 // actually carries a message -- syntactic, transformed (P2741), or attribute.)

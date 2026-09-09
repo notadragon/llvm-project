@@ -6,7 +6,7 @@
 // postcondition/precondition is delivered to the handler.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-message-class-cexpr.C.)
 //
-// (Previously BUG-13: a non-string-literal message crashed the parser / was
+// (Previously: a non-string-literal message crashed the parser / was
 // delivered empty; now parsed in a constant-evaluated context and its
 // .size()/.data() extracted like a static_assert message.)
 

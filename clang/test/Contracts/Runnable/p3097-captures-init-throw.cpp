@@ -7,7 +7,7 @@
 // evaluation_exception contract violation; under observe the handler runs and
 // execution continues (the function returns normally).
 //
-// BUG-2 (Clang, P3097 x P3098, fixed): the capture-init exception used to
+// Clang, P3097 x P3098, fixed: the capture-init exception used to
 // propagate as a raw exception and terminate (uncaught) instead of being
 // converted to a contract violation.  See wg21 testing-gap-catalogue.md
 // section 10.

@@ -1,4 +1,4 @@
-// P3100 Task 4.1: -fsanitize-semantic= for the routed UBSan function check.
+// P3100: -fsanitize-semantic= for the routed UBSan function check.
 // -fsanitize=function is Clang-only (GCC has no such check), so this routed
 // check has no GCC counterpart -- it exercises the same generic routing logic on
 // the Clang-only bit.

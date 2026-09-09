@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): the nonnull-attribute check
+// P3100 (UBSan runtime routing): the nonnull-attribute check
 // (-fsanitize=nonnull-attribute) routes to the contract-violation handler when a
 // null pointer is passed to a parameter marked __attribute__((nonnull)).  With
 // the check resolved to noexcept_observe the handler runs (kind=7, semantic=6)

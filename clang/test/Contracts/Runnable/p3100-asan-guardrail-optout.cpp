@@ -1,4 +1,4 @@
-// P3100 Task 3.1 + 3.2: the -fsanitize-noncontract-callbacks opt-out
+// P3100 + 3.2: the -fsanitize-noncontract-callbacks opt-out
 // disengages BOTH the report routing and the runtime guardrail.  With the
 // opt-out, no routing descriptor is emitted, so __asan_set_error_report_callback
 // registers the stock callback normally (no abort at the call) and stock ASan

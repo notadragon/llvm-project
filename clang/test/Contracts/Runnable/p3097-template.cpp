@@ -5,7 +5,7 @@
 // P3097 x templates: contracts on a virtual member function of a class template,
 // checked across dispatch for each instantiation.  (GCC mirror: p3097-template.C)
 //
-// (Previously BUG-7: a contract on a VIRTUAL member of a class template ICEd
+// (Previously: a contract on a VIRTUAL member of a class template ICEd
 // during codegen because the interface contract was never instantiated -- an
 // inline virtual member that is only ever called polymorphically never has its
 // definition instantiated, so its contract stayed the dependent pattern copy

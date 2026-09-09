@@ -1,4 +1,4 @@
-// P3100 Task 4.1: -fsanitize-semantic= for the routed UBSan vptr check --
+// P3100: -fsanitize-semantic= for the routed UBSan vptr check --
 // driver diagnostics, the recover-vs-abort code-path selection, and semantic
 // print.  Driver-level, so checked with -### / FileCheck.
 

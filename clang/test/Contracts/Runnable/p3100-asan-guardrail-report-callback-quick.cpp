@@ -1,4 +1,4 @@
-// P3100 Task 3.2 parity fix: the runtime guardrail in
+// P3100 parity fix: the runtime guardrail in
 // __asan_set_error_report_callback must fire under quick_enforce routing too,
 // not just noexcept_observe/noexcept_enforce.  quick_enforce terminates
 // WITHOUT ever calling the contract-violation handler and WITHOUT printing

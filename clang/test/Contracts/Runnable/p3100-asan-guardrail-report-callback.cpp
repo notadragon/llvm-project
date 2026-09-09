@@ -1,4 +1,4 @@
-// P3100 Task 3.2: runtime guardrail.  When contract routing is active (the
+// P3100: runtime guardrail.  When contract routing is active (the
 // front end emitted the descriptor under -fcontracts-p3100 with the address
 // check resolved to a routed semantic), calling the stock setter
 // __asan_set_error_report_callback must abort with a fatal error naming the

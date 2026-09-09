@@ -4,7 +4,7 @@
 // type at all) must be rejected.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-label-bad-type.C)
 //
-// (Previously BUG-16: Clang did not validate the assertion-control label type --
+// (Previously: Clang did not validate the assertion-control label type --
 // a struct without assertion_control_object, a struct with a non-type member of
 // that name, and an integer literal were all accepted as labels.  Clang now
 // requires the label to be a class type with an 'assertion_control_object'

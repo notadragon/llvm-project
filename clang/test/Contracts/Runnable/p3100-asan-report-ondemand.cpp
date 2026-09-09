@@ -1,4 +1,4 @@
-// P3100 RF5 (CL2): on the contract-routed ASan path the sanitizer emits NOTHING
+// P3100: on the contract-routed ASan path the sanitizer emits NOTHING
 // itself.  Instead it registers a lazy report populator (CXA_FIELD_REPORT) on
 // the violation, and the handler renders the full ASan report ON DEMAND by
 // calling contract_violation::report().  This test proves:

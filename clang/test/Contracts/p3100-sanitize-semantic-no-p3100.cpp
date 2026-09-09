@@ -7,7 +7,7 @@
 // flag in exactly the case worth warning about.
 //
 // GCC mirror: g++.dg/contracts/cpp26/p3100-sanitize-semantic-no-p3100.C
-// (gnu_gcc 14008796667).
+// .
 
 // RUN: %clangxx -std=c++26 %s -fsanitize=null -fsanitize-semantic=null:assume \
 // RUN:   -fsyntax-only %libcxx_flags 2>&1 | FileCheck %s

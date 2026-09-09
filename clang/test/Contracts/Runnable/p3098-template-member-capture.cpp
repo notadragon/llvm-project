@@ -6,7 +6,7 @@
 // function of a CLASS TEMPLATE.  This is valid and works for free function
 // templates and members of non-template classes, so it must work here too.
 //
-// (Previously BUG-1: Clang mishandled the capture for class-template members --
+// (Previously: Clang mishandled the capture for class-template members --
 // during instantiation the predicate's capture reference was not remapped to the
 // instantiated capture (it stayed the dependent pattern capture), so codegen hit
 // "DeclRefExpr for Decl not entered in LocalDeclMap?".  FindInstantiatedDecl now

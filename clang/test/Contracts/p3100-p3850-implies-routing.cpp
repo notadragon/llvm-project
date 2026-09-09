@@ -8,7 +8,7 @@
 // silent -- instrumentation byte-for-byte identical to plain -fsanitize=.
 //
 // GCC had the same class of bug for a different flag (-fcontracts-p3850 not
-// implying -fcontracts-p4298, gnu_gcc c6477d25942).
+// implying -fcontracts-p4298).
 
 // RUN: %clangxx -std=c++26 %s -fcontracts-p3850 \
 // RUN:   -fsanitize=null -fsanitize-semantic=null:assume \

@@ -3,7 +3,7 @@
 // P3099: redeclaration sameness checking for the diagnostic message.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-message-redecl.C)
 //
-// (Previously BUG-12: Clang did not diagnose a mismatched contract diagnostic
+// (Previously: Clang did not diagnose a mismatched contract diagnostic
 // message across redeclarations.  Message sameness is now part of the
 // contract-specifier-sequence comparison, using the extracted message text.)
 

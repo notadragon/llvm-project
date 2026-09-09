@@ -7,7 +7,7 @@
 // identical text must be accepted.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-message-redecl-cexpr.C)
 //
-// (Previously BUG-13 blocked custom-type messages, then BUG-12 blocked
+// (Previously custom-type messages were blocked, then a further defect blocked
 // redeclaration message-sameness.  Both are now fixed; sameness compares the
 // extracted text.)
 

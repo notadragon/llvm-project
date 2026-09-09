@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): with object-size resolved to
+// P3100 (UBSan runtime routing): with object-size resolved to
 // noexcept_enforce the handler runs (kind=7, semantic=7) then the program
 // TERMINATES.  Compiled at -O2 (object-size only instruments at -O1+).
 

@@ -7,10 +7,10 @@
 // function template).  The captured pack in the interface postcondition holds
 // call-time values across dispatch.
 //
-// (Previously BUG-5: a pack capture on a virtual member of a class template ICEd
+// (Previously: a pack capture on a virtual member of a class template ICEd
 // during codegen ("should not see dependent types here") because the interface
 // contract was never instantiated -- the wrapper tried to emit the dependent
-// pattern copy of the pack capture.  Fixed together with BUG-7: Clang now
+// pattern copy of the pack capture.  Fixed at the same time: Clang now
 // instantiates a virtual function's contracts on odr-use.)
 
 #include <contracts>

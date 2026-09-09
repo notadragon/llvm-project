@@ -7,7 +7,7 @@
 // label should inherit group_names from both sides.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-group-combined.C)
 //
-// (Previously BUG-15: operator|-combined labels did not propagate group_names --
+// (Previously: operator|-combined labels did not propagate group_names --
 // extractGroupNames only looked for the group_names member as a direct field, but
 // a combined label carries it in the __combined_identification_label base, so the
 // safety/audit groups resolved to the default.  extractGroupNames now reads

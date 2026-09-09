@@ -2,7 +2,7 @@
 // RUN:   -fcontract-evaluation-semantic=ignore %libcxx_flags -o %t
 // RUN: %t
 
-// E5: a contract carrying both a P3400 label and a P4283 requires-clause on a
+// a contract carrying both a P3400 label and a P4283 requires-clause on a
 // templated function -- the two features compose.  When the requires-clause is
 // satisfied the labeled contract is active (its label routes to observe,
 // overriding the configured ignore); when unsatisfied the whole contract (label

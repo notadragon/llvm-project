@@ -18,7 +18,7 @@
 // pre<L{}> and contract_assert<L{}> were unaffected, which is why this
 // went unnoticed.
 //
-// Found while mirroring gnu_gcc 6af03db8a87 / f3af7de5573, where the same
+// Found while mirroring the GCC tests, where the same
 // construct failed differently: GCC dropped the facet for pre as well as
 // post, and its crash needed all three of template, prvalue label and
 // deduced return type together.

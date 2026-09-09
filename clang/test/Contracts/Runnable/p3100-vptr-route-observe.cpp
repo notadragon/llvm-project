@@ -1,4 +1,4 @@
-// P3100 Task 4.1 (UBSan runtime routing): under -fcontracts-p3100 a UBSan
+// P3100 (UBSan runtime routing): under -fcontracts-p3100 a UBSan
 // runtime check's report is routed to the contract-violation handler.  vptr is
 // the first routed UBSan check.  With the vptr check resolved to noexcept_observe
 // (via -fsanitize-recover=vptr + -fcontracts-p4298) the handler runs (kind=7,

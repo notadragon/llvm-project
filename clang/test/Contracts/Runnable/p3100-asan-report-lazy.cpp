@@ -1,4 +1,4 @@
-// P3100 RF5 (CL2): the ASan report populator is LAZY -- it runs ONLY if the
+// P3100: the ASan report populator is LAZY -- it runs ONLY if the
 // handler calls contract_violation::report().  Here the handler does NOT call
 // report(), so the populator never runs and the sanitizer prints nothing.  The
 // only output is the handler's own "HANDLED" line; no ASan report text (no

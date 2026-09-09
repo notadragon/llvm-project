@@ -2,7 +2,7 @@
 // kind constants for mixed-language handlers (D4299 interop).
 // RUN: %clang_cc1 -fcontracts-p4299 -fsyntax-only -verify %s
 // expected-no-diagnostics
-// (GCC mirror: the interop kind constants added in gnu_gcc 7849385954b.)
+// (GCC mirror: the interop kind constants added in.)
 
 #include <contracts.h>
 

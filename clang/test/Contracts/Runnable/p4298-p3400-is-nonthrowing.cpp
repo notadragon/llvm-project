@@ -8,7 +8,7 @@
 #include <contracts>
 using namespace std::contracts;
 
-// E1: is_nonthrowing is constexpr, so classification also holds at compile time.
+// is_nonthrowing is constexpr, so classification also holds at compile time.
 static_assert(is_nonthrowing(evaluation_semantic::ignore));
 static_assert(is_nonthrowing(evaluation_semantic::quick_enforce));
 static_assert(is_nonthrowing(evaluation_semantic::assume));

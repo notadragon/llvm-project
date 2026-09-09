@@ -3,7 +3,7 @@
 // P3400: redeclaration sameness checking for assertion-control labels.
 // (GCC mirror: g++.dg/contracts/cpp26/p3400-label-redecl.C)
 //
-// (Previously BUG-17: Clang did not diagnose a mismatched assertion-control
+// (Previously: Clang did not diagnose a mismatched assertion-control
 // label across redeclarations.  Label sameness is now part of the
 // contract-specifier-sequence comparison.)
 

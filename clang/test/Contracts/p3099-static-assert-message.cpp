@@ -4,7 +4,7 @@
 // constant of class type with .size()/.data()) is the same grammar static_assert
 // uses; verify both forms deliver the message in a static_assert diagnostic.
 // Note: the custom-type form works here in static_assert even though the same
-// custom-type message ICEs as a *contract* message on Clang (BUG-13) -- BUG-13
+// custom-type message ICEs as a *contract* message on Clang -- that
 // is specific to the contract message-parse path.
 // (GCC mirror: g++.dg/contracts/cpp26/p3099-static-assert-message.C)
 

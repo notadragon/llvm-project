@@ -3,7 +3,7 @@
 // RUN:   2>&1 | FileCheck %s
 
 // Constant-evaluation observe-violation reporting volume.  KNOWN DIVERGENCE from
-// GCC (cross-compiler-mirror #43): GCC caps the reported observe violations at 8
+// GCC: GCC caps the reported observe violations at 8
 // per evaluation and summarises the rest ("and N more contract violation not
 // shown"); Clang applies no such cap -- it reports every violation.  This test
 // pins Clang's actual behaviour (all nine reported, no summary line).

@@ -8,7 +8,7 @@
 // than assuming: classifyDiagnosableParmVar checks that the parameter belongs
 // to FD, via getFunctionScopeIndex against FD's own parameter list.  GCC's
 // check ran from finish_id_expression and had no such notion, so it rejected
-// these; it was fixed in gnu_gcc f3ff6a8e22f, where moving the check onto a
+// these; it was fixed on the GCC side, where moving the check onto a
 // walk of the finished predicate forced the question "whose parameter is
 // this?" to be answered explicitly.
 //

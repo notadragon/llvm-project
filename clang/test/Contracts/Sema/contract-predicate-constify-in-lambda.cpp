@@ -7,7 +7,7 @@
 // Clang gets the variable cases right as a consequence of llvm 31b784c4d29f,
 // which removed the automatic-storage restriction from
 // getContractConstification.  GCC needed a dedicated fix for the lambda case
-// (gnu_gcc 5442adee87a), because its gate asked whether the INNERMOST binding
+// , because its gate asked whether the INNERMOST binding
 // level was the contract scope, which stops being true the moment a lambda
 // pushes its own.  So most of this file is a regression pin on the Clang side
 // of a bug that was real on the other.

@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -std=c++26 -fcontracts -fsyntax-only -verify %s
 // expected-no-diagnostics
 
-// E3: negative gate -- without -fcontracts-p4283 the requires-on-contracts
+// negative gate -- without -fcontracts-p4283 the requires-on-contracts
 // feature-test macro is not defined (the umbrella -fcontracts-p3850 enables it,
 // so use a bare -fcontracts here).
 // (GCC mirror: g++.dg/contracts/cpp26/p4283-ftm-undefined.C.)

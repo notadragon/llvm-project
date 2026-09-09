@@ -22,7 +22,7 @@
 // pair of defects, so a requires-clause naming a template-id with a brace or
 // a paren among its arguments crashed as well.
 //
-// Found while mirroring gnu_gcc ddc6c726bae (p3400-label-prvalue-template.C),
+// Found while mirroring the GCC test (p3400-label-prvalue-template.C),
 // whose class-template-member case tripped this on the way past.  The two
 // bugs are unrelated: that one was about materializing a prvalue label inside
 // a template, this one is about caching a member's tokens at all.
