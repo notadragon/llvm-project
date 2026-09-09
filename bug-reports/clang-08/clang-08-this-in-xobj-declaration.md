@@ -32,5 +32,7 @@ stays reproducible and untouched on the branch.
 
 ## Notes
 
-Shares its root cause with GCC-17 in the `gnu_gcc` fork -- both reports
-should be filed together, cross-referencing each other.
+Shares its root cause with GCC-17 in the `gnu_gcc` fork. GCC-17 is filed
+as [PR127290](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=127290)
+(2026-09-09); this one is not yet filed. When it is, reference PR127290 in
+the new issue, and add a comment to PR127290 linking back to it.
