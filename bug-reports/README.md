@@ -26,8 +26,9 @@ can only mean unfiled. It does mean something in
 contracts-dependent issue has nothing upstream to link because contracts are
 not upstream in Clang.
 
-**A trailing `*` marks an issue we filed ourselves**, as in the GCC fork's
-table. Nothing here carries one yet: #12658 was filed in 2012 and #211286 by
+**A trailing `*` marks an issue we filed ourselves** -- specifically, one
+whose GitHub author is our own account, not merely one filed by someone
+connected to this work -- as in the GCC fork's table. Nothing here carries one yet: #12658 was filed in 2012 and #211286 by
 another reporter, both checked against the issue's author rather than
 assumed. The distinction matters once we do file -- on our own issue we can
 comment freely and are expected to answer questions, whereas on someone
