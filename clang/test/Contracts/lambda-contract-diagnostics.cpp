@@ -1,5 +1,8 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -fcolor-diagnostics -verify %s -fcontracts
 
+// Diagnostics for contracts on lambdas: what a lambda's own pre/post may
+// name, and what it may not.
+
 
 namespace test_one {
 constexpr void f() {

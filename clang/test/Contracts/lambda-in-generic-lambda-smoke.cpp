@@ -1,4 +1,8 @@
 // RUN: %clang_cc1 -std=c++26 -fcontracts  -fcolor-diagnostics -fsyntax-only -verify %s
+
+// Smoke test: a contract_assert inside a generic lambda, naming a local and
+// the lambda's own parameter.  Small on purpose -- it is the first thing to
+// check when contract parsing inside a lambda regresses.
 extern int yy;
 auto tmpl_lambda = [](auto p) {
   int local = 202 + p;

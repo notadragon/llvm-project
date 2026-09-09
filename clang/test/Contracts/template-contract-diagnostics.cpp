@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected %s -fcontracts -fcolor-diagnostics
 
+// Diagnostics for contracts on templates and their instantiations.
+
 
 
 struct ImpBC {

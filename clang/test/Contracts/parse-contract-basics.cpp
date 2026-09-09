@@ -1,5 +1,9 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected -verify-ignore-unexpected=warning %s -fcontracts
 
+// The basic parse surface: pre and post on a declaration, duplicate result
+// names, trailing return types, redeclaring a result name, and attributes on
+// a contract.
+
 
 void test_pre_parse(int x) pre(x != 0);
 void test_post_parse(const int x) post(x != 0);

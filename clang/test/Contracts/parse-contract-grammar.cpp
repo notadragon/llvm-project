@@ -1,5 +1,10 @@
 // RUN: %clang_cc1 -std=c++26 -fsyntax-only -verify=expected %s -fcontracts -fcontracts-p3097
 
+// Parsing the contract grammar, one namespace per shape: the basic form,
+// trailing return types, virtual and defaulted/deleted/pure functions,
+// lambdas, pre/post result names, requires-clauses, and the declarations
+// that are ambiguous with something else.
+
 namespace parsing_basic_test {
   int f(const int x)
   pre (x >= 0)
