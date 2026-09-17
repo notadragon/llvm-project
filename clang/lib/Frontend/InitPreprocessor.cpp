@@ -770,6 +770,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_contracts", "202606L");
   else if (LangOpts.Contracts)
     Builder.defineMacro("__cpp_contracts", "202502L");
+  if (LangOpts.ContractsP3099)
+    Builder.defineMacro("__cpp_contracts_message", "202606L");
   if (LangOpts.ContractsP3290)
     Builder.defineMacro("__clang_contracts_p3290", "202606L");
   if (LangOpts.Char8)
