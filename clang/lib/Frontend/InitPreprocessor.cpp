@@ -766,6 +766,10 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   Builder.defineMacro("__cpp_variadic_friend", "202403L");
   Builder.defineMacro("__cpp_trivial_relocatability", "202502L");
 
+  if (LangOpts.Contracts && LangOpts.ContractsP3097)
+    Builder.defineMacro("__cpp_contracts", "202606L");
+  else if (LangOpts.Contracts)
+    Builder.defineMacro("__cpp_contracts", "202502L");
   if (LangOpts.Char8)
     Builder.defineMacro("__cpp_char8_t", "202207L");
   Builder.defineMacro("__cpp_impl_destroying_delete", "201806L");
