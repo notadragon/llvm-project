@@ -3866,6 +3866,130 @@ void CodeGenModule::emitLLVMUsed() {
   emitUsed(*this, "llvm.compiler.used", LLVMCompilerUsed);
 }
 
+// P3100 Task 4.1 (UBSan runtime routing): the per-check analog of the ASan
+// descriptor above.  Whereas ASan has a single whole-program check (one byte),
+// UBSan has many independently-configurable runtime checks, so the conveyance
+// is a weak ARRAY, __ubsan_contract_semantic[RUC_COUNT], one wire byte per
+// routed check.  compiler-rt's ScopedReport destructor folds its ErrorType to a
+// routed id and reads the corresponding byte
+// (compiler-rt/lib/ubsan/ubsan_diag.cpp). The routed-check id ordering here
+// MUST stay in sync with the RUC_* enum in ubsan_diag.cpp.  Same wire encoding
+// and emit-nothing-for-stock rule as ASan.
+void CodeGenModule::emitUbsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+
+  // Keep in sync with ubsan_diag.cpp (RUC_* / RUC_COUNT).
+  enum {
+    RUC_VPTR = 0,
+    RUC_FUNCTION,
+    RUC_ALIGNMENT,
+    RUC_OBJECT_SIZE,
+    RUC_NONNULL_ATTRIBUTE,
+    RUC_RETURNS_NONNULL_ATTRIBUTE,
+    RUC_POINTER_OVERFLOW,
+    RUC_NULL,
+    RUC_SHIFT_BASE,
+    RUC_SHIFT_EXPONENT,
+    RUC_INTEGER_DIVIDE_BY_ZERO,
+    RUC_SIGNED_INTEGER_OVERFLOW,
+    RUC_BOOL,
+    RUC_ENUM,
+    RUC_FLOAT_CAST_OVERFLOW,
+    RUC_BOUNDS,
+    RUC_RETURN,
+    RUC_UNREACHABLE,
+    RUC_VLA_BOUND,
+    RUC_BUILTIN,
+    RUC_FLOAT_DIVIDE_BY_ZERO,
+    RUC_UNSIGNED_INTEGER_OVERFLOW,
+    RUC_IMPLICIT_CONVERSION,
+    RUC_LOCAL_BOUNDS,
+    RUC_OBJC_CAST,
+    RUC_COUNT
+  };
+  const std::pair<int, SanitizerMask> RoutedChecks[] = {
+      {RUC_VPTR, SanitizerKind::Vptr},
+      {RUC_FUNCTION, SanitizerKind::Function},
+      {RUC_ALIGNMENT, SanitizerKind::Alignment},
+      {RUC_OBJECT_SIZE, SanitizerKind::ObjectSize},
+      {RUC_NONNULL_ATTRIBUTE, SanitizerKind::NonnullAttribute},
+      {RUC_RETURNS_NONNULL_ATTRIBUTE, SanitizerKind::ReturnsNonnullAttribute},
+      {RUC_POINTER_OVERFLOW, SanitizerKind::PointerOverflow},
+      {RUC_NULL, SanitizerKind::Null},
+      {RUC_SHIFT_BASE, SanitizerKind::ShiftBase},
+      {RUC_SHIFT_EXPONENT, SanitizerKind::ShiftExponent},
+      {RUC_INTEGER_DIVIDE_BY_ZERO, SanitizerKind::IntegerDivideByZero},
+      {RUC_SIGNED_INTEGER_OVERFLOW, SanitizerKind::SignedIntegerOverflow},
+      {RUC_BOOL, SanitizerKind::Bool},
+      {RUC_ENUM, SanitizerKind::Enum},
+      {RUC_FLOAT_CAST_OVERFLOW, SanitizerKind::FloatCastOverflow},
+      {RUC_BOUNDS, SanitizerKind::ArrayBounds},
+      {RUC_RETURN, SanitizerKind::Return},
+      {RUC_UNREACHABLE, SanitizerKind::Unreachable},
+      {RUC_VLA_BOUND, SanitizerKind::VLABound},
+      {RUC_BUILTIN, SanitizerKind::Builtin},
+      {RUC_FLOAT_DIVIDE_BY_ZERO, SanitizerKind::FloatDivideByZero},
+      {RUC_UNSIGNED_INTEGER_OVERFLOW, SanitizerKind::UnsignedIntegerOverflow},
+      // The implicit-conversion group has several member bits; each maps to the
+      // single RUC_IMPLICIT_CONVERSION wire slot (SanitizerSet::has requires a
+      // single-bit mask, so the group cannot be used directly here).
+      {RUC_IMPLICIT_CONVERSION,
+       SanitizerKind::ImplicitUnsignedIntegerTruncation},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitSignedIntegerTruncation},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitIntegerSignChange},
+      {RUC_IMPLICIT_CONVERSION, SanitizerKind::ImplicitBitfieldConversion},
+      {RUC_LOCAL_BOUNDS, SanitizerKind::LocalBounds},
+      {RUC_OBJC_CAST, SanitizerKind::ObjCCast},
+  };
+
+  enum : uint8_t {
+    UBSanContractSemanticObserve = 1,
+    UBSanContractSemanticEnforce = 2,
+    UBSanContractSemanticQuick = 3,
+  };
+
+  uint8_t Wire[RUC_COUNT] = {};
+  bool AnyRouted = false;
+  for (const auto &RC : RoutedChecks) {
+    if (!LangOpts.Sanitize.has(RC.second))
+      continue;
+    uint8_t W;
+    switch (CodeGenOpts.getSanitizerSemantic(RC.second)) {
+    case ContractEvaluationSemantic::NoexceptObserve:
+      W = UBSanContractSemanticObserve;
+      break;
+    case ContractEvaluationSemantic::NoexceptEnforce:
+      W = UBSanContractSemanticEnforce;
+      break;
+    case ContractEvaluationSemantic::QuickEnforce:
+      W = UBSanContractSemanticQuick;
+      break;
+    default:
+      // assume (per-function SanOpts clear), ignore / plain throwing
+      // enforce/observe (hard-errored): leave stock.
+      continue;
+    }
+    Wire[RC.first] = W;
+    AnyRouted = true;
+  }
+
+  if (!AnyRouted)
+    return;
+
+  llvm::SmallVector<llvm::Constant *, RUC_COUNT> Elts;
+  for (uint8_t W : Wire)
+    Elts.push_back(llvm::ConstantInt::get(Int8Ty, W));
+  auto *ArrTy = llvm::ArrayType::get(Int8Ty, RUC_COUNT);
+  auto *Init = llvm::ConstantArray::get(ArrTy, Elts);
+  auto *GV = new llvm::GlobalVariable(getModule(), ArrTy, /*isConstant=*/true,
+                                      llvm::GlobalValue::WeakAnyLinkage, Init,
+                                      "__ubsan_contract_semantic");
+  addUsedGlobal(GV);
+}
+
 void CodeGenModule::AppendLinkerOptions(StringRef Opts) {
   auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opts);
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
