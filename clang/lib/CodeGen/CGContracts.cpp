@@ -886,6 +886,68 @@ bool CodeGenFunction::EmitImplicitFlowOffReaction(const FunctionDecl *FD) {
   return true;
 }
 
+// P3100: select the __cxa_pure_virtual terminus for a pure virtual
+// (ub:class.abstract.pure.virtual).  A call that dispatches to a pure virtual
+// is core-language UB, but there is no per-call site (a pure-virtual dispatch
+// is an ordinary indirect call, and only the runtime object's current vtable
+// knows the slot is pure).  Instead the semantic is resolved here, where the
+// vtable is emitted, at MD's declaring (base) class -- so per-file/line and
+// per-namespace P3595 config selects the terminus per class.  The vtable slot
+// stays a plain function pointer; only its default value changes, from the
+// legacy
+// __cxa_pure_virtual to a semantic-specific terminus.  Returns an empty
+// StringRef for assume/ignore (a pure-virtual call has no defined value to
+// substitute) or when -fcontracts-p3100 is off; the caller then keeps
+// __cxa_pure_virtual.
+//
+// This is a CodeGenModule method (its caller is in CGVTables.cpp), kept here in
+// CGContracts.cpp rather than beside the other CodeGenModule members so it can
+// share the file-static resolveImplicitContractSemantic with the
+// CodeGenFunction EmitImplicit* guards above.
+StringRef
+CodeGenModule::getPureVirtualContractTerminusName(const CXXMethodDecl *MD) {
+  using CES = ContractEvaluationSemantic;
+  if (!getLangOpts().ContractsP3100)
+    return StringRef();
+
+  const CXXRecordDecl *RD = MD->getParent();
+  CES Sem = resolveImplicitContractSemantic(
+      *this, "ub:class.abstract.pure.virtual", RD, RD->getLocation());
+
+  // assume/ignore: keep the legacy terminus (no defined value to substitute).
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return StringRef();
+
+  // A throwing handler must not escape a noexcept pure virtual, so promote a
+  // throwing enforce/observe to its terminate-on-throw (noexcept) terminus.
+  bool Nothrow = false;
+  if (const auto *FPT = MD->getType()->getAs<FunctionProtoType>())
+    Nothrow = FPT->isNothrow();
+  if (Nothrow) {
+    if (Sem == CES::Enforce)
+      Sem = CES::NoexceptEnforce;
+    else if (Sem == CES::Observe)
+      Sem = CES::NoexceptObserve;
+  }
+
+  switch (Sem) {
+  case CES::QuickEnforce:
+    return "__cxa_pure_virtual_quick";
+  case CES::Enforce:
+    return "__cxa_pure_virtual_enforce";
+  case CES::Observe:
+    return "__cxa_pure_virtual_observe";
+  case CES::NoexceptEnforce:
+    return "__cxa_pure_virtual_noexcept_enforce";
+  case CES::NoexceptObserve:
+    return "__cxa_pure_virtual_noexcept_observe";
+  default:
+    // assume/ignore were handled above; every other semantic is one of the five
+    // termini.
+    llvm_unreachable("unexpected contract semantic for pure-virtual terminus");
+  }
+}
+
 llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
     QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
     StringRef GroupName, StringRef Comment,

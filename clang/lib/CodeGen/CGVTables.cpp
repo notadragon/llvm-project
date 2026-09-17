@@ -855,17 +855,30 @@ void CodeGenVTables::addVTableComponent(ConstantArrayBuilder &builder,
       return F;
     };
 
+    const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
     llvm::Constant *fnPtr;
 
     // Pure virtual member functions.
-    if (cast<CXXMethodDecl>(GD.getDecl())->isPureVirtual()) {
-      if (!PureVirtualFn)
-        PureVirtualFn =
-            getSpecialVirtualFn(CGM.getCXXABI().GetPureVirtualCallName());
-      fnPtr = PureVirtualFn;
+    if (MD->isPureVirtual()) {
+      // P3100: point the slot at a contract-aware terminus when the class's
+      // implicit contract configuration selects a checking semantic for
+      // ub:class.abstract.pure.virtual; otherwise the legacy
+      // __cxa_pure_virtual.  The terminus symbol varies per
+      // class/semantic/noexcept-ness, so it is
+      // not cached in PureVirtualFn (getSpecialVirtualFn/CreateRuntimeFunction
+      // still dedups by name).  The slot stays a plain function pointer.
+      StringRef ContractTerminus = CGM.getPureVirtualContractTerminusName(MD);
+      if (!ContractTerminus.empty()) {
+        fnPtr = getSpecialVirtualFn(ContractTerminus);
+      } else {
+        if (!PureVirtualFn)
+          PureVirtualFn =
+              getSpecialVirtualFn(CGM.getCXXABI().GetPureVirtualCallName());
+        fnPtr = PureVirtualFn;
+      }
 
-    // Deleted virtual member functions.
-    } else if (cast<CXXMethodDecl>(GD.getDecl())->isDeleted()) {
+      // Deleted virtual member functions.
+    } else if (MD->isDeleted()) {
       if (!DeletedVirtualFn)
         DeletedVirtualFn =
             getSpecialVirtualFn(CGM.getCXXABI().GetDeletedVirtualCallName());
