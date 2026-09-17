@@ -4026,6 +4026,45 @@ void CodeGenModule::emitTsanContractSemanticDescriptor() {
   addUsedGlobal(GV);
 }
 
+// MemorySanitizer routing descriptor (Clang-only): a single whole-program check
+// (use-of-uninitialized-value) with its own weak wire byte
+// __msan_contract_semantic, read by compiler-rt's __msan_warning* leg.  Same
+// wire encoding and emit-nothing-for-stock rule as the ASan descriptor.
+void CodeGenModule::emitMsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+  if (!LangOpts.Sanitize.has(SanitizerKind::Memory))
+    return;
+
+  enum : uint8_t {
+    MSanContractSemanticObserve = 1,
+    MSanContractSemanticEnforce = 2,
+    MSanContractSemanticQuick = 3,
+  };
+  uint8_t Wire;
+  switch (CodeGenOpts.getSanitizerSemantic(SanitizerKind::Memory)) {
+  case ContractEvaluationSemantic::NoexceptObserve:
+    Wire = MSanContractSemanticObserve;
+    break;
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    Wire = MSanContractSemanticEnforce;
+    break;
+  case ContractEvaluationSemantic::QuickEnforce:
+    Wire = MSanContractSemanticQuick;
+    break;
+  default:
+    return;
+  }
+
+  auto *GV = new llvm::GlobalVariable(getModule(), Int8Ty, /*isConstant=*/true,
+                                      llvm::GlobalValue::WeakAnyLinkage,
+                                      llvm::ConstantInt::get(Int8Ty, Wire),
+                                      "__msan_contract_semantic");
+  addUsedGlobal(GV);
+}
+
 // P3100 Task 4.1 (UBSan runtime routing): the per-check analog of the ASan
 // descriptor above.  Whereas ASan has a single whole-program check (one byte),
 // UBSan has many independently-configurable runtime checks, so the conveyance

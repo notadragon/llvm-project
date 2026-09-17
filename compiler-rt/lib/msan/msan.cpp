@@ -20,6 +20,7 @@
 #include "msan_thread.h"
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_flag_parser.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
@@ -234,12 +235,73 @@ static void InitializeFlags() {
   if (f->store_context_size < 1) f->store_context_size = 1;
 }
 
+// -------------------- P3100 contract-routing ------------------- {{{1
+//
+// The compiler emits a per-TU weak byte __msan_contract_semantic when
+// -fcontracts-p3100 routes the memory (use-of-uninitialized-value) check to the
+// C++ contract-violation handler.  Wire encoding (shared with ASan/UBSan/TSan):
+//   0 = stock         (routing off / symbol absent -> keep stock behavior)
+//   1 = observe       (call handler, then continue)
+//   2 = enforce       (call handler, then terminate)
+//   3 = quick_enforce (terminate WITHOUT calling the handler)
+// continue-vs-terminate is decided by the codegen ENTRY POINT (observe ->
+// __msan_warning, which returns and continues; enforce/quick -> the
+// __msan_warning*_noreturn variant, which Die()s after this returns), so here
+// we only route the report + handler.  The handler is invoked from this
+// implicitly-noexcept runtime leg, so only the NON-throwing realizations are
+// routed (noexcept_observe / noexcept_enforce, p4298-gated; quick terminates
+// without the handler).  Declared weak so a non-p3100 program reads 0 = stock.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __msan_contract_semantic;
+
+static unsigned char MsanContractSemantic() {
+  if (&__msan_contract_semantic == nullptr)
+    return kContractRouteStock;
+  return __msan_contract_semantic;
+}
+
+// Lazy report populator ABI (mirror of __cxa_contract_report_populator; layout
+// must match { const char* (*)(const void*), const void* }).
+
+
+// v1 lazy populator: a concise, producer-owned description (full multi-line
+// capture is a documented follow-up).  The routed sanitizer emits nothing
+// itself; the handler owns all output and gets this via report().
+static const char* msan_contract_report_populate(const void*) {
+  return "MemorySanitizer: use-of-uninitialized-value";
+}
+
 void PrintWarningWithOrigin(uptr pc, uptr bp, u32 origin) {
   if (msan_expect_umr) {
     // Printf("Expected UMR\n");
     __msan_origin_tls = origin;
     msan_expected_umr_found = 1;
     return;
+  }
+
+  // P3100 contract routing: when the memory check is routed to the contract
+  // handler, the handler owns all output -- MSan prints nothing.  The codegen
+  // entry point decides continue (observe) vs terminate (enforce/quick), so
+  // here we only route the report + handler and return; quick_enforce
+  // terminates without the handler.  Skip ++msan_report_count so the routed
+  // path is independent of MSAN_OPTIONS report-count/exit-code logic.  Stock
+  // (routing off) behavior below is byte-for-byte unchanged.
+  {
+    const unsigned char route = MsanContractSemantic();
+    if (route != kContractRouteStock) {
+      if (route == kContractRouteQuick)
+        return;  // silent: no report, no handler; the noreturn caller Die()s
+      const bool handler_linked =
+          (&__cxa_contract_violation_sanitizer != nullptr);
+      if (handler_linked &&
+          (route == kContractRouteObserve || route == kContractRouteEnforce)) {
+        ContractReportPopulator populator = {&msan_contract_report_populate,
+                                                 nullptr};
+        __cxa_contract_violation_sanitizer("uninitialized-value", /*file=*/"",
+                                           /*line=*/0, route, &populator);
+        return;  // entry point decides continue (observe) / Die (enforce)
+      }
+      // Defensive: routed but handler not linked -> fall through to stock.
+    }
   }
 
   ++msan_report_count;
