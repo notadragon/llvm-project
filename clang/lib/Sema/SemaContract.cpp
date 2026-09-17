@@ -670,6 +670,165 @@ static std::string extractStringFromAPValue(const APValue &Val) {
   return Str;
 }
 
+/// Turn a `group_names' array value into the list of names it holds.
+static SmallVector<std::string> decodeGroupNameArray(const APValue &Val) {
+  if (!Val.isArray())
+    return {};
+
+  SmallVector<std::string> Groups;
+  unsigned InitElts = Val.getArrayInitializedElts();
+  for (unsigned I = 0, N = Val.getArraySize(); I < N; ++I) {
+    const APValue &Elt =
+        (I < InitElts) ? Val.getArrayInitializedElt(I) : Val.getArrayFiller();
+    std::string Str = extractStringFromAPValue(Elt);
+    if (!Str.empty())
+      Groups.push_back(std::move(Str));
+  }
+  return Groups;
+}
+
+// Extract group names from label's group_names member (identification_label).
+// Returns a vector of group name strings; empty if no group_names member.
+static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
+                                                  QualType LabelTy,
+                                                  const CXXRecordDecl *RD,
+                                                  SourceLocation Loc) {
+  DeclarationName GNName = &S.Context.Idents.get("group_names");
+  LookupResult R(S, GNName, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
+    return {};
+  if (R.isAmbiguous()) {
+    R.suppressDiagnostics();
+    return {};
+  }
+  // As for the function facets: a member this context cannot name is not a
+  // facet, and must not be an error.
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return {};
+
+  // P3400 requires is_const_v<decltype(t.group_names)>, so that nothing
+  // implies a label's group membership could change at run time and have an
+  // effect -- the names are read during translation and never again.  An
+  // array of const elements is itself a const-qualified type, so both the
+  // `static constexpr' and the const-non-static spellings qualify.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return {};
+
+  // group_names may be a *static* data member, which is a VarDecl and so is
+  // not part of the label object's value at all.  P3400's own example spells
+  // it `static constexpr', and the concept accepts either form, so both have
+  // to work.  Reading only fields silently produced no groups, and the
+  // label's group-based configuration then never applied: with
+  // -fcontract-group-evaluation-semantic=safety:observe the labelled contract
+  // stayed at the default semantic and simply never fired.
+  for (auto *D : R)
+    if (auto *VD = dyn_cast<VarDecl>(D->getUnderlyingDecl()))
+      if (const APValue *Val = VD->evaluateValue())
+        return decodeGroupNameArray(*Val);
+
+  // Find the field declaration for group_names.
+  FieldDecl *GNField = nullptr;
+  for (auto *D : R) {
+    if (auto *FD = dyn_cast<FieldDecl>(D)) {
+      GNField = FD;
+      break;
+    }
+  }
+  if (!GNField)
+    return {};
+
+  // Constant-evaluate the label expression to get the full struct value,
+  // then extract the group_names field.
+  Expr::EvalResult Eval;
+  if (!LabelExpr->EvaluateAsConstantExpr(Eval, S.Context)) {
+    return {};
+  }
+
+  const APValue *LabelValPtr = &Eval.Val;
+
+  // If the result is an lvalue (e.g., a DeclRefExpr to a constexpr variable),
+  // look through to the stored value of the referenced declaration.
+  if (LabelValPtr->isLValue()) {
+    APValue::LValueBase Base = LabelValPtr->getLValueBase();
+    if (const auto *VD = Base.dyn_cast<const ValueDecl *>()) {
+      if (const auto *VarD = dyn_cast<VarDecl>(VD)) {
+        const APValue *InitVal = VarD->getEvaluatedValue();
+        if (InitVal)
+          LabelValPtr = InitVal;
+      }
+    }
+  }
+
+  const APValue &LabelVal = *LabelValPtr;
+  if (!LabelVal.isStruct())
+    return {};
+
+  // group_names may be a direct field of RD (a plain group label) or inherited
+  // from a base subobject (the __combined_identification_label base of an
+  // operator|-combined label, which flattens the group names of both operands).
+  // Try the direct field first, then fall back to searching bases below.
+  const APValue *FieldVal = nullptr;
+
+  unsigned FieldIdx = 0;
+  bool FoundDirect = false;
+  for (const auto *F : RD->fields()) {
+    if (F == GNField) {
+      FoundDirect = true;
+      break;
+    }
+    ++FieldIdx;
+  }
+  if (FoundDirect && FieldIdx < LabelVal.getStructNumFields()) {
+    FieldVal = &LabelVal.getStructField(FieldIdx);
+  }
+
+  // If not a direct field, search the base subobject that actually owns
+  // group_names.  The APValue's bases are ordered to match RD->bases(), so walk
+  // them in parallel and only read from the base whose type is the field's
+  // owning record (e.g. __combined_identification_label for a combined label).
+  if (!FieldVal || FieldVal->isAbsent()) {
+    const auto *OwnerRD = dyn_cast<CXXRecordDecl>(GNField->getParent());
+    unsigned BaseFieldIdx = 0;
+    if (OwnerRD) {
+      bool BaseFound = false;
+      for (const auto *F : OwnerRD->fields()) {
+        if (F == GNField) {
+          BaseFound = true;
+          break;
+        }
+        ++BaseFieldIdx;
+      }
+      if (BaseFound) {
+        unsigned BI = 0;
+        for (const CXXBaseSpecifier &BaseSpec : RD->bases()) {
+          if (BI >= LabelVal.getStructNumBases())
+            break;
+          const APValue &Base = LabelVal.getStructBase(BI);
+          ++BI;
+          if (!Base.isStruct())
+            continue;
+          if (BaseSpec.getType()->getAsCXXRecordDecl() != OwnerRD)
+            continue;
+          if (BaseFieldIdx < Base.getStructNumFields()) {
+            FieldVal = &Base.getStructField(BaseFieldIdx);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!FieldVal)
+    return {};
+  return decodeGroupNameArray(*FieldVal);
+}
+
 // Resolve contract config for any contract (with or without label).
 // Collects groups from label group_names and/or ContractGroupAttr,
 // then resolves via the P3595 ordered config system.
