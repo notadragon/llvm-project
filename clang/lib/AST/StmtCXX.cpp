@@ -14,6 +14,10 @@
 #include "clang/AST/ExprCXX.h"
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/DeclCXX.h"
+#include "clang/Lex/Preprocessor.h"
+#include "llvm/ADT/StringExtras.h"
 
 using namespace clang;
 
@@ -287,4 +291,207 @@ SourceLocation CXXExpansionStmtInstantiation::getBeginLoc() const {
 
 SourceLocation CXXExpansionStmtInstantiation::getEndLoc() const {
   return Parent->getExpansionPattern()->getEndLoc();
+}
+
+ContractStmt *ContractStmt::CreateEmpty(const ASTContext &C, ContractKind Kind,
+                                        bool HasResultName, bool HasMessage,
+                                        bool HasLabel, bool HasCaptures,
+                                        bool HasRequiresClause,
+                                        unsigned NumAttrs) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                             1 + HasResultName + HasMessage + HasLabel +
+                                 HasCaptures + HasRequiresClause,
+                             NumAttrs),
+                         alignof(ContractStmt));
+  return new (Mem)
+      ContractStmt(EmptyShell(), Kind, HasResultName, HasMessage, HasLabel,
+                   HasCaptures, HasRequiresClause, NumAttrs);
+}
+
+ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
+                                   SourceLocation KeywordLoc, Expr *Condition,
+                                   DeclStmt *ResultNameDecl, Expr *Message,
+                                   Expr *Label, DeclStmt *Captures,
+                                   ArrayRef<const Attr *> Attrs,
+                                   Expr *RequiresClause) {
+  assert((ResultNameDecl == nullptr || Kind == ContractKind::Post) &&
+         "Only a postcondition can have a result name declaration");
+  void *Mem =
+      C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                     1 + (ResultNameDecl != nullptr) + (Message != nullptr) +
+                         (Label != nullptr) + (Captures != nullptr) +
+                         (RequiresClause != nullptr),
+                     Attrs.size()),
+                 alignof(ContractStmt));
+  auto *CS = new (Mem)
+      ContractStmt(Kind, KeywordLoc, Condition, ResultNameDecl, Message, Label,
+                   Captures, Attrs, RequiresClause != nullptr);
+  if (RequiresClause)
+    CS->setRequiresClause(RequiresClause);
+  return CS;
+}
+
+ResultNameDecl *ContractStmt::getResultName() const {
+  if (!hasResultName())
+    return nullptr;
+  DeclStmt *D = getResultNameDeclStmt();
+  assert(D);
+  return cast<ResultNameDecl>(D->getSingleDecl());
+}
+
+std::string ContractStmt::getComment(const ASTContext &Ctx) const {
+  if (hasTransformedComment())
+    return TransformedComment.str();
+  return getSourceText(Ctx);
+}
+
+std::string ContractStmt::getUserMessage(const ASTContext &Ctx) const {
+  if (hasTransformedMessage())
+    return TransformedMessage.str();
+  if (hasMessage()) {
+    if (auto *SL = dyn_cast<StringLiteral>(getMessageExpr()))
+      return SL->getString().str();
+  }
+  if (auto *A = getAttrAs<ContractMessageAttr>())
+    return A->getMessage().str();
+  return {};
+}
+
+std::string ContractStmt::getMessage(const clang::ASTContext &Ctx) const {
+  std::string Msg = getUserMessage(Ctx);
+  if (!Msg.empty())
+    return Msg;
+  return getSourceText(Ctx);
+}
+
+std::string ContractStmt::getSourceText(const ASTContext &Ctx) const {
+  auto &SM = Ctx.getSourceManager();
+  auto Begin = hasResultName() ? getResultName()->getBeginLoc()
+                               : getCond()->getBeginLoc();
+  auto End = getCond()->getEndLoc();
+  CharSourceRange ExprRange = Lexer::getAsCharRange(
+      SM.getExpansionRange(SourceRange(Begin, End)), SM, Ctx.getLangOpts());
+  std::string AssertStr =
+      Lexer::getSourceText(ExprRange, SM, Ctx.getLangOpts()).str();
+  return AssertStr;
+}
+
+StringRef ContractStmt::ContractKindAsString(ContractKind K) {
+  switch (K) {
+  case ContractKind::Assert:
+    return "contract_assert";
+  case ContractKind::Pre:
+    return "pre";
+  case ContractKind::Post:
+    return "post";
+  case ContractKind::Implicit:
+    return "implicit";
+  }
+  llvm_unreachable("Unknown contract kind");
+}
+
+StringRef ContractStmt::SemanticAsString(ContractEvaluationSemantic Sem) {
+  switch (Sem) {
+  case ContractEvaluationSemantic::Ignore:
+    return "ignore";
+  case ContractEvaluationSemantic::Observe:
+    return "observe";
+  case ContractEvaluationSemantic::Enforce:
+    return "enforce";
+  case ContractEvaluationSemantic::QuickEnforce:
+    return "quick_enforce";
+  case ContractEvaluationSemantic::Assume:
+    return "assume";
+  case ContractEvaluationSemantic::NoexceptObserve:
+    return "noexcept_observe";
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    return "noexcept_enforce";
+  }
+  llvm_unreachable("Unknown contract evaluation semantic");
+}
+
+ContractEvaluationSemantic
+ContractStmt::getSemantic(const ASTContext &Ctx) const {
+  if (hasTransformedSemantic())
+    return getTransformedSemantic();
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = false;
+  Q.AllowedMask = applyAssumeGate(getAllowedMask(), Ctx);
+  return Ctx.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureRuntimeSemantic(const ASTContext &Ctx,
+                                    const DeclContext *FnCtx) const {
+  if (CachedRuntimeSemantic_ != 0)
+    return static_cast<ContractEvaluationSemantic>(CachedRuntimeSemantic_);
+
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = false;
+  Q.AllowedMask = applyAssumeGate(getAllowedMask(), Ctx);
+  llvm::SmallVector<std::string, 1> GroupsVec;
+  if (auto *A = getAttrAs<ContractGroupAttr>())
+    GroupsVec.push_back(A->getGroup().str());
+  Q.Groups = GroupsVec;
+  Q.FnContext = FnCtx;
+  Q.Loc = getKeywordLoc();
+  Q.SM = &Ctx.getSourceManager();
+
+  auto Sem = Ctx.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CachedRuntimeSemantic_ = static_cast<uint8_t>(Sem);
+  return Sem;
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureCESemantic(const ASTContext &Ctx,
+                               const DeclContext *FnCtx) const {
+  if (CachedCESemantic_ != 0)
+    return static_cast<ContractEvaluationSemantic>(CachedCESemantic_);
+
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = true;
+  Q.AllowedMask = applyAssumeGate(getAllowedMask(), Ctx);
+  llvm::SmallVector<std::string, 1> GroupsVec;
+  if (auto *A = getAttrAs<ContractGroupAttr>())
+    GroupsVec.push_back(A->getGroup().str());
+  Q.Groups = GroupsVec;
+  Q.FnContext = FnCtx;
+  Q.Loc = getKeywordLoc();
+  Q.SM = &Ctx.getSourceManager();
+
+  auto Sem = Ctx.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CachedCESemantic_ = static_cast<uint8_t>(Sem);
+  return Sem;
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureCallerSemantic(const ASTContext &Ctx,
+                                   const DeclContext *FnCtx) const {
+  if (CachedCallerSemantic_ != 0)
+    return static_cast<ContractEvaluationSemantic>(CachedCallerSemantic_);
+
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = true;
+  Q.InConstantEvaluation = false;
+  Q.AllowedMask = applyAssumeGate(
+      getAllowedMask() |
+          (1u << static_cast<unsigned>(ContractEvaluationSemantic::Ignore)),
+      Ctx);
+  llvm::SmallVector<std::string, 1> GroupsVec;
+  if (auto *A = getAttrAs<ContractGroupAttr>())
+    GroupsVec.push_back(A->getGroup().str());
+  Q.Groups = GroupsVec;
+  Q.FnContext = FnCtx;
+  Q.Loc = getKeywordLoc();
+  Q.SM = &Ctx.getSourceManager();
+
+  auto Sem = Ctx.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  CachedCallerSemantic_ = static_cast<uint8_t>(Sem);
+  return Sem;
 }

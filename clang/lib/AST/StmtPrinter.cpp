@@ -2884,6 +2884,54 @@ void StmtPrinter::VisitCoyieldExpr(CoyieldExpr *S) {
   PrintExpr(S->getOperand());
 }
 
+// C++ contracts
+
+void StmtPrinter::VisitContractStmt(ContractStmt *Node) {
+  const char *Keyword = [=]() {
+    switch (Node->getContractKind()) {
+    case ContractKind::Assert:
+      return "contract_assert";
+    case ContractKind::Pre:
+      return "pre";
+    case ContractKind::Post:
+      return "post";
+    case ContractKind::Implicit:
+      return "implicit";
+    }
+    llvm_unreachable("unhandled case");
+  }();
+
+  // Print the contract keyword...
+  OS << Keyword;
+
+  // Then the label (if present)...
+  if (Node->hasLabel()) {
+    OS << "<";
+    PrintExpr(Node->getLabelExpr());
+    OS << ">";
+  }
+
+  // Then any attributes...
+  // FIXME: We assume any attributes appear in this position rather than at the
+  // start of the statement.
+  llvm::ArrayRef<const Attr *> Attrs = Node->getAttrs();
+  for (const auto *Attr : Attrs) {
+    OS << " ";
+    Attr->printPretty(OS, Policy);
+    if (Attr == Attrs.back())
+      OS << " ";
+  }
+  OS << "(";
+  PrintExpr(Node->getCond());
+  if (Node->hasMessage()) {
+    OS << ", ";
+    PrintExpr(Node->getMessageExpr());
+  }
+  OS << ")";
+  if (Node->getContractKind() == ContractKind::Assert)
+    OS << ";";
+}
+
 // Obj-C
 
 void StmtPrinter::VisitObjCStringLiteral(ObjCStringLiteral *Node) {

@@ -67,6 +67,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/XRayLists.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/APFixedPoint.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
@@ -91,6 +92,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/AArch64TargetParser.h"
 #include "llvm/TargetParser/Triple.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -10254,6 +10256,201 @@ CreateSystemZBuiltinVaListDecl(const ASTContext *Context) {
   return Context->buildImplicitTypedef(VaListTagArrayType, "__builtin_va_list");
 }
 
+enum ContractViolationDescriptorType {
+  DT_CStr,
+  DT_VoidPtr,
+  DT_Unsigned,
+  DT_Int,
+  DT_DescriptorTable
+};
+
+const char *
+GetContractViolationDescriptorTypeString(ContractViolationDescriptorType DT) {
+  switch (DT) {
+  case ContractViolationDescriptorType::DT_CStr:
+    return "const char*";
+  case ContractViolationDescriptorType::DT_VoidPtr:
+    return "void*";
+  case ContractViolationDescriptorType::DT_Unsigned:
+    return "unsigned";
+  case ContractViolationDescriptorType::DT_Int:
+    return "int";
+  case ContractViolationDescriptorType::DT_DescriptorTable:
+    return "descriptor_table*";
+  }
+  llvm_unreachable("unknown contract violation descriptor type");
+}
+
+QualType GetContractViolationDescriptorType(ContractViolationDescriptorType DT,
+                                            const ASTContext *Context) {
+  switch (DT) {
+  case ContractViolationDescriptorType::DT_CStr:
+    return Context->getPointerType(Context->getConstType(Context->CharTy));
+  case ContractViolationDescriptorType::DT_VoidPtr:
+    return Context->VoidPtrTy;
+  case ContractViolationDescriptorType::DT_Unsigned:
+    return Context->UnsignedIntTy;
+  case ContractViolationDescriptorType::DT_Int:
+    return Context->IntTy;
+  case ContractViolationDescriptorType::DT_DescriptorTable:
+    return Context->VoidPtrTy;
+  }
+  llvm_unreachable("unhandled case");
+}
+
+struct ContractViolationDescriptorEntry {
+  const char *Name;
+  ContractViolationDescriptorType Type;
+};
+
+[[maybe_unused]] constexpr ContractViolationDescriptorEntry
+    ContractViolationDescriptorTableV1[] = {{"__file_", DT_CStr},
+                                            {"__function_", DT_CStr},
+                                            {"__line_", DT_Unsigned},
+                                            {"__column_", DT_Unsigned},
+                                            {"__message_", DT_CStr},
+                                            {"__contract_kind_", DT_Unsigned}
+
+};
+
+struct ContractViolationDescriptorTable {
+  unsigned version;
+
+  std::vector<ContractViolationDescriptorEntry> Entries;
+};
+
+[[maybe_unused]] static RecordDecl *
+CreateBuiltinContractViolationDescriptorEntryDecl(const ASTContext *Context) {
+  RecordDecl *ViolationInfoT = Context->buildImplicitRecord(
+      "__builtin_contract_violation_descriptor_entry_t");
+  ViolationInfoT->startDefinition();
+
+  QualType ConstStrLiteralTy =
+      Context->getPointerType(Context->getConstType(Context->CharTy));
+  using Pt = std::pair<QualType, const char *>;
+  std::array<std::pair<QualType, const char *>, 3> FieldInfo = {
+      Pt{ConstStrLiteralTy, "__name_"}, Pt{ConstStrLiteralTy, "__type_"},
+      Pt{ConstStrLiteralTy, "__additional_info_"}};
+  const auto NumFields = FieldInfo.size();
+
+  // Create fields
+  for (unsigned i = 0; i < NumFields; ++i) {
+    FieldDecl *Field = FieldDecl::Create(
+        const_cast<ASTContext &>(*Context), ViolationInfoT, SourceLocation(),
+        SourceLocation(), &Context->Idents.get(FieldInfo[i].second),
+        FieldInfo[i].first,
+        /*TInfo=*/nullptr,
+        /*BitWidth=*/nullptr,
+        /*Mutable=*/false, ICIS_NoInit);
+    Field->setAccess(AS_public);
+    ViolationInfoT->addDecl(Field);
+  }
+  ViolationInfoT->completeDefinition();
+
+  return ViolationInfoT;
+}
+
+[[maybe_unused]] static RecordDecl *
+CreateBuiltinContractDestriptorTable(const ASTContext *Context) {
+  RecordDecl *ViolationInfoT = Context->buildImplicitRecord(
+      "__builtin_contract_violation_descriptor_entry_t");
+  ViolationInfoT->startDefinition();
+
+  QualType ConstStrLiteralTy =
+      Context->getPointerType(Context->getConstType(Context->CharTy));
+  using Pt = std::pair<QualType, const char *>;
+  std::array<std::pair<QualType, const char *>, 3> FieldInfo = {
+      Pt{ConstStrLiteralTy, "__name_"},
+      Pt{ConstStrLiteralTy, "__type_"},
+      Pt{ConstStrLiteralTy, "__size_"},
+  };
+  const auto NumFields = FieldInfo.size();
+
+  // Create fields
+  for (unsigned i = 0; i < NumFields; ++i) {
+    FieldDecl *Field = FieldDecl::Create(
+        const_cast<ASTContext &>(*Context), ViolationInfoT, SourceLocation(),
+        SourceLocation(), &Context->Idents.get(FieldInfo[i].second),
+        FieldInfo[i].first,
+        /*TInfo=*/nullptr,
+        /*BitWidth=*/nullptr,
+        /*Mutable=*/false, ICIS_NoInit);
+    Field->setAccess(AS_public);
+    ViolationInfoT->addDecl(Field);
+  }
+  ViolationInfoT->completeDefinition();
+
+  return ViolationInfoT;
+}
+
+static RecordDecl *
+CreateBuiltinContractViolationRecordDecl(const ASTContext *Context) {
+  // The data block layout for the new __cxa_contract_violation ABI.
+  // This matches the __cxa_contract_data_block wire format:
+  //   Field 0: const void* __descriptor_   (pointer to descriptor table)
+  //   Field 1: const void* __next_         (pointer to next block, null)
+  //   Field 2: const char* __file_         \
+  //   Field 3: const char* __function_      > source_location layout
+  //   Field 4: unsigned    __line_          |
+  //   Field 5: unsigned    __column_       /
+  //   Field 6: const char* __comment_
+  //   Field 7: const char* __message_
+  RecordDecl *ViolationInfoT =
+      Context->buildImplicitRecord("__builtin_contract_violation_info_t");
+  ViolationInfoT->startDefinition();
+
+  QualType ConstStrLiteralTy =
+      Context->getPointerType(Context->getConstType(Context->CharTy));
+  QualType ConstVoidPtrTy =
+      Context->getPointerType(Context->getConstType(Context->VoidTy));
+  using Pt = std::pair<QualType, const char *>;
+  std::array<std::pair<QualType, const char *>, 8> FieldInfo = {
+      Pt{ConstVoidPtrTy, "__descriptor_"}, Pt{ConstVoidPtrTy, "__next_"},
+
+      // The {file, function, line, column} prefix matches the layout of
+      // the source_location::__impl struct and __cxa_source_location.
+      // The descriptor's source_location field ID points here.
+      Pt{ConstStrLiteralTy, "__file_"}, Pt{ConstStrLiteralTy, "__function_"},
+      Pt{Context->UnsignedIntTy, "__line_"},
+      Pt{Context->UnsignedIntTy, "__column_"},
+
+      Pt{ConstStrLiteralTy, "__comment_"}, Pt{ConstStrLiteralTy, "__message_"}};
+  const auto NumFields = FieldInfo.size();
+
+  // Create fields
+  for (unsigned i = 0; i < NumFields; ++i) {
+    FieldDecl *Field = FieldDecl::Create(
+        const_cast<ASTContext &>(*Context), ViolationInfoT, SourceLocation(),
+        SourceLocation(), &Context->Idents.get(FieldInfo[i].second),
+        FieldInfo[i].first,
+        /*TInfo=*/nullptr,
+        /*BitWidth=*/nullptr,
+        /*Mutable=*/false, ICIS_NoInit);
+    Field->setAccess(AS_public);
+    ViolationInfoT->addDecl(Field);
+  }
+  ViolationInfoT->completeDefinition();
+
+  return ViolationInfoT;
+}
+
+UnnamedGlobalConstantDecl *
+ASTContext::BuildViolationObject(const ContractStmt *CS,
+                                 const FunctionDecl *CurDecl) {
+  assert(CS);
+  // P3099: message() is null when no diagnostic message was supplied, so "no
+  // message" is distinguishable from an explicit empty message ("").
+  std::string MsgStorage;
+  std::optional<StringRef> Message;
+  if (CS->hasMessage() || CS->hasTransformedMessage() ||
+      CS->getAttrAs<ContractMessageAttr>() != nullptr) {
+    MsgStorage = CS->getUserMessage(*this);
+    Message = MsgStorage;
+  }
+  return BuildViolationObject(CS->getBeginLoc(), CS->getComment(*this), Message,
+                              CurDecl);
+}
+
 static TypedefDecl *CreateHexagonBuiltinVaListDecl(const ASTContext *Context) {
   // typedef struct __va_list_tag {
   RecordDecl *VaListTagDecl;
@@ -10377,6 +10574,16 @@ TypedefDecl *ASTContext::getBuiltinVaListDecl() const {
   }
 
   return BuiltinVaListDecl;
+}
+
+Decl *ASTContext::getBuiltinContractViolationRecordDecl() const {
+  if (!BuiltinContractViolationRecordDecl) {
+    BuiltinContractViolationRecordDecl =
+        CreateBuiltinContractViolationRecordDecl(this);
+    assert(BuiltinContractViolationRecordDecl->isImplicit());
+  }
+
+  return BuiltinContractViolationRecordDecl;
 }
 
 Decl *ASTContext::getVaListTagDecl() const {
