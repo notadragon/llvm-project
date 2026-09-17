@@ -1174,6 +1174,70 @@ CodeGenFunction::EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
   return Result;
 }
 
+llvm::Value *CodeGenFunction::EmitImplicitArrayBoundsGuard(llvm::Value *Idx,
+                                                           QualType IdxTy,
+                                                           llvm::Value *Bound,
+                                                           bool Accessed,
+                                                           SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic once for this subscript; assume leaves the raw index
+  // (byte-identical -- no predicate emitted).
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:expr.add.out.of.bounds.known", FD, Loc);
+  if (Sem == CES::Assume)
+    return Idx;
+
+  // out_of_range predicate, mirroring EmitBoundsCheckImpl: widen the index and
+  // the (non-negative constant) bound to a common type and compare unsigned so
+  // a negative index is caught too.  For an access the valid range is
+  // [0,bound); for a one-past address (!Accessed) index == bound is allowed.
+  bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
+  unsigned IdxBits = cast<llvm::IntegerType>(Idx->getType())->getBitWidth();
+  unsigned BoundBits = cast<llvm::IntegerType>(Bound->getType())->getBitWidth();
+  llvm::Type *Ty = IdxBits >= BoundBits ? Idx->getType() : Bound->getType();
+  llvm::Value *IdxW = Builder.CreateIntCast(Idx, Ty, IdxSigned);
+  llvm::Value *BoundW = Builder.CreateIntCast(Bound, Ty, /*isSigned=*/false);
+  llvm::Value *IsViolation = Accessed
+                                 ? Builder.CreateICmpUGE(IdxW, BoundW, "oob")
+                                 : Builder.CreateICmpUGT(IdxW, BoundW, "oob");
+
+  // value = IsViolation ? 0 : Idx, computed unconditionally (dominates the
+  // continuation), redirecting an out-of-range subscript to the valid index 0.
+  llvm::Value *Zero = llvm::Constant::getNullValue(Idx->getType());
+  llvm::Value *Result = Builder.CreateSelect(IsViolation, Zero, Idx, "idx.ok");
+  if (Sem == CES::Ignore)
+    return Result;
+
+  llvm::BasicBlock *ViolBB = createBasicBlock("oob.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("oob.ok");
+  Builder.CreateCondBr(IsViolation, ViolBB, ContBB);
+
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+    Builder.CreateUnreachable();
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(
+                   Loc, "array subscript out of bounds", std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    if (IsEnforce)
+      Builder.CreateUnreachable();
+    else
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  return Result;
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
