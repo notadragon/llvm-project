@@ -4,6 +4,14 @@
 # the two files.
 
 set(COMMON_CMAKE_ARGS "-DHAVE_LLVM_LIT=ON;-DCLANG_RESOURCE_DIR=${CLANG_RESOURCE_DIR};-DLLVM_LIBDIR_SUFFIX=${LLVM_LIBDIR_SUFFIX}")
+# libc++ has a hard build-time dependency on libcontracts (see the matching note
+# in runtimes/CMakeLists.txt): auto-enable libcontracts whenever libcxx is
+# enabled so the dependency holds regardless of how the runtimes build is driven
+# (bootstrap here, and the standalone runtimes build).  The list is passed
+# through to the runtimes sub-build, which re-sorts it into dependency order.
+if("libcxx" IN_LIST LLVM_ENABLE_RUNTIMES AND NOT "libcontracts" IN_LIST LLVM_ENABLE_RUNTIMES)
+  list(APPEND LLVM_ENABLE_RUNTIMES "libcontracts")
+endif()
 if(APPLE AND CMAKE_OSX_SYSROOT AND (LLVM_TARGET_TRIPLE STREQUAL LLVM_HOST_TRIPLE))
   # Only propagate the host sysroot for native runtimes builds.
   list(APPEND RUNTIMES_CMAKE_ARGS "-DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}")

@@ -7197,6 +7197,47 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     AddGlobalDtor(Fn, GetPriority(DA), true);
   if (getLangOpts().OpenMP && D->hasAttr<OMPDeclareTargetDeclAttr>())
     getOpenMPRuntime().emitDeclareTargetFunction(D, GV);
+
+  // Emit __handle_contract_violation as a C-linkage alias for
+  // ::handle_contract_violation when defined at global scope.
+  if (getLangOpts().Contracts && D->getDeclName().isIdentifier() &&
+      D->getName() == "handle_contract_violation" &&
+      D->getDeclContext()->isTranslationUnit() && !D->isExternC()) {
+    llvm::GlobalAlias *Alias = llvm::GlobalAlias::create(
+        Fn->getValueType(), 0, llvm::GlobalValue::ExternalLinkage,
+        "__handle_contract_violation", Fn, &getModule());
+    (void)Alias;
+  }
+
+  // D4299: Emit __handle_contract_violation alias for C-defined
+  // handle_contract_violation(const contract_violation_t*).
+  if (getLangOpts().ContractsP4299 && D->getDeclName().isIdentifier() &&
+      D->getName() == "handle_contract_violation" &&
+      D->getDeclContext()->isTranslationUnit() && D->isExternC()) {
+    // Validate signature: void(const contract_violation_t*)
+    const auto *FD = dyn_cast<FunctionDecl>(D);
+    bool valid = false;
+    if (FD && FD->getReturnType()->isVoidType() && FD->getNumParams() == 1) {
+      QualType PT = FD->getParamDecl(0)->getType();
+      if (PT->isPointerType()) {
+        QualType Pointee = PT->getPointeeType();
+        if (Pointee.isConstQualified()) {
+          const RecordType *RT = Pointee->getAs<RecordType>();
+          if (RT && RT->getDecl()->getName() == "contract_violation_t")
+            valid = true;
+        }
+      }
+    }
+    if (valid) {
+      llvm::GlobalAlias *Alias = llvm::GlobalAlias::create(
+          Fn->getValueType(), 0, llvm::GlobalValue::ExternalLinkage,
+          "__handle_contract_violation", Fn, &getModule());
+      (void)Alias;
+    } else if (FD) {
+      getDiags().Report(FD->getLocation(),
+                        diag::err_c_contract_handler_signature);
+    }
+  }
 }
 
 void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
