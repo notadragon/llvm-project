@@ -415,7 +415,27 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   // 'CalleeDecl' instead.
 
   CGCallee Callee;
-  if (UseVirtualCall) {
+  if (UseVirtualCall && getLangOpts().ContractsP3097 && MD->hasContracts()) {
+    // P3097: Redirect virtual call to the contract wrapper function.
+    // The wrapper evaluates interface contracts around the vtable dispatch.
+    // Check if any interface contract is active (non-ignore).
+    bool AnyActive = false;
+    for (auto *CS : MD->getContracts()->contracts()) {
+      ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(
+          getContext(), MD ? MD->getDeclContext() : nullptr);
+      if (Sem != ContractEvaluationSemantic::Ignore) {
+        AnyActive = true;
+        break;
+      }
+    }
+    if (AnyActive) {
+      llvm::Function *Wrapper = CGM.getOrEmitVirtualContractWrapper(MD);
+      Callee = CGCallee::forDirect(Wrapper, GlobalDecl(MD));
+      UseVirtualCall = false; // Skip this-adjustment for virtual below
+    } else {
+      Callee = CGCallee::forVirtual(CE, MD, This.getAddress(), Ty);
+    }
+  } else if (UseVirtualCall) {
     Callee = CGCallee::forVirtual(CE, MD, This.getAddress(), Ty);
   } else {
     if (SanOpts.has(SanitizerKind::CFINVCall) &&

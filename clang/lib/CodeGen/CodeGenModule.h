@@ -529,6 +529,10 @@ private:
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
 
+  /// Cache of virtual contract wrapper functions (P3097).
+  llvm::DenseMap<const CXXMethodDecl *, llvm::Function *>
+      VirtualContractWrappers;
+
   /// Map used to get unique type descriptor constants for sanitizers.
   llvm::DenseMap<QualType, llvm::Constant *> TypeDescriptorMap;
 
@@ -1110,6 +1114,20 @@ public:
                                     bool DontDefer = false,
                                     ForDefinition_t IsForDefinition
                                       = NotForDefinition);
+
+  /// Get or emit a virtual contract wrapper function for the given virtual
+  /// method declaration with contracts (P3097). The wrapper evaluates
+  /// interface preconditions, dispatches through the vtable, then evaluates
+  /// interface postconditions.
+  llvm::Function *getOrEmitVirtualContractWrapper(const CXXMethodDecl *MD);
+
+  /// P3100: for a pure virtual MD, return the name of the __cxa_pure_virtual
+  /// terminus variant selected by the implicit contract configuration for
+  /// ub:class.abstract.pure.virtual (resolved at MD's declaring class), or an
+  /// empty StringRef to use the legacy __cxa_pure_virtual.  The vtable slot for
+  /// the pure virtual is pointed at this terminus; the compiler picks the
+  /// noexcept (terminate-on-throw) variant when MD is itself declared noexcept.
+  StringRef getPureVirtualContractTerminusName(const CXXMethodDecl *MD);
 
   // Return the function body address of the given function.
   llvm::Constant *GetFunctionStart(const ValueDecl *Decl);

@@ -1044,3 +1044,135 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
     Builder.CreateBr(ContinueBlock);
 }
 
+// ===----------------------------------------------------------------------===//
+// P3097: Virtual Function Contract Wrappers
+// ===----------------------------------------------------------------------===//
+
+llvm::Function *
+CodeGenModule::getOrEmitVirtualContractWrapper(const CXXMethodDecl *MD) {
+  auto It = VirtualContractWrappers.find(MD);
+  if (It != VirtualContractWrappers.end())
+    return It->second;
+
+  // Build the wrapper function type (same as the method).
+  const CGFunctionInfo &FnInfo = getTypes().arrangeCXXMethodDeclaration(MD);
+  llvm::FunctionType *FnTy = getTypes().GetFunctionType(FnInfo);
+
+  // Mangle the wrapper name.
+  SmallString<256> WrapperName;
+  {
+    llvm::raw_svector_ostream OS(WrapperName);
+    getCXXABI().getMangleContext().mangleName(GlobalDecl(MD), OS);
+    OS << ".__contract_wrapper";
+  }
+
+  // Create the function with internal linkage.
+  llvm::Function *WrapperFn = llvm::Function::Create(
+      FnTy, llvm::GlobalValue::InternalLinkage, WrapperName, &getModule());
+  WrapperFn->addFnAttr(llvm::Attribute::NoInline);
+
+  VirtualContractWrappers[MD] = WrapperFn;
+
+  // Emit the wrapper body.
+  CodeGenFunction CGF(*this);
+  CGF.EmitVirtualContractWrapperBody(WrapperFn, MD);
+
+  return WrapperFn;
+}
+
+void CodeGenFunction::EmitVirtualContractWrapperBody(llvm::Function *Fn,
+                                                     const CXXMethodDecl *MD) {
+  GlobalDecl GD(MD);
+  const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
+  QualType ResultType = FPT->getReturnType();
+
+  // Set up the function like a thunk.
+  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeCXXMethodDeclaration(MD);
+  CurGD = GD;
+  CurFuncIsThunk = true;
+
+  // Build FunctionArgs.
+  FunctionArgList FunctionArgs;
+  CGM.getCXXABI().buildThisParam(*this, FunctionArgs);
+  FunctionArgs.append(MD->param_begin(), MD->param_end());
+
+  // Start the function.
+  auto NL = ApplyDebugLocation::CreateEmpty(*this);
+  StartFunction(GlobalDecl(), ResultType, Fn, FnInfo, FunctionArgs,
+                MD->getLocation());
+  auto AL = ApplyDebugLocation::CreateArtificial(*this);
+
+  // Set up the this pointer and CurCodeDecl so contract emission works.
+  CGM.getCXXABI().EmitInstanceFunctionProlog(*this);
+  CXXThisValue = CXXABIThisValue;
+  CurCodeDecl = MD;
+  CurFuncDecl = MD;
+
+  // Phase 1: Emit interface preconditions and initialize postcondition
+  // captures in lexical order (same as normal function prologue).
+  if (MD->hasContracts()) {
+    for (auto *CS : MD->getContracts()->contracts()) {
+      if (CS->getContractKind() == ContractKind::Pre) {
+        EmitStmt(CS);
+      } else if (CS->getContractKind() == ContractKind::Post &&
+                 CS->hasCaptures()) {
+        ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(
+            getContext(), MD ? MD->getDeclContext() : nullptr);
+        // 'assume' lowers to 'ignore' (no check emitted); the capture must
+        // not be constructed either -- see the matching gate in
+        // CodeGenFunction::GenerateCode.
+        if (Sem != ContractEvaluationSemantic::Ignore &&
+            Sem != ContractEvaluationSemantic::Assume)
+          EmitPostconditionCaptureInit(CS, Sem);
+      }
+    }
+  }
+
+  // Phase 2: Virtual dispatch through the vtable.
+  // Build call arguments: this + parameters.
+  CallArgList CallArgs;
+  QualType ThisType = MD->getThisType();
+  CallArgs.add(RValue::get(LoadCXXThis()), ThisType);
+  for (const ParmVarDecl *PD : MD->parameters())
+    EmitDelegateCallArg(CallArgs, PD, SourceLocation());
+
+  // Use virtual call mechanism.
+  llvm::FunctionType *CallFnTy = CGM.getTypes().GetFunctionType(FnInfo);
+  Address ThisAddr = LoadCXXThisAddress();
+  CGCallee Callee = CGCallee::forVirtual(nullptr, GD, ThisAddr, CallFnTy);
+
+  // Determine return value slot.
+  ReturnValueSlot Slot;
+  if (!ResultType->isVoidType() &&
+      (FnInfo.getReturnInfo().getKind() == ABIArgInfo::Indirect ||
+       hasAggregateEvaluationKind(ResultType)))
+    Slot = ReturnValueSlot(ReturnValue, ResultType.isVolatileQualified(),
+                           /*IsUnused=*/false, /*IsExternallyDestructed=*/true);
+
+  // Emit the virtual call.
+  llvm::CallBase *CallOrInvoke = nullptr;
+  RValue RV = EmitCall(FnInfo, Callee, Slot, CallArgs, &CallOrInvoke);
+
+  // Phase 3: Emit interface postconditions using the standard path.
+  llvm::Value *RetVal = (!ResultType->isVoidType() && Slot.isNull())
+                            ? RV.getScalarVal()
+                            : nullptr;
+  // A predicate may mutate through the result binding, which names the return
+  // slot, so take back whatever EmitPostContracts leaves there -- the same
+  // reason the ordinary epilogue does.
+  if (llvm::Value *NewRetVal = EmitPostContracts(RetVal);
+      NewRetVal && NewRetVal != RetVal)
+    RV = RValue::get(NewRetVal);
+
+  // Emit return via the thunk pattern.
+  if (!ResultType->isVoidType() && Slot.isNull())
+    CGM.getCXXABI().EmitReturnFromThunk(*this, RV, ResultType);
+
+  // Disable tail call / autorelease.
+  AutoreleaseResult = false;
+
+  // Clear thunk state and finish.
+  CurCodeDecl = nullptr;
+  CurFuncDecl = nullptr;
+  FinishFunction();
+}

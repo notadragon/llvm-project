@@ -13201,6 +13201,10 @@ def err_lambda_decl_ref_not_modifiable_lvalue_contract : Error<
 def err_contract_message_and_attribute : Error<
   "cannot use both a syntactic diagnostic message and "
   "'[[clang::contract_message]]' on the same contract assertion">;
+// P3097 virtual function contracts diagnostics
+def err_contracts_on_virtual_require_flag : Error<
+  "contracts on virtual functions require '-fcontracts-p3097'">;
+
 // [over.call.func]/p3.1, [expr.prim.id.general]: an unqualified reference to a
 // non-static member (requiring an implied 'this') in a constructor precondition
 // or a destructor postcondition is ill-formed, because no object is within its

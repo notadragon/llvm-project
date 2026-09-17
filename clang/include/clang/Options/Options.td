@@ -1866,6 +1866,12 @@ defm contract_lambda_capture_restrictions : BoolFOption<"contract-lambda-capture
   NegFlag<SetFalse, [], [ClangOption, CC1Option],
     "Disable restrictions on lambda captures caused exclusively by contracts">>;
 
+defm contracts_p3097 : BoolFOption<"contracts-p3097",
+  LangOpts<"ContractsP3097">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3097 virtual function contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p3850 : BoolFOption<"contracts-p3850",
   LangOpts<"ContractsP3850">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
