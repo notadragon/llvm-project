@@ -1825,6 +1825,26 @@ defm contracts : BoolFOption<"contracts",
           "Enable support for C++ Contracts">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+def fcontract_evaluation_semantic_EQ : Joined<["-"], "fcontract-evaluation-semantic=">,
+  HelpText<"Specify contract evaluation semantic. The default value is 'enforce'.">,
+  Values<"ignore,enforce,observe,quick_enforce,assume,noexcept_enforce,noexcept_observe">,
+  Visibility<[ClangOption, CC1Option]>,
+  NormalizedValuesScope<"LangOptions::ContractEvaluationSemantic">,
+  NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce", "Assume", "NoexceptEnforce", "NoexceptObserve"]>,
+  MarshallingInfoEnum<LangOpts<"ContractOpts.DefaultSemantic">, "Enforce">;
+
+def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Set the evaluation semantic for contracts in a specific group. "
+           "Format: group:semantic (e.g., safety:observe).">;
+
+def fcontract_configuration_EQ : Joined<["-"], "fcontract-configuration=">,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Provide inline JSON contract configuration">;
+def fcontract_configuration_file_EQ : Joined<["-"], "fcontract-configuration-file=">,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Load contract configuration from a JSON file">;
+
 defm contract_exceptions : BoolFOption<"contract-exceptions",
   LangOpts<"ContractExceptions">, DefaultTrue,
   PosFlag<SetTrue, [], [ClangOption],

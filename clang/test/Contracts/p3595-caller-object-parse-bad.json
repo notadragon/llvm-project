@@ -1,0 +1,1 @@
+[ {"match": {"caller": 42}, "output": {"semantic": "enforce"}} ]

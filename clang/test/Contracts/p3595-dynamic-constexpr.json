@@ -1,0 +1,5 @@
+[
+  {"match": {"constexpr": true},
+   "output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "p3595_sel_ce", "provideweak": false}}},
+  {"output": {"semantic": "observe", "dynamic": {"linkage": "C++", "name": "p3595_sel_rt"}}}
+]

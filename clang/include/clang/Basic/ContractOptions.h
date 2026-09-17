@@ -47,6 +47,17 @@ constexpr ContractTag IsAContract = ContractTag::Yes;
 constexpr ContractTag InContract = ContractTag::Yes;
 constexpr ContractTag NotInContract = ContractTag::No;
 
+enum class ContractGroupDiagnostic {
+  // The remaining values map to %select values in diagnostics in both
+  // DiagnosticSemaKinds.td and DiagnosticDriverKinds.td.
+  InvalidFirstChar,
+  InvalidChar,
+  InvalidLastChar,
+  EmptySubGroup,
+  Empty,
+  InvalidSemantic,
+};
+
 /// The kind of contract, as classified internally by the implementation.
 ///
 /// NOTE: This is deliberately distinct from ContractAssertionKind (the
@@ -211,6 +222,62 @@ enum class ContractEmissionStyle {
 /// when adjusting the context).
 enum class ContractScopeOffset { ParentContext, FunctionContext };
 
+/// Source type for a contract configuration entry.
+enum class ContractConfigSourceKind {
+  GroupSemantic,
+  JSONInline,
+  JSONFile,
+};
+
+/// The parsed P3595 configuration storage.  Its layout (in particular
+/// ContractConfigEntry) evolves as new match criteria are added, so it is
+/// defined in the impl-only header clang/Basic/ContractConfig.h and held by
+/// ContractOptions behind a pointer -- keeping it out of the include graph of
+/// everything that pulls in LangOptions.h.
+struct ContractConfigData;
+struct ContractConfigSource;
+
+/// P3595 dynamic (link-/run-time) selection: the "output.dynamic" descriptor
+/// of a matched contract config entry.  Companion to
+/// ContractOptions::resolveContractSemantic (see resolveContractDynamic).
+/// `Found` is false when the matched entry has no "dynamic" descriptor, or
+/// when resolving in a constant-evaluation context -- a dynamic selector is
+/// never invoked at compile time, so no descriptor is surfaced there (the
+/// entry's Semantic is used instead; see the constant-evaluation rule in
+/// resolveContractSemantic's implementation).
+struct ContractDynamicResult {
+  std::string Name;
+  int Linkage = 0; // 0 = "C++", 1 = "C"; meaningful only when Found
+  bool ProvideWeak = false;
+  bool Found = false;
+};
+
+/// Per-assertion query for P3595 contract config resolution.
+/// Namespace and location are lazily computed from the DeclContext
+/// and SourceLocation to avoid cost when no config entry needs them.
+struct ContractQuery {
+  ContractKind Kind;
+  bool CallerSide = false;
+  bool InConstantEvaluation = false;
+  unsigned AllowedMask = AllContractSemanticsMask;
+  llvm::ArrayRef<std::string> Groups;
+
+  const DeclContext *FnContext = nullptr;
+  SourceLocation Loc;
+  const SourceManager *SM = nullptr;
+
+  llvm::StringRef getNamespace() const;
+  llvm::StringRef getLocationFile() const;
+  int getLocationLine() const;
+
+private:
+  mutable std::string CachedNamespace;
+  mutable std::string CachedLocationFile;
+  mutable int CachedLocationLine = 0;
+  mutable bool NamespaceComputed = false;
+  mutable bool LocationComputed = false;
+};
+
 /// The contract options for a translation unit: the default evaluation
 /// semantic, the P3100 assume gate, and the P3595 configuration sources that
 /// together decide which evaluation semantic each contract assertion gets.
@@ -306,3 +373,17 @@ public:
   /// this predicate use it to warn that such configuration is a no-op.
   bool configRequestsCallerSideChecks() const;
 
+private:
+  /// Lazily-allocated parsed configuration (see ContractConfigData).  Shared
+  /// so that copies of ContractOptions (LangOptions is copied) share the
+  /// post-init, effectively-immutable configuration rather than deep-copying
+  /// it.  Null until the first configuration source is added.
+  mutable std::shared_ptr<ContractConfigData> Config;
+
+  /// Ensure Config is allocated; returns it.
+  ContractConfigData &ensureConfig() const;
+};
+
+} // namespace clang
+
+#endif // LLVM_CLANG_BASIC_CONTRACT_OPTIONS_H

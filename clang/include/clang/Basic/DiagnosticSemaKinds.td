@@ -13097,6 +13097,19 @@ def err_deduced_auto_result_name_without_body : Error<
 def err_result_name_not_allowed : Error<
   "result name %0 not allowed outside of post condition specifier">;
 
+// Diagnose clang::contract_group attribute strings
+def err_contract_group_attribute_invalid_group : Error<
+  "clang::contract_group group %select{"
+     "\"%1\" cannot start with '%2'"
+    "|\"%1\" cannot contain '%2'"
+    "|\"%1\" cannot end with '%2'"
+    "|\"%1\" cannot contain empty subgroup \"%2\""
+    "|cannot be empty"
+    "|<cannot-happen-here>"
+    "}0">;
+
+
+
 def err_contract_violation : Error<"contract %select{precondition|postcondition|assertion}0 failed%select{: %2|}1">;
 def warn_contract_violation : Warning<"contract %select{precondition|postcondition|assertion}0 failed%select{: %2|}1">,
     InGroup<ContractViolation>;

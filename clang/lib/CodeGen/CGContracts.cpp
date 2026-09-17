@@ -590,6 +590,71 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
                &S, dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl)));
 }
 
+// Build the Itanium mangled name for a no-argument C++ selector given a
+// (possibly qualified) source name.  The return type is not part of the
+// mangling, so we always produce "...Ev".  A bare identifier "foo" mangles to
+// "_Z3foov"; a qualified "a::b::foo" mangles to "_ZN1a1b3fooEv".
+static std::string MangleDynamicSelectorName(StringRef Name) {
+  SmallVector<StringRef, 4> Components;
+  Name.split(Components, "::");
+
+  std::string Out = "_Z";
+  if (Components.size() == 1) {
+    Out += llvm::utostr(Components[0].size());
+    Out += Components[0].str();
+    Out += 'v';
+    return Out;
+  }
+  Out += 'N';
+  for (StringRef C : Components) {
+    Out += llvm::utostr(C.size());
+    Out += C.str();
+  }
+  Out += "Ev";
+  return Out;
+}
+
+// Get (or create) the dynamic selector function and, when requested, emit a
+// weak definition returning the compile-time default semantic.  Deduplicated
+// once per unique symbol per TU.  The selector's ABI matches
+// std::contracts::evaluation_semantic, whose underlying type is a 16-bit
+// integer
+// (__UINT16_TYPE__) in both libc++ and libstdc++, so it returns i16.  This
+// width is fixed at 16 bits deliberately so that a "C"-linkage selector is ABI-
+// compatible across toolchains (GCC likewise uses a 16-bit return type here).
+// (The return type is not part of the mangled name.)
+static llvm::Function *
+getOrCreateDynamicSelector(CodeGenModule &CGM, StringRef Name, int Linkage,
+                           bool ProvideWeak,
+                           ContractEvaluationSemantic DefaultSem) {
+  std::string Symbol;
+  if (Linkage == 1)
+    Symbol = Name.str(); // C linkage: verbatim symbol.
+  else
+    Symbol = MangleDynamicSelectorName(Name); // C++ linkage: Itanium mangling.
+
+  llvm::Type *SemTy = llvm::Type::getInt16Ty(CGM.getLLVMContext());
+  llvm::FunctionType *FnTy =
+      llvm::FunctionType::get(SemTy, /*Params=*/{}, /*isVarArg=*/false);
+
+  llvm::Function *Fn = CGM.getModule().getFunction(Symbol);
+  if (!Fn) {
+    llvm::FunctionCallee Callee = CGM.CreateRuntimeFunction(FnTy, Symbol);
+    Fn = cast<llvm::Function>(Callee.getCallee());
+  }
+
+  // Emit the weak fallback once, if requested and not already defined.
+  if (ProvideWeak && Fn->isDeclaration()) {
+    Fn->setLinkage(llvm::GlobalValue::WeakAnyLinkage);
+    llvm::BasicBlock *Entry =
+        llvm::BasicBlock::Create(CGM.getLLVMContext(), "entry", Fn);
+    llvm::IRBuilder<> B(Entry);
+    B.CreateRet(llvm::ConstantInt::get(SemTy, static_cast<int>(DefaultSem)));
+  }
+
+  return Fn;
+}
+
 void CodeGenFunction::EmitContractStmtAsFullStmt(const ContractStmt &S) {
   assert(CurContract() == nullptr);
 

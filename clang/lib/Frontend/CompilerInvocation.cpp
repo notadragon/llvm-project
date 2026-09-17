@@ -12,6 +12,7 @@
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/CommentOptions.h"
+#include "clang/Basic/ContractConfig.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticDriver.h"
 #include "clang/Basic/DiagnosticFrontend.h"
@@ -3761,6 +3762,20 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
       GenerateArg(Consumer, OPT_fsanitize_ignore_for_ubsan_feature_EQ,
                   Sanitizer);
 
+    for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
+      switch (Src.Kind) {
+      case ContractConfigSourceKind::GroupSemantic:
+        GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ,
+                    Src.Arg);
+        break;
+      case ContractConfigSourceKind::JSONInline:
+        GenerateArg(Consumer, OPT_fcontract_configuration_EQ, Src.Arg);
+        break;
+      case ContractConfigSourceKind::JSONFile:
+        GenerateArg(Consumer, OPT_fcontract_configuration_file_EQ, Src.Arg);
+        break;
+      }
+    }
     return;
   }
 
@@ -4011,6 +4026,21 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
 
   if (!Opts.RandstructSeed.empty())
     GenerateArg(Consumer, OPT_frandomize_layout_seed_EQ, Opts.RandstructSeed);
+
+  for (const auto &Src : Opts.ContractOpts.getConfigSources()) {
+    switch (Src.Kind) {
+    case ContractConfigSourceKind::GroupSemantic:
+      GenerateArg(Consumer, OPT_fcontract_group_evaluation_semantic_EQ,
+                  Src.Arg);
+      break;
+    case ContractConfigSourceKind::JSONInline:
+      GenerateArg(Consumer, OPT_fcontract_configuration_EQ, Src.Arg);
+      break;
+    case ContractConfigSourceKind::JSONFile:
+      GenerateArg(Consumer, OPT_fcontract_configuration_file_EQ, Src.Arg);
+      break;
+    }
+  }
 
   if (Opts.AllocTokenMax)
     GenerateArg(Consumer, OPT_falloc_token_max_EQ,
@@ -4725,6 +4755,66 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
           << Requested.getName() << Recommended.getName();
     }
   }
+
+  auto EmitContractDiag = [&](ContractGroupDiagnostic CGD, StringRef GroupName,
+                              StringRef InvalidChar = "") {
+    Diags.Report(diag::err_drv_contract_group_name_invalid)
+        << (int)CGD << GroupName << InvalidChar;
+  };
+
+  for (const Arg *A :
+       Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                     options::OPT_fcontract_configuration_EQ,
+                     options::OPT_fcontract_configuration_file_EQ)) {
+    switch (A->getOption().getID()) {
+    case options::OPT_fcontract_group_evaluation_semantic_EQ:
+      for (unsigned I = 0, N = A->getNumValues(); I < N; ++I) {
+        Opts.ContractOpts.addUnparsedContractGroup(A->getValue(I),
+                                                   EmitContractDiag);
+        Opts.ContractOpts.addConfigSource(
+            ContractConfigSourceKind::GroupSemantic, A->getValue(I));
+      }
+      break;
+    case options::OPT_fcontract_configuration_EQ:
+      Opts.ContractOpts.addConfigSource(ContractConfigSourceKind::JSONInline,
+                                        A->getValue());
+      break;
+    case options::OPT_fcontract_configuration_file_EQ:
+      Opts.ContractOpts.addConfigSource(ContractConfigSourceKind::JSONFile,
+                                        A->getValue());
+      break;
+    }
+  }
+
+  // -fcontracts-p3850 implies the individual paper flags.
+  if (Opts.ContractsP3850) {
+    Opts.ContractsP3097 = true;
+    Opts.ContractsP3098 = true;
+    Opts.ContractsP3099 = true;
+    Opts.ContractsP3100 = true;
+    Opts.ContractsP3290 = true;
+    Opts.ContractsP3400 = true;
+    Opts.ContractsP4283 = true;
+    Opts.ContractsP4298 = true;
+    Opts.ContractsP4301 = true;
+  }
+  // Any per-paper C++ contracts sub-flag implies the base -fcontracts feature.
+  // The driver forwards -fcontracts alongside a sub-flag (tools::
+  // wantsCxxContracts), but a direct -cc1 invocation may pass only a sub-flag;
+  // this keeps LangOpts self-consistent.  The C-only ContractsP4299 stays
+  // independent and never enables C++ contracts.
+  if (Opts.ContractsP3097 || Opts.ContractsP3098 || Opts.ContractsP3099 ||
+      Opts.ContractsP3100 || Opts.ContractsP3290 || Opts.ContractsP3400 ||
+      Opts.ContractsP3850 || Opts.ContractsP4283 || Opts.ContractsP4298 ||
+      Opts.ContractsP4301)
+    Opts.Contracts = true;
+
+  // The contract configuration is parsed later by CompilerInstance (through the
+  // VFS), not here: reading configuration files during argument parsing would
+  // trip the IO sandbox that guards the CompilerInvocation round-trip and would
+  // bypass any VFS overlay.  The sources are already recorded above via
+  // addConfigSource(); CompilerInstance::ExecuteAction runs initConfig() with a
+  // DiagnosticsEngine and VFS before semantic analysis begins.
 
   return Diags.getNumErrors() == NumErrorsBefore;
 }

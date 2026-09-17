@@ -1,0 +1,20 @@
+[
+  { "match": { "kind": 5 },
+    "output": { "semantic": "ignore" } },
+  { "match": { "group": true },
+    "output": { "semantic": "ignore" } },
+  { "match": { "namespace": 42 },
+    "output": { "semantic": "ignore" } },
+  { "match": { "location": [] },
+    "output": { "semantic": "ignore" } },
+  { "match": { "constexpr": "yes" },
+    "output": { "semantic": "ignore" } },
+  { "match": { "caller": { "location": 1 } },
+    "output": { "semantic": "ignore" } },
+  { "match": { "caller": { "namespace": 1 } },
+    "output": { "semantic": "ignore" } },
+  { "output": { "semantic": 3 } },
+  { "output": { "dynamic": { "name": 7 } } },
+  { "output": { "semantic": "observe", "dynamic": { "name": "sel", "linkage": 1 } } },
+  { "output": { "semantic": "observe", "dynamic": { "name": "sel", "provideweak": "yes" } } }
+]
