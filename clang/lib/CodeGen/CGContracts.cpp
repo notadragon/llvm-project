@@ -1078,6 +1078,102 @@ llvm::Value *CodeGenFunction::EmitImplicitSignedOverflowOp(
   return Result;
 }
 
+llvm::Value *
+CodeGenFunction::EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
+                                               SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  if (!getLangOpts().ContractsP3100)
+    return Loaded;
+
+  // Only bool and (non-fixed C++) enum loads can carry an invalid value; mirror
+  // the -fsanitize=bool/enum detection in EmitScalarRangeCheck.  When that
+  // sanitizer is active for this type it takes precedence (the caller then runs
+  // the sanitizer check via maybeAttachRangeForLoad).
+  bool IsBool = Ty->hasBooleanRepresentation() && !Ty->isVectorType();
+  bool IsEnum = Ty->isEnumeralType();
+  if (!IsBool && !IsEnum)
+    return Loaded;
+  if ((IsBool && SanOpts.has(SanitizerKind::Bool)) ||
+      (IsEnum && SanOpts.has(SanitizerKind::Enum)))
+    return Loaded;
+  // A single-bit bool cannot be out of range.
+  if (IsBool && cast<llvm::IntegerType>(Loaded->getType())->getBitWidth() == 1)
+    return Loaded;
+
+  // Valid range [Min, End) for the loaded storage value.  getStrictEnumRange
+  // also filters out enums the sanitizer ignores (e.g. a fixed underlying type
+  // covering all bit patterns), which cannot be out of range.
+  llvm::APInt Min, End;
+  if (IsBool) {
+    unsigned Bits = getContext().getTypeSize(Ty);
+    Min = llvm::APInt(Bits, 0);
+    End = llvm::APInt(Bits, 2);
+  } else if (!getStrictEnumRange(Ty, Min, End))
+    return Loaded;
+
+  // Resolve the semantic once for this site; assume leaves the raw load (so the
+  // caller attaches range metadata, i.e. the optimizer may assume validity).
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:conv.lval.valid.representation.bool.enum", FD, Loc);
+  if (Sem == CES::Assume)
+    return Loaded;
+
+  // in_range predicate over the storage value, exactly as EmitScalarRangeCheck.
+  auto &Ctx = getLLVMContext();
+  --End;
+  llvm::Value *InRange;
+  if (!Min)
+    InRange = Builder.CreateICmpULE(Loaded, llvm::ConstantInt::get(Ctx, End));
+  else {
+    llvm::Value *Upper =
+        Builder.CreateICmpSLE(Loaded, llvm::ConstantInt::get(Ctx, End));
+    llvm::Value *Lower =
+        Builder.CreateICmpSGE(Loaded, llvm::ConstantInt::get(Ctx, Min));
+    InRange = Builder.CreateAnd(Upper, Lower);
+  }
+  llvm::Value *IsInvalid = Builder.CreateNot(InRange, "invalid");
+
+  // The defined valid value substituted for an out-of-range load is 0 (false
+  // for bool, an in-range value for enum); the specification permits any valid
+  // value.  Compute value = IsInvalid ? 0 : Loaded unconditionally (it
+  // dominates the continuation, so no PHI is needed); then, for a checking
+  // semantic, add a branch on IsInvalid whose only job is the reaction's side
+  // effect.
+  llvm::Value *Zero = llvm::Constant::getNullValue(Loaded->getType());
+  llvm::Value *Result = Builder.CreateSelect(IsInvalid, Zero, Loaded, "ok.val");
+  if (Sem == CES::Ignore)
+    return Result;
+
+  llvm::BasicBlock *ViolBB = createBasicBlock("invalid.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("invalid.ok");
+  Builder.CreateCondBr(IsInvalid, ViolBB, ContBB);
+
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+    Builder.CreateUnreachable();
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(
+                   Loc, "invalid value for its type", std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    if (IsEnforce)
+      Builder.CreateUnreachable();
+    else
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  return Result;
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
