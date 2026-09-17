@@ -1753,4 +1753,20 @@ def err_hlsl_number_literal_underflow : Error<
   "float literal has a magnitude that is too small to be represented as a float type">;
 def err_hlsl_rootsig_non_zero_flag : Error<"flag value is neither a literal 0 nor a named value">;
 
+def warn_contract_on_parameter_declarator : Warning<
+  "contract on a parameter declarator is ignored">,
+  InGroup<IgnoredAttributes>;
+
+def err_contract_on_non_function : Error<
+  "'%0' can only appear on a function declaration">;
+
+def err_contract_on_invalid_declaration : Error<
+  "'%0' ignored on an invalid declaration">;
+
+def err_specifier_after_contract : Error<
+  "'%0' must appear before the function contract specifiers">;
+
+def note_contract_specifier_here : Note<
+  "function contract specifier written here">;
+
 } // end of Parser diagnostics

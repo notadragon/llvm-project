@@ -498,7 +498,7 @@ public:
     // ParseScope - Construct a new object to manage a scope in the
     // parser Self where the new Scope is created with the flags
     // ScopeFlags, but only when we aren't about to enter a compound statement.
-    ParseScope(Parser *Self, unsigned ScopeFlags, bool EnteredScope = true,
+    ParseScope(Parser *Self, uint64_t ScopeFlags, bool EnteredScope = true,
                bool BeforeCompoundStmt = false)
         : Self(Self) {
       if (EnteredScope && !BeforeCompoundStmt)
@@ -533,7 +533,7 @@ public:
 
   public:
     MultiParseScope(Parser &Self) : Self(Self) {}
-    void Enter(unsigned ScopeFlags) {
+    void Enter(uint64_t ScopeFlags) {
       Self.EnterScope(ScopeFlags);
       ++NumScopes;
     }
@@ -547,7 +547,13 @@ public:
   };
 
   /// EnterScope - Start a new scope.
-  void EnterScope(unsigned ScopeFlags);
+  ///
+  /// \p ScopeFlags is a set of Scope::ScopeFlags.  It must be spelled with
+  /// the same width Scope uses: ContractAssertScope is bit 32, so any
+  /// narrower carrier drops it silently.  Parser.h cannot include Scope.h,
+  /// so the two widths are tied together by a static_assert beside the
+  /// definition in Parser.cpp.
+  void EnterScope(uint64_t ScopeFlags);
 
   /// ExitScope - Pop a scope off the scope stack.
   void ExitScope();
@@ -939,14 +945,15 @@ private:
   /// RAII object used to modify the scope flags for the current scope.
   class ParseScopeFlags {
     Scope *CurScope;
-    unsigned OldFlags = 0;
+    uint64_t OldFlags = 0;
     ParseScopeFlags(const ParseScopeFlags &) = delete;
     void operator=(const ParseScopeFlags &) = delete;
 
   public:
     /// Set the flags for the current scope to ScopeFlags. If ManageFlags is
     /// false, this object does nothing.
-    ParseScopeFlags(Parser *Self, unsigned ScopeFlags, bool ManageFlags = true);
+    ParseScopeFlags(Parser *Self, uint64_t ScopeFlags,
+                    bool ManageFlags = true);
 
     /// Restore the flags for the current scope to what they were before this
     /// object overrode them.
@@ -1310,6 +1317,8 @@ private:
     /// The set of tokens that make up an exception-specification that
     /// has not yet been parsed.
     CachedTokens *ExceptionSpecTokens;
+
+    CachedTokens ContractTokens;
   };
 
   /// LateParsedMemberInitializer - An initializer for a non-static class data
@@ -2761,7 +2770,7 @@ private:
                                bool IsAmbiguous, bool RequiresArg = false);
   void InitCXXThisScopeForDeclaratorIfRelevant(
       const Declarator &D, const DeclSpec &DS,
-      std::optional<Sema::CXXThisScopeRAII> &ThisScope);
+      std::optional<Sema::CXXThisScopeRAII> &ThisScope, bool AddConst = false);
 
   /// ParseRefQualifier - Parses a member function ref-qualifier. Returns
   /// true if a ref-qualifier is found.
@@ -2993,6 +3002,20 @@ private:
 
   /// Parse a requires-clause as part of a function declaration.
   void ParseTrailingRequiresClauseWithScope(Declarator &D);
+
+  /// Parse a function-contract-specifier-seq with the declarator's scope
+  /// entered, so that an out-of-line member definition's predicate can name
+  /// the class's members and `this`.  The counterpart of
+  /// ParseTrailingRequiresClauseWithScope.
+  void ParseContractSpecifierSequenceWithScope(Declarator &D);
+
+  /// Diagnose a virt-specifier or requires-clause written after a
+  /// function-contract-specifier-seq, which [class.mem.general]p11.4.1
+  /// requires to precede it.  \p Loc and \p Spelling name the offending
+  /// specifier.  Returns true if a diagnostic was emitted, which happens
+  /// exactly when \p D has already taken a contract.
+  bool DiagnoseSpecifierAfterContract(const Declarator &D, SourceLocation Loc,
+                                      StringRef Spelling);
   void ParseTrailingRequiresClause(Declarator &D);
 
   void ParseMicrosoftIfExistsClassDeclaration(DeclSpec::TST TagType,
@@ -3294,6 +3317,9 @@ private:
   ///
   Decl *ParseUsingDirective(DeclaratorContext Context, SourceLocation UsingLoc,
                             SourceLocation &DeclEnd, ParsedAttributes &attrs);
+
+  Decl *ParseContractControlUsingDirective(SourceLocation UsingLoc,
+                                           SourceLocation &DeclEnd);
 
   struct UsingDeclarator {
     SourceLocation TypenameLoc;
@@ -3800,7 +3826,9 @@ public:
   ///         constraint-logical-and-expression '&&' primary-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause);
+  ExprResult
+  ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
+                                      bool IsContractRequiresClause = false);
 
   /// \brief Parse a constraint-logical-or-expression.
   ///
@@ -3812,7 +3840,9 @@ public:
   ///             constraint-logical-and-expression
   ///
   /// \endverbatim
-  ExprResult ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause);
+  ExprResult
+  ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
+                                     bool IsContractRequiresClause = false);
 
   /// Parse an expr that doesn't include (top-level) commas.
   ExprResult
@@ -7453,7 +7483,7 @@ public:
   /// [GNU]   '__label__' identifier-list ';'
   /// \endverbatim
   ///
-  StmtResult ParseCompoundStatement(bool isStmtExpr, unsigned ScopeFlags);
+  StmtResult ParseCompoundStatement(bool isStmtExpr, uint64_t ScopeFlags);
 
   /// Parse any pragmas at the start of the compound expression. We handle these
   /// separately since some pragmas (FP_CONTRACT) must appear before any C
@@ -9098,6 +9128,62 @@ private:
                             bool OuterMightBeMessageSend = false);
 
   ///@}
+
+  //===--------------------------------------------------------------------===//
+  // C++ Contracts
+public:
+  mutable IdentifierInfo *Ident_pre = nullptr;
+  mutable IdentifierInfo *Ident_post = nullptr;
+  mutable IdentifierInfo *Ident___pre = nullptr;
+  mutable IdentifierInfo *Ident___post = nullptr;
+
+  enum ContractEnterScopeKind {
+    CES_None = 0,
+    CES_Prototype = 0x1,
+    CES_Parameters = 0x2,
+    CES_CXXThis = 0x4,
+    CES_Function = 0x8,
+    CES_AllScopes = CES_Prototype | CES_Parameters | CES_CXXThis | CES_Function,
+    LLVM_MARK_AS_BITMASK_ENUM(CES_AllScopes)
+  };
+
+  std::optional<ContractKind> getContractKeyword(const Token &Token) const;
+  std::optional<ContractKind> getContractKeyword() const {
+    return getContractKeyword(Tok);
+  }
+  bool isFunctionContractKeyword() const {
+    return isFunctionContractKeyword(Tok);
+  }
+  bool isFunctionContractKeyword(const Token &Token) const {
+    return getContractKeyword(Token).value_or(ContractKind::Assert) !=
+           ContractKind::Assert;
+  }
+
+  bool isAnyContractKeyword(const Token &Token) const {
+    return getContractKeyword(Token).has_value();
+  }
+
+private:
+  StmtResult ParseContractAssertStatement();
+
+  void ParseContractSpecifierSequence(Declarator &DeclarationInfo,
+                                      bool EnterScope,
+                                      QualType TrailingReturnType = QualType());
+
+  StmtResult ParseFunctionContractSpecifierImpl(
+      llvm::function_ref<QualType()> ReturnTypeResolver,
+      ContractScopeOffset ScopeOffset, bool &IsInvalid);
+
+  bool ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures);
+
+  void LateParseFunctionContractSpecifierSeq(CachedTokens &ContractToks);
+  bool LateParseFunctionContractSpecifier(CachedTokens &ContractToks);
+  bool LateParseContractRequiresClause(CachedTokens &ContractToks);
+
+  bool ParseLexedFunctionContracts(CachedTokens &Toks, Decl *FD,
+                                   ContractEnterScopeKind EnterScopeKinds);
+
+  void DiagnoseUnattachedLateParsedContracts(Declarator &D, unsigned DiagID);
 };
 
 } // end namespace clang

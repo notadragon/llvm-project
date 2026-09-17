@@ -13,6 +13,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/PrettyDeclStackTrace.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/Basic/AttributeCommonInfo.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
@@ -1960,6 +1961,23 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
         ConsumeBracket();
         if (!SkipUntil(tok::r_square, StopAtSemi))
           break;
+      } else if (isFunctionContractKeyword() &&
+                 (NextToken().is(tok::l_paren) ||
+                  (NextToken().is(tok::l_square) &&
+                   GetLookAheadToken(2).is(tok::l_square)))) {
+        // A contract may have a C++11 attribute between the keyword and the
+        // opening paren.
+        ConsumeToken();
+        if (Tok.is(tok::l_square)) {
+          ConsumeBracket();
+          if (!SkipUntil(tok::r_square, StopAtSemi))
+            break;
+        }
+        if (Tok.is(tok::l_paren)) {
+          ConsumeParen();
+          if (!SkipUntil(tok::r_paren, StopAtSemi))
+            break;
+        }
       } else if (Tok.is(tok::kw_alignas) && NextToken().is(tok::l_paren)) {
         ConsumeToken();
         ConsumeParen();
@@ -2445,6 +2463,8 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
     }
   }
 
+  NeedLateParse |= !DeclaratorInfo.getLateParsedContracts().empty();
+
   if (NeedLateParse) {
     // Push this method onto the stack of late-parsed method
     // declarations.
@@ -2465,6 +2485,8 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
       LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
       FTI.ExceptionSpecTokens = nullptr;
     }
+
+    LateMethod->ContractTokens = std::move(DeclaratorInfo.LateParsedContracts);
   }
 }
 
@@ -2600,6 +2622,13 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     if (BitfieldSize.isInvalid())
       SkipUntil(tok::comma, StopAtSemi | StopBeforeMatch);
   } else if (Tok.is(tok::kw_requires)) {
+    // A requires-clause here follows the declarator, and the contract -- if
+    // there was one -- was already taken by ParseFunctionDeclarator, so
+    // reaching this with a contract in hand means the two were written in the
+    // wrong order.  Diagnose, then parse the clause anyway: it is what the
+    // user meant, and attaching it keeps the rest of the declaration sane.
+    DiagnoseSpecifierAfterContract(DeclaratorInfo, Tok.getLocation(),
+                                   "requires");
     TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
     // With abbreviated function templates - we need to explicitly add depth to
     // account for the implicit template parameter list induced by the template.
@@ -2611,10 +2640,26 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     ParseOptionalCXX11VirtSpecifierSeq(
         VS, getCurrentClass().IsInterface,
         DeclaratorInfo.getDeclSpec().getFriendSpecLoc());
-    if (!VS.isUnset())
+    if (!VS.isUnset()) {
+      DiagnoseSpecifierAfterContract(
+          DeclaratorInfo, VS.getFirstLocation(),
+          VirtSpecifiers::getSpecifierName(VS.getLastSpecifier()));
       MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(DeclaratorInfo,
                                                               VS);
+    }
   }
+
+  // Anything reaching here has a virt-specifier-seq or a trailing
+  // requires-clause in front of it -- otherwise ParseFunctionDeclarator would
+  // already have taken the contract.  Neither of those makes the contract any
+  // less of a complete-class context, so a member function's contract still
+  // has to be deferred to the end of the class; parsing it here would hide
+  // every member declared after it.  ParseFunctionDeclarator left its verdict
+  // on the declarator for exactly this.
+  if (DeclaratorInfo.areContractsLateParsed() && isFunctionContractKeyword(Tok))
+    LateParseFunctionContractSpecifierSeq(DeclaratorInfo.LateParsedContracts);
+  else
+    ParseContractSpecifierSequence(DeclaratorInfo, /*EnterScope=*/true);
 
   // If a simple-asm-expr is present, parse it.
   if (Tok.is(tok::kw_asm)) {
@@ -2641,6 +2686,13 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
         VS, getCurrentClass().IsInterface,
         DeclaratorInfo.getDeclSpec().getFriendSpecLoc());
     if (!VS.isUnset()) {
+      // Same ordering rule as above; this is the GCC-compat route to a
+      // virt-specifier, so `void f() pre(true) [[x]] override;` arrives here
+      // rather than at the first ParseOptionalCXX11VirtSpecifierSeq.
+      DiagnoseSpecifierAfterContract(
+          DeclaratorInfo, VS.getFirstLocation(),
+          VirtSpecifiers::getSpecifierName(VS.getLastSpecifier()));
+
       // If we saw any GNU-style attributes that are known to GCC followed by a
       // virt-specifier, issue a GCC-compat warning.
       for (const ParsedAttr &AL : DeclaratorInfo.getAttributes())
@@ -2657,6 +2709,10 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
   if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
     // If so, skip until the semi-colon or a }.
     SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+    // The caller gives up on this member without producing a declaration, so
+    // any cached contract tokens will never be replayed.
+    DiagnoseUnattachedLateParsedContracts(
+        DeclaratorInfo, diag::err_contract_on_invalid_declaration);
     return true;
   }
   return false;
@@ -3075,6 +3131,8 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
           cutOffParsing();
           Actions.CodeCompletion().CodeCompleteAfterFunctionEquals(
               DeclaratorInfo);
+          DiagnoseUnattachedLateParsedContracts(
+              DeclaratorInfo, diag::err_contract_on_invalid_declaration);
           return nullptr;
         }
       }
@@ -3100,6 +3158,8 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
         // Consume the optional ';'
         TryConsumeToken(tok::semi);
 
+        DiagnoseUnattachedLateParsedContracts(
+            DeclaratorInfo, diag::err_contract_on_invalid_declaration);
         return nullptr;
       }
 
@@ -3271,6 +3331,11 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclaration(
               DeclSpec::SCS_typedef)
         HandleMemberFunctionDeclDelays(DeclaratorInfo, ThisDecl);
     }
+    // Nothing was produced for the cached contract tokens to be replayed
+    // against -- either the declaration failed outright, or it turned out not
+    // to be the member function declaration the caching was predicated on.
+    DiagnoseUnattachedLateParsedContracts(
+        DeclaratorInfo, diag::err_contract_on_invalid_declaration);
     LateParsedAttrs.clear();
 
     DeclaratorInfo.complete(ThisDecl);
@@ -4159,6 +4224,8 @@ ExceptionSpecificationType Parser::ParseDynamicExceptionSpecification(
   return Exceptions.empty() ? EST_DynamicNone : EST_Dynamic;
 }
 
+/// ParseTrailingReturnType - Parse a trailing return type on a new-style
+/// function declaration.
 TypeResult Parser::ParseTrailingReturnType(SourceRange &Range,
                                            bool MayBeFollowedByDirectInit) {
   assert(Tok.is(tok::arrow) && "expected arrow");
@@ -4196,6 +4263,66 @@ void Parser::ParseTrailingRequiresClauseWithScope(Declarator &D) {
                                   Scope::FunctionPrototypeScope);
 
   ParseTrailingRequiresClause(D);
+}
+
+bool Parser::DiagnoseSpecifierAfterContract(const Declarator &D,
+                                            SourceLocation Loc,
+                                            StringRef Spelling) {
+  // [class.mem.general]p11.4.1:
+  //
+  //   member-declarator:
+  //     declarator virt-specifier-seq[opt]
+  //         function-contract-specifier-seq[opt] pure-specifier[opt]
+  //     declarator requires-clause function-contract-specifier-seq[opt]
+  //
+  // so a function-contract-specifier-seq is the last thing before an optional
+  // pure-specifier: no virt-specifier and no requires-clause may follow it.
+  //
+  // The discriminator is whether a contract was actually SEEN, which is the
+  // late-parsed token list or the built sequence -- never
+  // areContractsLateParsed(), which ParseFunctionDeclarator sets for every
+  // member function declarator whether or not one was written, and which
+  // would therefore reject a plain `void f() override;`.
+  SourceLocation ContractLoc;
+  if (!D.getLateParsedContracts().empty())
+    ContractLoc = D.getLateParsedContracts().front().getLocation();
+  else if (D.getContracts())
+    ContractLoc = D.getContracts()->getBeginLoc();
+  else
+    return false;
+
+  Diag(Loc, diag::err_specifier_after_contract) << Spelling;
+  if (ContractLoc.isValid())
+    Diag(ContractLoc, diag::note_contract_specifier_here);
+  return true;
+}
+
+void Parser::ParseContractSpecifierSequenceWithScope(Declarator &D) {
+  assert(isFunctionContractKeyword(Tok) && "expected a contract specifier");
+
+  // A contract specifier is part of the declarator, so for an out-of-line
+  // definition it is inside the class's scope:
+  //
+  //   int S::f(int i) const pre(this->limit >= 0 && i > 0);
+  //
+  // Without entering the declarator scope the predicate is parsed with
+  // CurContext still at the enclosing namespace, so `limit` is an undeclared
+  // identifier and `this` has no type -- InitCXXThisScopeForDeclaratorIfRelevant
+  // asks whether CurContext is a record and gives up when it is not.  The
+  // DeclaratorScopeObj that ParseDirectDeclarator used has long since
+  // destructed by the time the caller reaches the contract.
+  //
+  // This mirrors ParseTrailingRequiresClauseWithScope above, which exists for
+  // exactly the same reason; see the wording citations there.  It
+  // deliberately does NOT open a ParseScope, because
+  // ParseContractSpecifierSequence opens its own prototype scope and
+  // re-enters the parameters into it.
+  CXXScopeSpec &SS = D.getCXXScopeSpec();
+  DeclaratorScopeObj DeclScopeObj(*this, SS);
+  if (SS.isValid() && Actions.ShouldEnterDeclaratorScope(getCurScope(), SS))
+    DeclScopeObj.EnterDeclaratorScope();
+
+  ParseContractSpecifierSequence(D, /*EnterScope=*/true);
 }
 
 void Parser::ParseTrailingRequiresClause(Declarator &D) {
@@ -4276,7 +4403,8 @@ void Parser::PopParsingClass(Sema::ParsingClassState state) {
   ClassStack.pop();
   if (Victim->TopLevelClass) {
     // Deallocate all of the nested classes of this class,
-    // recursively: we don't need to keep any of this information.
+    // recursively: we don't need
+    // to keep any of this information.
     DeallocateParsedClasses(Victim);
     return;
   }

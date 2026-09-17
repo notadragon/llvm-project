@@ -1,0 +1,752 @@
+//===--- ParseContracts.cpp - C++ Contracts Parsing -----------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+//  This file implements parsing for C++ contracts (pre, post, and
+//  contract_assert), including P3400 labels, P3098 postcondition captures, and
+//  P4283 requires-clauses.
+//
+//===----------------------------------------------------------------------===//
+
+#include "clang/Parse/Parser.h"
+
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/PrettyDeclStackTrace.h"
+#include "clang/AST/StmtCXX.h"
+#include "clang/Basic/CharInfo.h"
+#include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/TokenKinds.h"
+#include "clang/Lex/LiteralSupport.h"
+#include "clang/Parse/RAIIObjectsForParser.h"
+#include "clang/Sema/DeclSpec.h"
+#include "clang/Sema/EnterExpressionEvaluationContext.h"
+#include "clang/Sema/Scope.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/TimeProfiler.h"
+#include <optional>
+
+using namespace clang;
+
+std::optional<ContractKind>
+Parser::getContractKeyword(const Token &Token) const {
+  // C contracts (D4299): keyword tokens
+  if (Token.is(tok::kw__Pre))
+    return ContractKind::Pre;
+  if (Token.is(tok::kw__Post))
+    return ContractKind::Post;
+  if (Token.is(tok::kw__ContractAssert))
+    return ContractKind::Assert;
+
+  // We offer the reserved keywords as identifiers in C++11 mode.
+  if (!getLangOpts().CPlusPlus11 ||
+      (Token.isNot(tok::identifier) && !Token.is(tok::kw_contract_assert)))
+    return std::nullopt;
+
+  // If we have a contract_assert keyword, we've may be using contract as an
+  // extension, so don't check the language options.
+  if (Token.is(tok::kw_contract_assert))
+    return ContractKind::Assert;
+
+  const IdentifierInfo *II = Token.getIdentifierInfo();
+  assert(II && "Missing identifier info");
+
+  if (!Ident_pre) {
+    Ident_pre = &PP.getIdentifierTable().get("pre");
+    Ident___pre = &PP.getIdentifierTable().get("__pre");
+
+    Ident_post = &PP.getIdentifierTable().get("post");
+    Ident___post = &PP.getIdentifierTable().get("__post");
+  }
+
+  if ((II == Ident_pre && getLangOpts().Contracts) || II == Ident___pre)
+    return ContractKind::Pre;
+
+  if ((II == Ident_post && getLangOpts().Contracts) || II == Ident___post)
+    return ContractKind::Post;
+
+  return std::nullopt;
+}
+
+void Parser::LateParseFunctionContractSpecifierSeq(CachedTokens &Toks) {
+  while (isFunctionContractKeyword(Tok)) {
+    if (!LateParseFunctionContractSpecifier(Toks)) {
+      return;
+    }
+  }
+}
+
+static const char *getContractKeywordStr(ContractKind CK) {
+  switch (CK) {
+  case ContractKind::Pre:
+    return "pre";
+  case ContractKind::Post:
+    return "post";
+  case ContractKind::Assert:
+    return "contract_assert";
+  case ContractKind::Implicit:
+    return "implicit";
+  }
+  llvm_unreachable("unhandled case");
+}
+
+bool Parser::LateParseFunctionContractSpecifier(CachedTokens &Toks) {
+  assert(isFunctionContractKeyword(Tok) && "Not in a contract");
+  ContractKind CK = getContractKeyword(Tok).value();
+  const char *CKStr = getContractKeywordStr(CK);
+
+  // Consume and cache the starting token.
+  Token StartTok = Tok;
+  SourceRange ContractRange = SourceRange(ConsumeToken());
+
+  // P3400: If there's a '<', cache the label expression tokens before '('.
+  // Cache them even when P3400 is off, so the re-parse reaches the proper
+  // err_contract_label_require_flag.  Skipping the label here instead leaves
+  // the cached token stream starting at '<', which the re-parse cannot make
+  // sense of -- a late-parsed (member function) contract then produces the
+  // same cascade of unrelated errors this diagnostic exists to replace
+  // ("expected '(' after 'pre'", "expected ';' at end of declaration list").
+  if (Tok.is(tok::less)) {
+    Toks.push_back(StartTok);
+    Toks.push_back(Tok);
+    ConsumeToken(); // '<'
+    // Cache everything up to and including the matching '>'.
+    // Use ConsumeAndStoreUntil with a depth counter for nested <>.
+    unsigned Depth = 1;
+    while (Depth > 0) {
+      if (Tok.is(tok::less))
+        ++Depth;
+      else if (Tok.is(tok::greater))
+        --Depth;
+      else if (Tok.is(tok::greatergreater) && Depth >= 2) {
+        Depth -= 2;
+        // Split >> into > > for caching.
+        Token GT;
+        GT.startToken();
+        GT.setKind(tok::greater);
+        GT.setLocation(Tok.getLocation());
+        Toks.push_back(GT);
+        GT.setLocation(Tok.getLocation().getLocWithOffset(1));
+        Toks.push_back(GT);
+        ConsumeToken();
+        continue;
+      } else if (Tok.is(tok::eof) || Tok.is(tok::semi)) {
+        Diag(Tok, diag::err_expected) << tok::greater;
+        return false;
+      } else if (Tok.isOneOf(tok::l_paren, tok::l_square, tok::l_brace)) {
+        // A balanced group inside the label expression -- pre<L{}>,
+        // pre<make_label()>, pre<(a > b ? l1 : l2)>.  Cache it whole rather
+        // than token by token, for two reasons: its opening token is
+        // "special", so ConsumeToken cannot consume it, and a '<' or '>'
+        // inside the group is an operator rather than a template-argument-list
+        // delimiter, so counting it here would end the label early.
+        //
+        // StopAtSemi is off because the group is delimited by its own closing
+        // token and a ';' can legitimately appear within one -- a label whose
+        // expression is an immediately-invoked lambda, say.
+        tok::TokenKind Close = Tok.is(tok::l_paren)    ? tok::r_paren
+                               : Tok.is(tok::l_square) ? tok::r_square
+                                                       : tok::r_brace;
+        Toks.push_back(Tok);
+        ConsumeAnyToken();
+        if (!ConsumeAndStoreUntil(Close, Toks, /*StopAtSemi=*/false,
+                                  /*ConsumeFinalToken=*/true)) {
+          Diag(Tok, diag::err_expected) << Close;
+          return false;
+        }
+        continue;
+      }
+      Toks.push_back(Tok);
+      // Not ConsumeToken: a label expression may contain string literals and
+      // annotation tokens, which are "special" and must be consumed as such.
+      ConsumeAnyToken();
+    }
+    // P4283: cache an optional requires-clause between the label and the
+    // attributes/captures/predicate.
+    if (Tok.is(tok::kw_requires) && !LateParseContractRequiresClause(Toks))
+      return false;
+    // Cache attribute tokens [[...]] after label.
+    while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+      ConsumeAndStoreUntil(tok::r_square, Toks,
+                           /*StopAtSemi=*/true,
+                           /*ConsumeFinalToken=*/true);
+      if (Tok.is(tok::r_square)) {
+        Toks.push_back(Tok);
+        ConsumeBracket();
+      }
+    }
+
+    // Cache capture tokens [...] if present.
+    if (Tok.is(tok::l_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+      ConsumeAndStoreUntil(tok::r_square, Toks,
+                           /*StopAtSemi=*/true,
+                           /*ConsumeFinalToken=*/true);
+    }
+
+    // Now expect '('.
+    if (!Tok.is(tok::l_paren)) {
+      Diag(Tok, diag::err_expected_lparen_after) << CKStr;
+      return false;
+    }
+    Toks.push_back(Tok);
+    ContractRange.setEnd(ConsumeParen());
+    ConsumeAndStoreUntil(tok::r_paren, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+    ContractRange.setEnd(Toks.back().getLocation());
+    return true;
+  }
+
+  // Cache any [[attribute]] tokens before captures/paren.
+  Toks.push_back(StartTok); // contract keyword
+
+  // P4283: cache an optional requires-clause (no label) before the
+  // attributes/captures/predicate.
+  if (Tok.is(tok::kw_requires) && !LateParseContractRequiresClause(Toks))
+    return false;
+
+  // Cache attribute tokens [[...]].
+  while (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
+    Toks.push_back(Tok);
+    ConsumeBracket();
+    ConsumeAndStoreUntil(tok::r_square, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+    if (Tok.is(tok::r_square)) {
+      Toks.push_back(Tok);
+      ConsumeBracket();
+    }
+  }
+
+  // Cache capture tokens [...] if present.
+  if (Tok.is(tok::l_square)) {
+    Toks.push_back(Tok);
+    ConsumeBracket();
+    ConsumeAndStoreUntil(tok::r_square, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
+  }
+
+  // Check for a '('.
+  if (!Tok.is(tok::l_paren)) {
+    Diag(Tok, diag::err_expected_lparen_after) << CKStr;
+    return false;
+  }
+
+  Toks.push_back(Tok);                  // '('
+  ContractRange.setEnd(ConsumeParen()); // '('
+
+  ConsumeAndStoreUntil(tok::r_paren, Toks,
+                       /*StopAtSemi=*/true,
+                       /*ConsumeFinalToken=*/true);
+  ContractRange.setEnd(Toks.back().getLocation());
+  return true;
+}
+
+/// ParseContractAssertStatement
+///
+///  assertion-statement:
+///     'contract_assert' attribute-specifier-seq[opt] '('
+///     conditional-expression ')' ';'
+///
+StmtResult Parser::ParseContractAssertStatement() {
+  assert((Tok.is(tok::kw_contract_assert) || Tok.is(tok::kw__ContractAssert)) &&
+         "Not a contract assert statement");
+  bool IsInvalidTmp = false;
+  return ParseFunctionContractSpecifierImpl(
+      {}, ContractScopeOffset::FunctionContext, IsInvalidTmp);
+}
+
+/// ParseFunctionContractSpecifierSeq - Parse a series of pre/post contracts on
+/// a function declaration.
+///
+///   function-contract-specifier-seq :
+///       function-contract-specifier function-contract-specifier-seq
+///
+///   function-contract-specifier:
+///       precondition-specifier
+///       postcondition-specifier
+///
+///   precondition-specifier:
+///       pre attribute-specifier-seq[opt] ( conditional-expression )
+///
+///   postcondition-specifier:
+///       post attribute-specifier-seq[opt] ( result-name-introducer[opt]
+///       conditional-expression )
+///
+///   result-name-introducer:
+///       attributed-identifier :
+void Parser::ParseContractSpecifierSequence(Declarator &DeclarationInfo,
+                                            bool EnterScope,
+                                            QualType TrailingReturnType) {
+  if (!isFunctionContractKeyword(Tok))
+    return;
+
+  // A contract specifier belongs to a function.  Written on anything else --
+  // a data member, a variable, a bit-field, or a declarator the parser has
+  // already given up on -- there is no function chunk to take the parameters
+  // and the result type from, so say so and eat the specifier rather than
+  // reading a chunk that is not there.  Caching the tokens is how the
+  // specifier's true extent is known: it may carry a label, a requires-clause,
+  // attributes and captures ahead of the predicate.
+  //
+  // isFunctionDeclarator() asks only about the declarator's CHUNKS, so it is
+  // true for `typedef int F(int)` -- that declarator really does have a
+  // function chunk.  What makes it not a function declaration is the storage
+  // class, which lives on the leading DeclSpec and is not a chunk at all.
+  // Without the second test the contract parses, is Sema-checked, is stored
+  // on the declarator, and is then dropped on the floor when
+  // ActOnTypedefDeclarator takes the declaration instead of
+  // CreateNewFunctionDecl: no diagnostic, and no check at any call.
+  //
+  // Test SCS_typedef narrowly rather than reaching for
+  // isFunctionDeclarationContext(), which folds in the same test but returns
+  // false for DeclaratorContext::LambdaExpr -- and a lambda's contracts come
+  // through this very function, so that would reject every
+  // `[](int x) pre(x > 0) {}`.
+  if (!DeclarationInfo.isFunctionDeclarator() ||
+      DeclarationInfo.getDeclSpec().getStorageClassSpec() ==
+          DeclSpec::SCS_typedef) {
+    // Name the keyword as it was written -- `pre`, `__pre` or C's `_Pre`.
+    Diag(Tok, diag::err_contract_on_non_function) << PP.getSpelling(Tok);
+    CachedTokens Discarded;
+    LateParseFunctionContractSpecifierSeq(Discarded);
+    return;
+  }
+
+  std::optional<QualType> CachedType;
+  auto ReturnTypeResolver = [&]() {
+    if (!CachedType) {
+      QualType ReturnType = TrailingReturnType;
+      if (ReturnType.isNull()) {
+        TypeSourceInfo *TInfo = Actions.GetTypeForDeclarator(DeclarationInfo);
+        assert(TInfo && TInfo->getType()->isFunctionType());
+        ReturnType = TInfo->getType()->getAs<FunctionType>()->getReturnType();
+      }
+      CachedType = ReturnType;
+    }
+    return CachedType.value();
+  };
+  std::optional<ParseScope> ParserScope;
+
+  std::optional<Sema::CXXThisScopeRAII> ThisScope;
+  std::optional<Sema::FunctionScopeRAII> PopFnContext;
+
+  if (EnterScope) {
+    ParserScope.emplace(this, Scope::DeclScope | Scope::FunctionPrototypeScope |
+                                  Scope::FunctionDeclarationScope);
+
+    auto FTI = DeclarationInfo.getFunctionTypeInfo();
+
+    for (unsigned i = 0; i != FTI.NumParams; ++i) {
+      ParmVarDecl *Param = cast<ParmVarDecl>(FTI.Params[i].Param);
+      Actions.ActOnReenterCXXMethodParameter(getCurScope(), Param);
+    }
+  }
+
+  // [expr.prim.this]/1: `this` "shall not appear within the declaration of
+  // either a static member function or an explicit object member function of
+  // the current class".  A contract predicate is within that declaration, so
+  // an explicit object member function must get no `this` scope here.
+  //
+  // Sema::CheckCXXThisType already diagnoses the explicit-object case
+  // correctly, but only fires when the `this` type is null; pushing a scope
+  // gives it a non-null one and makes that branch unreachable, so both `this`
+  // and an unqualified member name (which means (*this).m) were accepted in a
+  // predicate and then asserted in CodeGen on LoadCXXThis.  Leaving the scope
+  // unpushed gives such a predicate the same diagnostics the function BODY
+  // already gets.
+  //
+  // The condition is deliberately applied here rather than inside
+  // InitCXXThisScopeForDeclaratorIfRelevant: that helper is shared with the
+  // trailing-return-type path, whose handling of explicit object member
+  // functions is a separate question from contracts.
+  //
+  // The DeclSpec handed over is the function chunk's MethodQualifiers, not
+  // the declarator's leading one.  The cv-qualifiers that decide the type of
+  // `this` are the TRAILING ones -- the `const` of `int S::f(int) const` --
+  // and those live on the chunk; the leading DeclSpec holds `int`.  Passing
+  // the leading one gives the predicate `S *` where the same function's
+  // in-class declaration got `const S *`, which is a constness divergence
+  // between two declarations of one function and would quietly defeat
+  // P2900 const-ification.  The trailing-return-type caller in
+  // ParseFunctionDeclarator passes the chunk's DeclSpec for this reason.
+  if (!DeclarationInfo.isExplicitObjectMemberFunction()) {
+    const DeclSpec *QualifierDS = &DeclarationInfo.getDeclSpec();
+    if (DeclarationInfo.isFunctionDeclarator() &&
+        DeclarationInfo.getFunctionTypeInfo().MethodQualifiers)
+      QualifierDS = DeclarationInfo.getFunctionTypeInfo().MethodQualifiers;
+    InitCXXThisScopeForDeclaratorIfRelevant(DeclarationInfo, *QualifierDS,
+                                            ThisScope);
+  }
+  bool IsInvalid = false;
+  SourceLocation StartLoc = Tok.getLocation();
+
+  SmallVector<ContractStmt *, 4> Contracts;
+  while (isFunctionContractKeyword(Tok)) {
+    bool IsInvalidTmp = false;
+    StmtResult Contract = ParseFunctionContractSpecifierImpl(
+        ReturnTypeResolver,
+        EnterScope ? ContractScopeOffset::ParentContext
+                   : ContractScopeOffset::FunctionContext,
+        IsInvalidTmp);
+    IsInvalid |= IsInvalidTmp;
+    // dyn_cast, not ActionResult::getAs -- that is a static_cast, so anything
+    // other than a ContractStmt would be stored as a bogus ContractStmt rather
+    // than caught.  Nothing should produce one; treat it as invalid if it does
+    // rather than filing garbage into the specifier.
+    if (Contract.isUsable()) {
+      auto *CS = dyn_cast_if_present<ContractStmt>(Contract.get());
+      assert(CS && "contract specifier did not produce a ContractStmt");
+      if (CS)
+        Contracts.push_back(CS);
+      else
+        IsInvalid = true;
+    }
+  }
+  ContractSpecifierDecl *Seq = Actions.ActOnFinishContractSpecifierSequence(
+      Contracts, StartLoc, IsInvalid);
+
+  assert(DeclarationInfo.Contracts == nullptr && "Already have contracts?");
+
+  DeclarationInfo.Contracts = Seq;
+}
+
+/// DiagnoseUnattachedLateParsedContracts - Report and discard contract tokens
+/// that were cached for late parsing but never got a declaration to be
+/// replayed against -- either because the declaration they were written on
+/// was too malformed to produce one, or because what it did produce is not a
+/// function.  \p DiagID picks which of those the caller is looking at.  Either
+/// way this keeps the tokens away from Declarator::clear(), whose assertion
+/// would otherwise turn a diagnosable input into a crash.
+void Parser::DiagnoseUnattachedLateParsedContracts(Declarator &D,
+                                                   unsigned DiagID) {
+  if (D.LateParsedContracts.empty())
+    return;
+
+  const Token &Start = D.LateParsedContracts.front();
+  Diag(Start.getLocation(), DiagID) << PP.getSpelling(Start);
+  D.LateParsedContracts.clear();
+}
+
+StmtResult Parser::ParseFunctionContractSpecifierImpl(
+    llvm::function_ref<QualType()> ReturnTypeResolver,
+    ContractScopeOffset ScopeOffset, bool &IsInvalid) {
+  assert(isAnyContractKeyword(Tok) && "Not a contract keyword?");
+  ContractKind CK = getContractKeyword(Tok).value();
+  assert((CK == ContractKind::Assert || ReturnTypeResolver) &&
+         "Missing return type resolver for function contract sequence");
+  assert((ScopeOffset == ContractScopeOffset::FunctionContext ||
+          CK != ContractKind::Assert) &&
+         "Incorrect scope offset for contract assert");
+  auto SetInvalidOnExit = llvm::scope_exit([&]() { IsInvalid = true; });
+
+  const char *CKStr = getContractKeywordStr(CK);
+
+  SourceLocation KeywordLoc = Tok.getLocation();
+  ConsumeToken();
+
+  ExprResult LabelExpr;
+  // Recognise the label syntax even when P3400 is off, so we can diagnose the
+  // missing flag and still recover to the predicate.  Bailing out on the '<'
+  // instead would derail the whole declaration and bury the real problem under
+  // unrelated parse errors.  Mirrors the P4283 requires-clause handling below
+  // and GCC's "assertion-control labels require %<-fcontracts-p3400%>".
+  if (Tok.is(tok::less)) {
+    SourceLocation LabelLoc = ConsumeToken();
+    llvm::SaveAndRestore OldGreater(GreaterThanIsOperator, false);
+    llvm::SaveAndRestore SetFlag(Actions.InAssertionControlExpression, true);
+    ExprResult Parsed = ParseConstantExpression();
+    if (ExpectAndConsume(tok::greater))
+      return StmtError();
+    if (getLangOpts().ContractsP3400)
+      LabelExpr = Parsed;
+    else
+      Diag(LabelLoc, diag::err_contract_label_require_flag);
+  }
+
+  // Parse optional requires clause (P4283): pre <label> requires C ...
+  // P4283 uses the standard requires-clause grammar,
+  //   requires constraint-logical-or-expression
+  // with no mandatory parentheses: the constraint's atoms are primary-
+  // expressions, so parsing stops before the contract predicate's '('.  This
+  // matches the paper's `pre requires std::integral<T> (x > 0)` form and GCC.
+  ExprResult RequiresClauseExpr;
+  if (Tok.is(tok::kw_requires)) {
+    SourceLocation RequiresLoc = ConsumeToken(); // consume 'requires'
+    if (!getLangOpts().ContractsP4283) {
+      Diag(RequiresLoc, diag::err_contract_requires_clause_require_flag);
+      // Parse and discard the constraint so we recover to the predicate.
+      (void)ParseConstraintLogicalOrExpression(
+          /*IsTrailingRequiresClause=*/false,
+          /*IsContractRequiresClause=*/true);
+    } else {
+      RequiresClauseExpr = ParseConstraintLogicalOrExpression(
+          /*IsTrailingRequiresClause=*/false,
+          /*IsContractRequiresClause=*/true);
+      if (RequiresClauseExpr.isInvalid())
+        return StmtError();
+    }
+  }
+
+  ParsedAttributes CXX11Attrs(AttrFactory);
+  MaybeParseCXX11Attributes(CXX11Attrs);
+
+  SmallVector<Decl *, 4> CaptureDecls;
+  DeclStmt *CapturesDeclStmt = nullptr;
+  if (Tok.is(tok::l_square)) {
+    if (CK != ContractKind::Post) {
+      Diag(Tok.getLocation(), diag::err_postcondition_captures_on_non_post)
+          << CKStr;
+      SkipUntil(tok::l_paren, StopBeforeMatch);
+    } else if (!getLangOpts().ContractsP3098) {
+      Diag(Tok.getLocation(), diag::err_postcondition_captures_require_flag);
+      SkipUntil(tok::l_paren, StopBeforeMatch);
+    } else {
+      if (ParsePostconditionCaptures(CaptureDecls))
+        return StmtError();
+    }
+  }
+
+  if (Tok.isNot(tok::l_paren)) {
+    Diag(Tok, diag::err_expected_lparen_after) << CKStr;
+    SkipUntil({tok::equal, tok::l_brace, tok::arrow, tok::kw_try, tok::comma,
+               tok::l_paren},
+              StopAtSemi | StopBeforeMatch);
+
+    return StmtError();
+  }
+
+  BalancedDelimiterTracker T(*this, tok::l_paren);
+  SourceLocation ExprLoc = Tok.getLocation();
+
+  if (T.expectAndConsume(diag::err_expected_lparen_after, CKStr,
+                         tok::r_paren)) {
+    return StmtError();
+  }
+
+  ParseScope ContractScope(this, Scope::DeclScope | Scope::ContractAssertScope);
+  EnterExpressionEvaluationContext EC(
+      Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+
+  if (!CaptureDecls.empty()) {
+    Actions.ActOnFinishPostconditionCaptures(getCurScope(), CaptureDecls);
+    SmallVector<Decl *, 4> CaptureVec(CaptureDecls);
+    CapturesDeclStmt = new (Actions.Context)
+        DeclStmt(DeclGroupRef::Create(Actions.Context, CaptureVec.data(),
+                                      CaptureVec.size()),
+                 CaptureDecls.front()->getLocation(),
+                 CaptureDecls.back()->getLocation());
+  }
+
+  ResultNameDecl *RND = nullptr;
+  // Parse a result-name declarator for EVERY contract kind, not just `post`.
+  // On `pre` and `contract_assert` it is ill-formed, but parsing it lets Sema
+  // say so ("result name not allowed outside of post condition specifier");
+  // leaving it to fall through to the predicate instead produces an unrelated
+  // "use of undeclared identifier" for the result name and then a cascade.
+  if (Tok.is(tok::identifier) && NextToken().is(tok::colon)) {
+    IdentifierInfo *Id = Tok.getIdentifierInfo();
+    SourceLocation IdLoc = ConsumeToken();
+
+    ExprLoc = ConsumeToken();
+    QualType ReturnType;
+    if (ReturnTypeResolver)
+      ReturnType = ReturnTypeResolver();
+
+    RND = Actions.ActOnResultNameDeclarator(
+        CK, getCurScope(), ReturnType, IdLoc, Id,
+        getCurScope()->getFunctionPrototypeDepth());
+
+    if (!RND)
+      return StmtError();
+
+    if (RND->isInvalidDecl())
+      IsInvalid = true;
+
+    // Only a postcondition can hold a result name.  Sema has already
+    // diagnosed the misplacement above, and the declaration stays in scope so
+    // the predicate still resolves the name instead of producing a spurious
+    // "use of undeclared identifier"; just do not hand it to the statement.
+    if (CK != ContractKind::Post)
+      RND = nullptr;
+  }
+
+  ExprResult Cond = [&]() {
+    Sema::ContractScopeRAII ContractScope(Actions, CK, ScopeOffset, KeywordLoc);
+    ExprResult CondResult = ParseConditionalExpression();
+    if (CondResult.isInvalid())
+      return CondResult;
+    return Actions.ActOnContractAssertCondition(CondResult.get());
+  }();
+
+  ExprResult MessageExpr;
+  if (getLangOpts().ContractsP3099 && Tok.is(tok::comma)) {
+    ConsumeToken();
+
+    bool ParseAsExpression = false;
+    if (getLangOpts().CPlusPlus11) {
+      for (unsigned I = 0;; ++I) {
+        const Token &T = GetLookAheadToken(I);
+        if (T.is(tok::r_paren))
+          break;
+        if (!tokenIsLikeStringLiteral(T, getLangOpts()) || T.hasUDSuffix()) {
+          ParseAsExpression = true;
+          break;
+        }
+      }
+    }
+
+    if (ParseAsExpression) {
+      // A non-literal (user-generated) diagnostic message is a constant
+      // expression and must be parsed in a ConstantEvaluated context, just as
+      // static_assert does (ParseStaticAssertDeclaration).  The enclosing
+      // contract-specifier context is PotentiallyEvaluated, so enter the
+      // constant-evaluated context here.
+      EnterExpressionEvaluationContext ConstantEvaluated(
+          Actions, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+      MessageExpr = ParseConstantExpressionInExprEvalContext();
+    } else if (tokenIsLikeStringLiteral(Tok, getLangOpts()))
+      MessageExpr = ParseUnevaluatedStringLiteralExpression();
+    else {
+      Diag(Tok, diag::err_expected_string_literal)
+          << /*Source='static_assert'*/ 1;
+    }
+  }
+
+  SourceLocation EndLoc = Tok.getLocation();
+
+  T.consumeClose();
+
+  if (Cond.isInvalid()) {
+    Cond =
+        Actions.CreateRecoveryExpr(ExprLoc, EndLoc, {}, Actions.Context.BoolTy);
+  } else {
+    SetInvalidOnExit.release();
+  }
+
+  StmtResult Res = Actions.ActOnContractAssert(
+      CK, KeywordLoc, Cond.get(), RND, CXX11Attrs, MessageExpr.get(),
+      LabelExpr.get(), CapturesDeclStmt, RequiresClauseExpr.get());
+  if (Res.isInvalid())
+    IsInvalid = true;
+  return Res;
+}
+
+bool Parser::ParseLexedFunctionContracts(
+    CachedTokens &ContractToks, Decl *FD,
+    Parser::ContractEnterScopeKind ScopesToEnter) {
+
+  // Add the 'stop' token.
+  Token LastContractToken = ContractToks.back();
+  Token ContractEnd;
+  ContractEnd.startToken();
+  ContractEnd.setKind(tok::eof);
+  ContractEnd.setLocation(LastContractToken.getEndLoc());
+  ContractEnd.setEofData(FD);
+  ContractToks.push_back(ContractEnd);
+
+  // Parse the default argument from its saved token stream.
+  ContractToks.push_back(Tok); // So that the current token doesn't get lost
+  PP.EnterTokenStream(ContractToks, true, /*IsReinject*/ true);
+
+  // Consume the previously-pushed token.
+  ConsumeAnyToken();
+
+  // C++11 [expr.prim.general]p3:
+  //   If a declaration declares a member function or member function
+  //   template of a class X, the expression this is a prvalue of type
+  //   "pointer to cv-qualifier-seq X" between the optional cv-qualifer-seq
+  //   and the end of the function-definition, member-declarator, or
+  //   declarator.
+  CXXMethodDecl *Method;
+  FunctionDecl *FunctionToPush;
+  if (FunctionTemplateDecl *FunTmpl = dyn_cast<FunctionTemplateDecl>(FD))
+    FunctionToPush = FunTmpl->getTemplatedDecl();
+  else
+    FunctionToPush = cast<FunctionDecl>(FD);
+
+  std::optional<ParseScope> ParserScope;
+  if (ScopesToEnter & ContractEnterScopeKind::CES_Prototype)
+    ParserScope.emplace(this, Scope::DeclScope | Scope::FunctionPrototypeScope |
+                                  Scope::FunctionDeclarationScope);
+
+  if (ScopesToEnter & ContractEnterScopeKind::CES_Parameters) {
+    for (auto *Param : FunctionToPush->parameters()) {
+      Actions.ActOnReenterCXXMethodParameter(getCurScope(), Param);
+    }
+  }
+
+  Method = dyn_cast<CXXMethodDecl>(FunctionToPush);
+
+  std::optional<ParseScope> FnScope;
+  std::optional<Sema::ContextRAII> FnContext;
+  std::optional<Sema::FunctionScopeRAII> PopFnContext;
+  if (ScopesToEnter & ContractEnterScopeKind::CES_Function) {
+    FnScope.emplace(this, Scope::FnScope);
+    FnContext.emplace(Actions, FunctionToPush, /*NewThisContext=*/true);
+    PopFnContext.emplace(Actions);
+    Actions.PushFunctionScope();
+  }
+
+  // An explicit object member function has no `this` ([expr.prim.this]/1), and
+  // a contract predicate is within its declaration, so it gets no `this` scope
+  // -- see the matching condition on the eager path above.  This is the
+  // late-parsed path, which is the one a member function's contracts actually
+  // take.
+  std::optional<Sema::CXXThisScopeRAII> ThisScope;
+  if ((ScopesToEnter & ContractEnterScopeKind::CES_CXXThis) &&
+      !(Method && Method->isExplicitObjectMemberFunction()))
+    ThisScope.emplace(Actions, Method ? Method->getParent() : nullptr,
+                      Method ? Method->getMethodQualifiers() : Qualifiers{},
+                      Method && getLangOpts().CPlusPlus11);
+
+  // Parse the exception-specification.
+  SmallVector<ContractStmt *> Contracts;
+  assert(isFunctionContractKeyword(Tok));
+
+  SourceLocation StartLoc = Tok.getLocation();
+
+  auto ReturnTypeResolver = [&]() { return FunctionToPush->getReturnType(); };
+  bool IsInvalid = false;
+  while (isFunctionContractKeyword(Tok)) {
+    assert(Actions.CurContext == FunctionToPush);
+    bool IsInvalidTmp = false;
+    StmtResult Contract = ParseFunctionContractSpecifierImpl(
+        ReturnTypeResolver, ContractScopeOffset::FunctionContext, IsInvalidTmp);
+    // dyn_cast, not ActionResult::getAs -- see the same guard in
+    // ParseContractSpecifierSequence for why a static_cast is unsafe here.
+    if (Contract.isUsable()) {
+      auto *CS = dyn_cast_if_present<ContractStmt>(Contract.get());
+      assert(CS && "contract specifier did not produce a ContractStmt");
+      if (CS)
+        Contracts.push_back(CS);
+      else
+        IsInvalidTmp = true;
+    }
+    IsInvalid |= IsInvalidTmp;
+  }
+  ContractSpecifierDecl *Seq = Actions.ActOnFinishContractSpecifierSequence(
+      Contracts, StartLoc, IsInvalid);
+  FunctionToPush->setContracts(Seq);
+
+  // There could be leftover tokens (e.g. because of an error).
+  // Skip through until we reach the original token position.
+  while (Tok.isNot(tok::eof))
+    ConsumeAnyToken();
+
+  // Clean up the remaining EOF token.
+  if (Tok.is(tok::eof) && Tok.getEofData() == FD)
+    ConsumeAnyToken();
+
+  ContractToks.clear();
+  return true;
+}

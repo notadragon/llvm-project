@@ -70,8 +70,20 @@ TypeResult Parser::ParseTypeName(SourceRange *Range, DeclaratorContext Context,
   }
 
   // Parse the abstract-declarator, if present.
+  //
+  // In a trailing-return type, a function-contract-specifier (pre/post, P3400)
+  // can follow the type. A labelled contract such as `pre<lbl>(...)` otherwise
+  // looks like a template-id and is consumed (and annotated) here as part of
+  // the abstract-declarator, dropping the contract and leaving the enclosing
+  // declarator unable to parse it. So do not attempt an abstract-declarator
+  // when a contract introducer follows in a trailing-return context; the
+  // contract is parsed later by the enclosing declarator (see ParseDeclGroup,
+  // which calls ParseContractSpecifierSequence). Mirrors gnu_gcc b6648b3d7d4.
   Declarator DeclaratorInfo(DS, ParsedAttributesView::none(), Context);
-  ParseDeclarator(DeclaratorInfo);
+  if (!((Context == DeclaratorContext::TrailingReturn ||
+         Context == DeclaratorContext::TrailingReturnVar) &&
+        isFunctionContractKeyword(Tok)))
+    ParseDeclarator(DeclaratorInfo);
   if (Range)
     *Range = DeclaratorInfo.getSourceRange();
 
@@ -2195,6 +2207,19 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
     ParseTrailingRequiresClauseWithScope(D);
   }
 
+  if (isFunctionContractKeyword(Tok)) {
+    ParseContractSpecifierSequenceWithScope(D);
+
+    // [dcl.decl]: a requires-clause precedes the contracts.  The clause is
+    // looked for above, before the contract, so the only way to be sitting on
+    // one now is that they were written in the wrong order.  Without this it
+    // falls off the grammar into a bare "expected function body after
+    // function declarator", which names neither of the two things involved.
+    if (Tok.is(tok::kw_requires) &&
+        DiagnoseSpecifierAfterContract(D, Tok.getLocation(), "requires"))
+      ParseTrailingRequiresClauseWithScope(D);
+  }
+
   // Save late-parsed attributes for now; they need to be parsed in the
   // appropriate function scope after the function Decl has been constructed.
   // These will be parsed in ParseFunctionDefinition or ParseLexedAttrList.
@@ -2298,6 +2323,8 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
                 ParseFunctionDefinition(D, TemplateInfo, &LateParsedAttrs);
           }
 
+          assert(D.LateParsedContracts.empty());
+
           return Actions.ConvertDeclToDeclGroup(TheDecl);
         }
 
@@ -2374,6 +2401,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       if (auto *VD = dyn_cast_or_null<VarDecl>(ThisDecl))
         VD->setObjCForDecl(true);
     }
+
     Actions.FinalizeDeclaration(ThisDecl);
     D.complete(ThisDecl);
     return Actions.FinalizeDeclaratorGroup(getCurScope(), DS, ThisDecl);
@@ -2384,6 +2412,28 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       ParseDeclarationAfterDeclaratorAndAttributes(D, TemplateInfo, FRI);
   if (LateParsedAttrs.size() > 0)
     ParseLexedAttributeList(LateParsedAttrs, FirstDecl, true, false);
+  if (!D.LateParsedContracts.empty()) {
+    auto *FD = dyn_cast_or_null<FunctionDecl>(FirstDecl);
+    if (FD && !FD->isInvalidDecl()) {
+      // A contract on a non-defining function declaration (a prototype, e.g. in
+      // a header).  Parse its late-parsed contract predicates so an ill-formed
+      // predicate is diagnosed; they attach to this declaration only and are
+      // not merged onto a later definition (P4299 N-1: no cross-declaration
+      // contract merge for C).
+      assert(!FD->isThisDeclarationADefinition());
+      ParseLexedFunctionContracts(D.LateParsedContracts, FD, CES_AllScopes);
+    } else {
+      // Nothing to replay the tokens against.  The declarator was cached on
+      // the strength of carrying a function chunk, which a typedef of function
+      // type and a pointer-to-function variable both do without declaring a
+      // function; those get told so, while a declaration that simply failed
+      // has been diagnosed already.
+      DiagnoseUnattachedLateParsedContracts(
+          D, FirstDecl && !FirstDecl->isInvalidDecl()
+                 ? diag::err_contract_on_non_function
+                 : diag::err_contract_on_invalid_declaration);
+    }
+  }
   D.complete(FirstDecl);
   if (FirstDecl)
     DeclsInGroup.push_back(FirstDecl);
@@ -2441,9 +2491,25 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       //    init-declarator:
       //	      declarator initializer[opt]
       //        declarator requires-clause
+
       if (Tok.is(tok::kw_requires))
         ParseTrailingRequiresClauseWithScope(D);
+
+      // ... and, for the same reason, a contract specifier.  Only the FIRST
+      // declarator of a group used to be offered one, so a contract on a
+      // later declarator -- `int a, f() pre(true);` -- reached nothing that
+      // knew what it was and died on a bare "expected ';'".  Whether it is
+      // well-formed here is ParseContractSpecifierSequence's question, not
+      // this one's; what matters is that it is asked at all.
+      if (isFunctionContractKeyword(Tok)) {
+        ParseContractSpecifierSequenceWithScope(D);
+        if (Tok.is(tok::kw_requires) &&
+            DiagnoseSpecifierAfterContract(D, Tok.getLocation(), "requires"))
+          ParseTrailingRequiresClauseWithScope(D);
+      }
+
       Decl *ThisDecl = ParseDeclarationAfterDeclarator(D, TemplateInfo);
+
       D.complete(ThisDecl);
       if (ThisDecl)
         DeclsInGroup.push_back(ThisDecl);
@@ -6985,8 +7051,9 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
         Actions.ActOnStartFunctionDeclarationDeclarator(D,
                                                         TemplateParameterDepth);
       ParseFunctionDeclarator(D, attrs, T, IsAmbiguous);
-      if (IsFunctionDeclaration)
+      if (IsFunctionDeclaration) {
         Actions.ActOnFinishFunctionDeclarationDeclarator(D);
+      }
       PrototypeScope.Exit();
     } else if (Tok.is(tok::l_square)) {
       ParseBracketDeclarator(D);
@@ -7233,7 +7300,7 @@ void Parser::ParseParenDeclarator(Declarator &D) {
 
 void Parser::InitCXXThisScopeForDeclaratorIfRelevant(
     const Declarator &D, const DeclSpec &DS,
-    std::optional<Sema::CXXThisScopeRAII> &ThisScope) {
+    std::optional<Sema::CXXThisScopeRAII> &ThisScope, bool AddConst) {
   // C++11 [expr.prim.general]p3:
   //   If a declaration declares a member function or member function
   //   template of a class X, the expression this is a prvalue of type
@@ -7253,7 +7320,8 @@ void Parser::InitCXXThisScopeForDeclaratorIfRelevant(
     return;
 
   Qualifiers Q = Qualifiers::fromCVRUMask(DS.getTypeQualifiers());
-  if (D.getDeclSpec().hasConstexprSpecifier() && !getLangOpts().CPlusPlus14)
+  if ((D.getDeclSpec().hasConstexprSpecifier() && !getLangOpts().CPlusPlus14) ||
+      AddConst)
     Q.addConst();
   // FIXME: Collect C++ address spaces.
   // If there are multiple different address spaces, the source is invalid.
@@ -7383,7 +7451,8 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       // delayed (even if this is a friend declaration).
       bool Delayed = D.getContext() == DeclaratorContext::Member &&
                      D.isFunctionDeclaratorAFunctionDeclaration();
-      if (Delayed && Actions.isLibstdcxxEagerExceptionSpecHack(D) &&
+      bool DelayedNoexcept = Delayed;
+      if (DelayedNoexcept && Actions.isLibstdcxxEagerExceptionSpecHack(D) &&
           GetLookAheadToken(0).is(tok::kw_noexcept) &&
           GetLookAheadToken(1).is(tok::l_paren) &&
           GetLookAheadToken(2).is(tok::kw_noexcept) &&
@@ -7398,14 +7467,11 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
         // for 'swap' will only find the function we're currently declaring,
         // whereas it expects to find a non-member swap through ADL. Turn off
         // delayed parsing to give it a chance to find what it expects.
-        Delayed = false;
+        DelayedNoexcept = false;
       }
-      ESpecType = tryParseExceptionSpecification(Delayed,
-                                                 ESpecRange,
-                                                 DynamicExceptions,
-                                                 DynamicExceptionRanges,
-                                                 NoexceptExpr,
-                                                 ExceptionSpecTokens);
+      ESpecType = tryParseExceptionSpecification(
+          DelayedNoexcept, ESpecRange, DynamicExceptions,
+          DynamicExceptionRanges, NoexceptExpr, ExceptionSpecTokens);
       if (ESpecType != EST_None)
         EndLoc = ESpecRange.getEnd();
 
@@ -7425,6 +7491,24 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
             ParseTrailingReturnType(Range, D.mayBeFollowedByCXXDirectInit());
         TrailingReturnTypeLoc = Range.getBegin();
         EndLoc = Range.getEnd();
+      }
+
+      // A contract assertion is a complete-class context too ([class.mem.
+      // general]p7), so a contract on a member function is late-parsed on the
+      // same terms as the noexcept-specifier.  Record the decision as well as
+      // acting on it: the virt-specifier-seq and the trailing requires-clause
+      // are parsed after this returns, so a contract written behind either of
+      // them is not in front of us here and is picked up by
+      // ParseCXXMemberDeclaratorBeforeInitializer, which cannot make the call
+      // for itself -- by then the function chunk is on the declarator and
+      // isFunctionDeclaratorAFunctionDeclaration() no longer answers this
+      // question.  An inner function declarator sets the flag first and the
+      // outermost one, parsed last, overwrites it, which is the one that owns
+      // any contract.
+      D.setContractsAreLateParsed(Delayed);
+
+      if (isFunctionContractKeyword(Tok) && Delayed) {
+        LateParseFunctionContractSpecifierSeq(D.LateParsedContracts);
       }
     } else {
       MaybeParseCXX11Attributes(FnAttrs);
@@ -7455,18 +7539,17 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
   }
 
   // Remember that we parsed a function type, and remember the attributes.
-  D.AddTypeInfo(DeclaratorChunk::getFunction(
-                    HasProto, IsAmbiguous, LParenLoc, ParamInfo.data(),
-                    ParamInfo.size(), EllipsisLoc, RParenLoc,
-                    RefQualifierIsLValueRef, RefQualifierLoc,
-                    /*MutableLoc=*/SourceLocation(),
-                    ESpecType, ESpecRange, DynamicExceptions.data(),
-                    DynamicExceptionRanges.data(), DynamicExceptions.size(),
-                    NoexceptExpr.isUsable() ? NoexceptExpr.get() : nullptr,
-                    ExceptionSpecTokens, DeclsInPrototype, StartLoc,
-                    LocalEndLoc, D, TrailingReturnType, TrailingReturnTypeLoc,
-                    &DS),
-                std::move(FnAttrs), EndLoc);
+  D.AddTypeInfo(
+      DeclaratorChunk::getFunction(
+          HasProto, IsAmbiguous, LParenLoc, ParamInfo.data(), ParamInfo.size(),
+          EllipsisLoc, RParenLoc, RefQualifierIsLValueRef, RefQualifierLoc,
+          /*MutableLoc=*/SourceLocation(), ESpecType, ESpecRange,
+          DynamicExceptions.data(), DynamicExceptionRanges.data(),
+          DynamicExceptions.size(),
+          NoexceptExpr.isUsable() ? NoexceptExpr.get() : nullptr,
+          ExceptionSpecTokens, DeclsInPrototype, StartLoc, LocalEndLoc, D,
+          TrailingReturnType, TrailingReturnTypeLoc, &DS),
+      std::move(FnAttrs), EndLoc);
 }
 
 bool Parser::ParseRefQualifier(bool &RefQualifierIsLValueRef,
