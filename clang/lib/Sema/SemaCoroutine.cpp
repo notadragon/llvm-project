@@ -813,6 +813,15 @@ static bool checkSuspensionContext(Sema &S, SourceLocation Loc,
     S.Diag(Loc, diag::err_coroutine_within_handler) << Keyword;
     return false;
   }
+
+  // P2900:
+  // An await-expression shall not appear in the predicate of a contract
+  // assertion ([basic.contract]).
+  if (S.isContractAssertionContext()) {
+    S.Diag(Loc, diag::err_keyword_not_allowed_in_contract) << Keyword;
+    return false;
+  }
+
   return true;
 }
 
@@ -1215,6 +1224,11 @@ void Sema::CheckCompletedCoroutineBody(FunctionDecl *FD, Stmt *&Body) {
     // Nothing todo. the body is already a transformed coroutine body statement.
     return;
   }
+
+  // Now the body is parsed we know this is a coroutine, which is the earliest
+  // point [dcl.fct.def.coroutine]'s restriction on a postcondition naming a
+  // parameter can be applied -- a contract is parsed with the declarator.
+  diagnoseCoroutinePostconditionParams(FD);
 
   // The always_inline attribute doesn't reliably apply to a coroutine,
   // because the coroutine will be split into pieces and some pieces

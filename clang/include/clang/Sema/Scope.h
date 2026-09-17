@@ -14,6 +14,7 @@
 #define LLVM_CLANG_SEMA_SCOPE_H
 
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -42,7 +43,7 @@ class Scope {
 public:
   /// ScopeFlags - These are bitfields that are or'd together when creating a
   /// scope, which defines the sorts of things the scope contains.
-  enum ScopeFlags {
+  enum ScopeFlags : uint64_t {
     // A bitfield value representing no scopes.
     NoScope = 0,
 
@@ -165,7 +166,27 @@ public:
 
     /// This is a scope of friend declaration.
     FriendScope = 0x80000000,
+
+    /// The scope introduced by a pre, post, or contract_assert.
+    ///
+    /// Unlike most scope flags, this one describes only the statement that
+    /// introduced it rather than everything nested within it: a contract's
+    /// predicate is its own full-expression, and the constification and
+    /// result-name rules apply to that predicate alone, not to any scope a
+    /// lambda or statement-expression inside it may open.
+    ContractAssertScope = 0x100000000,
   };
+  using UT = std::underlying_type_t<ScopeFlags>;
+  static_assert(std::is_unsigned_v<UT>, "ScopeFlags must be an unsigned type");
+  // ContractAssertScope is bit 32, so the underlying type must be wider than
+  // 32 bits.  Assert the width and not merely the signedness: `unsigned long`
+  // satisfies the signedness assertion and is still 32 bits on LLP64, which
+  // leaves the enumerator unrepresentable in the enum's own fixed underlying
+  // type and Clang unbuildable on Windows.
+  static_assert(sizeof(UT) * 8 > 32,
+                "ScopeFlags needs an underlying type wider than 32 bits");
+  static_assert(ContractAssertScope == (UT{1} << 32),
+                "ContractAssertScope must be representable");
 
 private:
   /// The parent scope for this scope.  This is null for the translation-unit
@@ -174,7 +195,7 @@ private:
 
   /// Flags - This contains a set of ScopeFlags, which indicates how the scope
   /// interrelates with other control flow statements.
-  unsigned Flags;
+  uint64_t Flags;
 
   /// Depth - This is the depth of this scope.  The translation-unit scope has
   /// depth 0.
@@ -235,6 +256,7 @@ private:
 
   using UsingDirectivesTy = SmallVector<UsingDirectiveDecl *, 2>;
   UsingDirectivesTy UsingDirectives;
+  UsingDirectivesTy ContractControlUsingDirectives;
 
   /// Used to determine if errors occurred in this scope.
   DiagnosticErrorTrap ErrorTrap;
@@ -257,18 +279,18 @@ private:
   /// directly precedes it, if any.
   LabelDecl *PrecedingLabel;
 
-  void setFlags(Scope *Parent, unsigned F);
+  void setFlags(Scope *Parent, uint64_t F);
 
 public:
-  Scope(Scope *Parent, unsigned ScopeFlags, DiagnosticsEngine &Diag)
+  Scope(Scope *Parent, uint64_t ScopeFlags, DiagnosticsEngine &Diag)
       : ErrorTrap(Diag) {
     Init(Parent, ScopeFlags);
   }
 
   /// getFlags - Return the flags for this scope.
-  unsigned getFlags() const { return Flags; }
+  uint64_t getFlags() const { return Flags; }
 
-  void setFlags(unsigned F) { setFlags(getParent(), F); }
+  void setFlags(uint64_t F) { setFlags(getParent(), F); }
 
   /// Get the label that precedes this scope.
   LabelDecl *getPrecedingLabel() const { return PrecedingLabel; }
@@ -302,6 +324,13 @@ public:
   bool isExpansionStmtScope() const {
     return getFlags() & Scope::ExpansionStmtScope;
   }
+
+  void setIsContractScope(bool InContractScope) {
+    Flags = (Flags & ~ContractAssertScope) |
+            (InContractScope ? ContractAssertScope : NoScope);
+  }
+
+  bool isContractScope() const { return Flags & ContractAssertScope; }
 
   /// getBreakParent - Return the closest scope that a break statement
   /// would be affected by.
@@ -581,6 +610,10 @@ public:
     return getFlags() & ScopeFlags::ContinueScope;
   }
 
+  bool isContractAssertScope() const {
+    return getFlags() & ScopeFlags::ContractAssertScope;
+  }
+
   /// Determine whether this is a scope which can have 'break' or 'continue'
   /// statements embedded into it.
   bool isBreakOrContinueScope() const {
@@ -640,6 +673,10 @@ public:
     UsingDirectives.push_back(UDir);
   }
 
+  void PushContractControlUsingDirective(UsingDirectiveDecl *UDir) {
+    ContractControlUsingDirectives.push_back(UDir);
+  }
+
   using using_directives_range =
       llvm::iterator_range<UsingDirectivesTy::iterator>;
 
@@ -648,12 +685,21 @@ public:
                                   UsingDirectives.end());
   }
 
+  using_directives_range contract_control_using_directives() {
+    return using_directives_range(ContractControlUsingDirectives.begin(),
+                                  ContractControlUsingDirectives.end());
+  }
+
   void updateNRVOCandidate(VarDecl *VD);
 
   void applyNRVO();
 
   /// Init - This is used by the parser to implement scope caching.
-  void Init(Scope *parent, unsigned flags);
+  void Init(Scope *parent, uint64_t flags);
+
+  /// Sets up the specified scope flags and adjusts the scope state
+  /// variables accordingly.
+  void AddFlags(uint64_t Flags);
 
   void dumpImpl(raw_ostream &OS) const;
   void dump() const;
