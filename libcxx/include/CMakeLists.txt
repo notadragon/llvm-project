@@ -245,6 +245,7 @@ set(files
   __bit/popcount.h
   __bit/rotate.h
   __bit_reference
+  __cassert/assert_contract.h
   __charconv/chars_format.h
   __charconv/from_chars_floating_point.h
   __charconv/from_chars_integral.h
@@ -349,6 +350,7 @@ set(files
   __configuration/platform.h
   __configuration/pstl.h
   __configuration/utility.h
+  __contracts/abi.h
   __coroutine/coroutine_handle.h
   __coroutine/coroutine_traits.h
   __coroutine/noop_coroutine_handle.h
@@ -1007,6 +1009,7 @@ set(files
   algorithm
   any
   array
+  assert.h
   atomic
   barrier
   bit
@@ -1030,6 +1033,7 @@ set(files
   complex.h
   concepts
   condition_variable
+  contracts
   coroutine
   csetjmp
   csignal

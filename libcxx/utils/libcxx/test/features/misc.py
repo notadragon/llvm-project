@@ -67,6 +67,11 @@ features = [
         when=lambda cfg: hasCompileFlag(cfg, "-fconstexpr-ops-limit=1"),
     ),
     Feature(name="has-fblocks", when=lambda cfg: hasCompileFlag(cfg, "-fblocks")),
+    # "The compiler supports contracts", not "the suite is compiled with them".
+    # The std/contracts tests gate on this and bring their own -fcontracts via
+    # ADDITIONAL_COMPILE_FLAGS, so it must stay independent of the
+    # use-contracts parameter -- which controls only the suite-wide flags.
+    Feature(name="contracts", when=lambda cfg: hasCompileFlag(cfg, "-fcontracts")),
     Feature(
         name="fdelayed-template-parsing",
         when=lambda cfg: hasCompileFlag(cfg, "-fdelayed-template-parsing"),

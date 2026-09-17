@@ -133,7 +133,6 @@ def testClangTidy(cfg, version, executable):
     except ConfigurationRuntimeError:
         return None
 
-
 def getSuitableClangTidy(cfg):
     # If we didn't build the libcxx-tidy plugin via CMake, we can't run the clang-tidy tests.
     if (
@@ -475,6 +474,31 @@ DEFAULT_PARAMETERS = [
         actions=lambda exe: [] if exe is None else [
             AddFeature('has-clang-tidy'),
             AddSubstitution('%{clang-tidy}', exe),
+        ]
+    ),
+    Parameter(
+        name="use-contracts",
+        type=bool,
+        default=False,
+        help="Whether to compile the whole test suite with contracts enabled. "
+             "Off by default so that a plain check-cxx tests libc++ as shipped; "
+             "pass --param use-contracts=True for the contracts-enabled run.",
+        # This controls the suite-wide compile flags only.  The `contracts`
+        # FEATURE is probed independently in features/misc.py, because it means
+        # "the compiler supports contracts" -- the std/contracts tests gate on
+        # it and bring their own -fcontracts via ADDITIONAL_COMPILE_FLAGS.
+        # Bundling the feature in here meant turning the flags off silently
+        # skipped the only two tests that exercise <contracts>.
+        actions=lambda use_contracts: [] if not use_contracts else [
+            # Distinct from the `contracts` feature: this one means the SUITE is
+            # being compiled with contracts enforced, which a handful of tests
+            # legitimately cannot satisfy (a contract firing during constant
+            # evaluation changes their expected diagnostics).  They gate on this,
+            # not on `contracts`.
+            AddFeature("contracts-enabled"),
+            AddCompileFlag("-fcontracts"),
+            AddCompileFlag('-fcolor-diagnostics'),
+            AddCompileFlag("-fcontract-group-evaluation-semantic=std:enforce"),
         ]
     ),
     Parameter(

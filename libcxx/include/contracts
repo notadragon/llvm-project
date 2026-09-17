@@ -1,0 +1,230 @@
+#ifndef _LIBCPP_CONTRACTS
+#define _LIBCPP_CONTRACTS
+
+#include <__config>
+#include <initializer_list>
+#include <source_location>
+#include <version>
+#include <__contracts/abi.h>
+#include <__new/nothrow_t.h>
+#include <__utility/unreachable.h>
+
+
+#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+#pragma GCC system_header
+#endif
+
+namespace std::contracts {
+
+enum class assertion_kind : unsigned char {
+  unspecified = 0,
+  pre = 1, post = 2, assert = 3,
+#if defined(__cpp_lib_contracts_api) || defined(_LIBCPP_BUILDING_LIBRARY)
+  manual = 4, cassert = 5,
+#endif
+#if defined(__cpp_contracts_postcondition_captures) || defined(_LIBCPP_BUILDING_LIBRARY)
+  post_capture = 6,
+#endif
+  implicit = 7, // P3100 implicit contract assertion guarding language UB
+};
+using _AssertKind = assertion_kind;
+// 16-bit underlying type to match libstdc++ (which spells it __UINT16_TYPE__),
+// so a dynamic-selection function returning evaluation_semantic by value has a
+// consistent calling-convention ABI across toolchains.
+enum class evaluation_semantic : __UINT16_TYPE__ {
+  unspecified = 0,
+  ignore = 1, observe = 2, enforce = 3, quick_enforce = 4,
+  assume = 5, // P3100 "assume" evaluation semantic
+  noexcept_observe = 6, noexcept_enforce = 7 // D4298
+};
+using _EvaluationSemantic = evaluation_semantic;
+enum class detection_mode : unsigned char {
+  unspecified = 0,
+  predicate_false = 1, evaluation_exception = 2,
+};
+using _DetectionMode = detection_mode;
+
+class evaluation_semantic_set {
+  unsigned _M_bits = 0;
+  constexpr explicit evaluation_semantic_set(unsigned __b) : _M_bits(__b) {}
+public:
+  constexpr evaluation_semantic_set() = default;
+  constexpr evaluation_semantic_set(const evaluation_semantic_set&) = default;
+  constexpr evaluation_semantic_set(evaluation_semantic __s)
+    : _M_bits(1u << static_cast<unsigned>(__s)) {}
+  constexpr evaluation_semantic_set(std::initializer_list<evaluation_semantic> __il)
+    : _M_bits(0)
+  { for (auto __s : __il) _M_bits |= (1u << static_cast<unsigned>(__s)); }
+  constexpr bool contains(evaluation_semantic __s) const
+  { return _M_bits & (1u << static_cast<unsigned>(__s)); }
+  constexpr bool empty() const { return _M_bits == 0; }
+  static constexpr evaluation_semantic_set all()
+  { return evaluation_semantic_set(0x1Eu); }
+  static constexpr evaluation_semantic_set none() { return {}; }
+  friend constexpr evaluation_semantic_set
+  operator&(evaluation_semantic_set __a, evaluation_semantic_set __b)
+  { return evaluation_semantic_set(__a._M_bits & __b._M_bits); }
+  friend constexpr evaluation_semantic_set
+  operator|(evaluation_semantic_set __a, evaluation_semantic_set __b)
+  { return evaluation_semantic_set(__a._M_bits | __b._M_bits); }
+  friend constexpr bool
+  operator==(evaluation_semantic_set __a, evaluation_semantic_set __b)
+  { return __a._M_bits == __b._M_bits; }
+};
+
+enum class violation_handled : int { not_handled = 0, handled = 1 };
+
+class contract_violation {
+public:
+  explicit contract_violation(
+      const __cxxabiv1::__cxa_contract_data_block* __chain) noexcept
+    : __chain_(__chain) {}
+
+  ~contract_violation()                                    = default;
+  contract_violation(const contract_violation&)            = delete;
+  contract_violation& operator=(const contract_violation&) = delete;
+
+  assertion_kind kind() const noexcept {
+    using namespace __cxxabiv1;
+    auto __raw = __cxa_find_field_value<__UINT8_TYPE__>(
+        __chain_, CXA_FIELD_ASSERTION_KIND, CXA_AK_UNSPECIFIED);
+    return static_cast<assertion_kind>(__raw);
+  }
+
+  evaluation_semantic semantic() const noexcept {
+    using namespace __cxxabiv1;
+    auto __raw = __cxa_find_field_value<__UINT8_TYPE__>(
+        __chain_, CXA_FIELD_EVALUATION_SEMANTIC, CXA_ES_UNSPECIFIED);
+    return static_cast<evaluation_semantic>(__raw);
+  }
+
+  _DetectionMode detection_mode() const noexcept {
+    using namespace __cxxabiv1;
+    auto __raw = __cxa_find_field_value<__UINT8_TYPE__>(
+        __chain_, CXA_FIELD_DETECTION_MODE, CXA_DM_UNSPECIFIED);
+    return static_cast<_DetectionMode>(__raw);
+  }
+
+  const char* comment() const noexcept {
+    using namespace __cxxabiv1;
+    auto __p = __cxa_find_field_ptr<const char*>(
+        __chain_, CXA_FIELD_COMMENT);
+    return __p ? *__p : "";
+  }
+
+  const char* message() const noexcept {
+    using namespace __cxxabiv1;
+    auto __p = __cxa_find_field_ptr<const char*>(
+        __chain_, CXA_FIELD_MESSAGE);
+    // Unlike comment(), a missing message field yields nullptr, not "": P3099
+    // "Option C1" keeps "no message supplied" (nullptr) distinct from an empty
+    // message (""), so a violation with no diagnostic-message field at all (a
+    // P3290 API/C-assert violation, or a C++26 TU) reports nullptr.
+    return __p ? *__p : nullptr;
+  }
+
+#if defined(__cpp_lib_contracts_report) || defined(_LIBCPP_BUILDING_LIBRARY)
+  // D4301: finds the CXA_FIELD_REPORT populator (if any) and invokes it on
+  // demand.  Returns nullptr when no report field is present -- the common
+  // case for ordinary contract violations -- so the populator is never called
+  // unless a caller actually asks for the report.  noexcept: rendering the
+  // ASan/UBSan diagnostic on demand may allocate (and a populator could
+  // throw), so the definition guards the call in a try/catch and returns the
+  // static-storage literal "Error generating report" if it throws.  Defined
+  // out of line in the library (contracts_abi.cpp) rather than inline like the
+  // other accessors, so it carries _LIBCPP_EXPORTED_FROM_ABI to be visible
+  // across translation units.
+  _LIBCPP_EXPORTED_FROM_ABI const char* report() const noexcept;
+#endif
+
+  std::source_location location() const noexcept {
+    using namespace __cxxabiv1;
+    auto __p = __cxa_find_field_ptr<__cxa_source_location>(
+        __chain_, CXA_FIELD_SOURCE_LOCATION);
+    if (__p)
+      return std::source_location::__create_from_pointer(__p);
+    return std::source_location{};
+  }
+
+  bool is_terminating() const noexcept {
+    return semantic() == evaluation_semantic::enforce
+        || semantic() == evaluation_semantic::quick_enforce
+        || semantic() == evaluation_semantic::noexcept_enforce;
+  }
+
+  void* query_control_object(const void* __key,
+                             std::size_t __index = 0) const {
+    using namespace __cxxabiv1;
+    auto __query_fn = __cxa_find_field_value<__cxa_query_fn_t>(
+        __chain_, CXA_FIELD_QUERY_FUNCTION, nullptr);
+    auto __label_ptr = __cxa_find_field_value<const void*>(
+        __chain_, CXA_FIELD_LABEL_PTR, nullptr);
+    if (__query_fn && __label_ptr)
+      return __query_fn(__label_ptr, __key, __index);
+    return nullptr;
+  }
+
+private:
+  const __cxxabiv1::__cxa_contract_data_block* __chain_;
+};
+
+_LIBCPP_EXPORTED_FROM_ABI void invoke_default_contract_violation_handler(const contract_violation&) noexcept;
+
+_LIBCPP_EXPORTED_FROM_ABI void __handle_manual_contract_violation(
+  assertion_kind __kind,
+  evaluation_semantic __semantic,
+  detection_mode __mode,
+  const char* __comment,
+  std::source_location __loc,
+  bool __can_throw
+);
+
+
+namespace std::contracts {
+
+inline void handle_observed_contract_violation(
+    const char* __comment,
+    const std::source_location &__loc = std::source_location::current()) {
+  __handle_manual_contract_violation(assertion_kind::manual,
+                                     evaluation_semantic::observe, detection_mode::unspecified,
+                                     __comment, __loc,
+                                     /*__can_throw=*/true);
+}
+
+[[noreturn]]  inline void handle_enforced_contract_violation(
+    const char* __comment,
+    const std::source_location &__loc = std::source_location::current()) {
+  __handle_manual_contract_violation(assertion_kind::manual,
+                                     evaluation_semantic::enforce, detection_mode::unspecified,
+                                     __comment, __loc, /*__can_throw=*/true);
+  __libcpp_unreachable();
+}
+
+[[noreturn]] inline void handle_quick_enforced_contract_violation(
+    const char* __comment,
+    const std::source_location& __loc = std::source_location::current()
+    ) noexcept {
+  (void)__comment;
+  (void)__loc;
+  __builtin_trap();
+  __libcpp_unreachable();
+}
+
+// D4298: the nothrow_t overloads report the *noexcept* evaluation semantics
+// only when the calling translation unit was compiled with -fcontracts-p4298
+// (which predefines __cpp_contracts_nonthrowing_semantics).  To make this a
+// per-caller-TU decision without an ODR violation, the P4298 variants live in
+// the inline namespace std::contracts::__p4298: a caller with the flag binds
+// std::contracts::handle_*_contract_violation (via the inline namespace) to
+// the distinct mangled symbol std::contracts::__p4298::handle_*_contract_
+// violation (reporting noexcept_enforce/noexcept_observe), while a caller
+// without the flag binds the plain std::contracts symbol (reporting
+// enforce/observe).  Because a given TU compiles exactly one of the two
+// variants (the macro selects both the namespace and the reported semantic),
+// each mangled name has exactly one definition across all TUs -- so a
+// mixed-flag program is well-formed and a non-inlined call lands on the
+// symbol matching the caller's own flag.
+#ifdef __cpp_contracts_nonthrowing_semantics
+__attribute__((weak)) void handle_contract_violation(const std::contracts::contract_violation&);
+
+#endif // _LIBCPP_CONTRACTS
