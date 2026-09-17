@@ -10451,6 +10451,84 @@ ASTContext::BuildViolationObject(const ContractStmt *CS,
                               CurDecl);
 }
 
+// P3100: build a violation object for a compiler-synthesized implicit contract
+// assertion (no ContractStmt), from a raw source location and comment.
+UnnamedGlobalConstantDecl *
+ASTContext::BuildViolationObject(SourceLocation Loc, StringRef Comment,
+                                 std::optional<StringRef> Message,
+                                 const FunctionDecl *CurDecl) {
+  auto &Ctx = *this;
+
+  PresumedLoc PLoc = Ctx.getSourceManager().getPresumedLoc(
+      Ctx.getSourceManager().getExpansionRange(Loc).getEnd());
+
+  auto MakeStringLiteral = [&](StringRef Tmp) {
+    using LValuePathEntry = APValue::LValuePathEntry;
+    StringLiteral *Res = Ctx.getPredefinedStringLiteralFromCache(Tmp);
+    // Decay the string to a pointer to the first character.
+    LValuePathEntry Path[1] = {LValuePathEntry::ArrayIndex(0)};
+    return APValue(Res, CharUnits::Zero(), Path, /*OnePastTheEnd=*/false);
+  };
+
+  auto MakeNullPtr = [&]() {
+    return APValue((const Expr *)nullptr, CharUnits::Zero(),
+                   ArrayRef<APValue::LValuePathEntry>(),
+                   /*OnePastTheEnd=*/false);
+  };
+
+  const RecordDecl *ImplDecl =
+      dyn_cast_or_null<RecordDecl>(getBuiltinContractViolationRecordDecl());
+  assert(ImplDecl);
+
+  // Data block has 8 fields: descriptor, next, file, function, line, column,
+  // comment, message.
+  APValue Value(APValue::UninitStruct(), 0, 8);
+  for (const FieldDecl *F : ImplDecl->fields()) {
+    StringRef Name = F->getName();
+    if (Name == "__descriptor_") {
+      // Will be patched by codegen to point to the descriptor table.
+      // For now, emit a null pointer that codegen will replace.
+      Value.getStructField(F->getFieldIndex()) = MakeNullPtr();
+    } else if (Name == "__next_") {
+      // Null -- single-block chain.
+      Value.getStructField(F->getFieldIndex()) = MakeNullPtr();
+    } else if (Name == "__file_") {
+      SmallString<256> Path(PLoc.getFilename());
+      clang::Preprocessor::processPathForFileMacro(Path, Ctx.getLangOpts(),
+                                                   Ctx.getTargetInfo());
+      Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(Path);
+    } else if (Name == "__function_") {
+      // PrettyFunction name, matching GCC's cxx_printable_name.
+      Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(
+          CurDecl && !isa<TranslationUnitDecl>(CurDecl)
+              ? StringRef(PredefinedExpr::ComputeName(
+                    PredefinedIdentKind::PrettyFunction, CurDecl))
+              : "");
+    } else if (Name == "__line_") {
+      llvm::APSInt IntVal = Ctx.MakeIntValue(PLoc.getLine(), F->getType());
+      Value.getStructField(F->getFieldIndex()) = APValue(IntVal);
+    } else if (Name == "__column_") {
+      llvm::APSInt IntVal = Ctx.MakeIntValue(PLoc.getColumn(), F->getType());
+      Value.getStructField(F->getFieldIndex()) = APValue(IntVal);
+    } else if (Name == "__comment_") {
+      Value.getStructField(F->getFieldIndex()) = MakeStringLiteral(Comment);
+    } else if (Name == "__message_") {
+      // P3099: message() is null when no diagnostic message was supplied, so
+      // "no message" is distinguishable from an explicit empty message ("").
+      Value.getStructField(F->getFieldIndex()) =
+          Message ? MakeStringLiteral(*Message) : MakeNullPtr();
+    } else {
+      llvm_unreachable(
+          "unexpected field in __builtin_contract_violation_info_t");
+    }
+  }
+  QualType QT =
+      Ctx.getBuiltinContractViolationRecordType().getUnqualifiedType();
+  UnnamedGlobalConstantDecl *GV = Ctx.getUnnamedGlobalConstantDecl(QT, Value);
+
+  return GV;
+}
+
 static TypedefDecl *CreateHexagonBuiltinVaListDecl(const ASTContext *Context) {
   // typedef struct __va_list_tag {
   RecordDecl *VaListTagDecl;

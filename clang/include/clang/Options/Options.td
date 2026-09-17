@@ -1908,6 +1908,12 @@ defm contracts_p3850 : BoolFOption<"contracts-p3850",
           "Enable P3850 contract extensions (implies -fcontracts-p3097, -fcontracts-p3098, -fcontracts-p3099, -fcontracts-p3100, -fcontracts-p3290, -fcontracts-p3400, -fcontracts-p4283, -fcontracts-p4298, -fcontracts-p4301)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p3100 : BoolFOption<"contracts-p3100",
+  LangOpts<"ContractsP3100">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3100 implicit contract assertions and the assume evaluation semantic">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p4298 : BoolFOption<"contracts-p4298",
   LangOpts<"ContractsP4298">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
@@ -2987,6 +2993,43 @@ def fno_sanitize_recover : Flag<["-"], "fno-sanitize-recover">,
                            Visibility<[ClangOption, CLOption]>,
                            Group<f_clang_Group>,
                            Alias<fno_sanitize_recover_EQ>, AliasArgs<["all"]>;
+// P3100: contract-evaluation semantic per sanitizer check.  <check> uses the
+// same taxonomy as -fsanitize=/-fsanitize-recover= (groups such as "undefined"
+// and "all" expand to their members); <semantic> is a contract evaluation
+// semantic name (e.g. observe, noexcept_enforce, quick_enforce).  Parsed and
+// validated in the driver (SanitizerArgs); the driver re-renders the resolved
+// per-check semantics to cc1 for CodeGen (CL2) to consume.  RejectNegative:
+// there is no -fno- form (a check can never be silently skipped).
+def fsanitize_semantic_EQ : CommaJoined<["-"], "fsanitize-semantic=">,
+                            Group<f_clang_Group>,
+                            Visibility<[ClangOption, CC1Option]>,
+                            HelpText<"Set the contract evaluation semantic for "
+                                     "a sanitizer check "
+                                     "(<check>:<semantic>[,...])">;
+// Debug-only testing seam: print the resolved (explicit-or-derived) contract
+// evaluation semantic for every enabled sanitizer check to stderr as
+// "<check>: <semantic>" lines.  Mirrors GCC's -fsanitize-semantic-print; not a
+// documented user-facing flag.
+def fsanitize_semantic_print : Flag<["-"], "fsanitize-semantic-print">,
+                               Group<f_clang_Group>,
+                               Visibility<[ClangOption, CC1Option]>,
+                               HelpText<"Print the resolved contract evaluation "
+                                        "semantic for each enabled sanitizer "
+                                        "check (debug seam)">;
+// P3100 Task 3.1: global opt-out.  When set, the compiler does not emit the
+// ASan contract-routing descriptor (__asan_contract_semantic, CL2), so the
+// runtime reads stock (0) and takes its stock report path; the runtime
+// guardrail (Task 3.2), which keys off the same descriptor, is disengaged
+// too.  Orthogonal to assume (still realized per-function by clearing the
+// SanitizeAddress attribute) and to the -fsanitize-semantic= allowed-set
+// validation (CL1), which still applies during option processing; it only
+// affects runtime report routing and the guardrail.
+def fsanitize_noncontract_callbacks
+    : Flag<["-"], "fsanitize-noncontract-callbacks">,
+      Group<f_clang_Group>,
+      Visibility<[ClangOption, CC1Option]>,
+      HelpText<"Use the sanitizer's stock reporting/callbacks instead of "
+               "P3100 contract routing">;
 def fsanitize_trap_EQ : CommaJoined<["-"], "fsanitize-trap=">, Group<f_clang_Group>,
                         HelpText<"Enable trapping for specified sanitizers">;
 def fno_sanitize_trap_EQ : CommaJoined<["-"], "fno-sanitize-trap=">, Group<f_clang_Group>,

@@ -780,6 +780,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_contracts_labels", "202606L");
   if (LangOpts.ContractsP4283)
     Builder.defineMacro("__cpp_contracts_requires", "202606L");
+  if (LangOpts.ContractsP3100)
+    Builder.defineMacro("__clang_contracts_p3100", "202606L");
   if (LangOpts.ContractsP4298)
     Builder.defineMacro("__cpp_contracts_nonthrowing_semantics", "202607L");
   if (LangOpts.ContractsP4301)

@@ -1800,23 +1800,31 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   //   function call is used by the caller, the behavior is undefined.
   if (getLangOpts().CPlusPlus && !FD->hasImplicitReturnZero() && !SawAsmBlock &&
       !FD->getReturnType()->isVoidType() && Builder.GetInsertBlock()) {
-    bool ShouldEmitUnreachable =
-        CGM.getCodeGenOpts().StrictReturn ||
-        !CGM.MayDropFunctionReturn(FD->getASTContext(), FD->getReturnType());
-    if (SanOpts.has(SanitizerKind::Return)) {
-      auto CheckOrdinal = SanitizerKind::SO_Return;
-      auto CheckHandler = SanitizerHandler::MissingReturn;
-      SanitizerDebugLocation SanScope(this, {CheckOrdinal}, CheckHandler);
-      llvm::Value *IsFalse = Builder.getFalse();
-      EmitCheck(std::make_pair(IsFalse, CheckOrdinal), CheckHandler,
-                EmitCheckSourceLocation(FD->getLocation()), {});
-    } else if (ShouldEmitUnreachable) {
-      if (CGM.getCodeGenOpts().OptimizationLevel == 0)
-        EmitTrapCall(llvm::Intrinsic::trap);
-    }
-    if (SanOpts.has(SanitizerKind::Return) || ShouldEmitUnreachable) {
-      Builder.CreateUnreachable();
-      Builder.ClearInsertionPoint();
+    // P3100: if implicit contract assertions are enabled and this flow-off-end
+    // ({stmt.return.flow.off}) assertion resolves to a non-"assume" semantic,
+    // emit its reaction (terminate / handler / defined return) and skip the
+    // default missing-return handling below.
+    if (getLangOpts().ContractsP3100 && EmitImplicitFlowOffReaction(FD)) {
+      // Handled by the implicit contract assertion.
+    } else {
+      bool ShouldEmitUnreachable =
+          CGM.getCodeGenOpts().StrictReturn ||
+          !CGM.MayDropFunctionReturn(FD->getASTContext(), FD->getReturnType());
+      if (SanOpts.has(SanitizerKind::Return)) {
+        auto CheckOrdinal = SanitizerKind::SO_Return;
+        auto CheckHandler = SanitizerHandler::MissingReturn;
+        SanitizerDebugLocation SanScope(this, {CheckOrdinal}, CheckHandler);
+        llvm::Value *IsFalse = Builder.getFalse();
+        EmitCheck(std::make_pair(IsFalse, CheckOrdinal), CheckHandler,
+                  EmitCheckSourceLocation(FD->getLocation()), {});
+      } else if (ShouldEmitUnreachable) {
+        if (CGM.getCodeGenOpts().OptimizationLevel == 0)
+          EmitTrapCall(llvm::Intrinsic::trap);
+      }
+      if (SanOpts.has(SanitizerKind::Return) || ShouldEmitUnreachable) {
+        Builder.CreateUnreachable();
+        Builder.ClearInsertionPoint();
+      }
     }
   }
   // Emit the standard function epilogue.
