@@ -448,6 +448,11 @@ CONTRACTS_KEYWORD(contract_assert)
 ALIAS("__contract_assert"        , contract_assert      , KEYCXX11)
 CONTRACTS_P3400_KEYWORD(contract_control)
 
+// C contracts keywords (D4299)
+CONTRACTS_KEYWORD(_Pre)
+CONTRACTS_KEYWORD(_Post)
+CONTRACTS_KEYWORD(_ContractAssert)
+
 // Not a CXX20_KEYWORD because it is disabled by -fno-char8_t.
 KEYWORD(char8_t                     , CHAR8SUPPORT)
 

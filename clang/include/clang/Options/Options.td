@@ -1925,6 +1925,12 @@ defm contract_bypass_rethrowing_local_handler :
           "propagate. A predicate that is merely false reaches the handler "
           "either way.">>;
 
+defm contracts_p4299 : BoolFOption<"contracts-p4299",
+  LangOpts<"ContractsP4299">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable C contracts support (D4299)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,
