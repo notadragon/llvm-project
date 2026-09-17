@@ -9390,6 +9390,25 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
     Label = LabelRes.get();
   }
 
+  Expr *RequiresClause = nullptr;
+  if (S->hasRequiresClause()) {
+    ExprResult RCRes = getDerived().TransformExpr(S->getRequiresClause());
+    if (RCRes.isInvalid())
+      return StmtError();
+    RequiresClause = RCRes.get();
+    // P4283: If the requires clause is non-dependent and not satisfied,
+    // discard the contract (return a NullStmt).
+    if (RequiresClause && !RequiresClause->isValueDependent()) {
+      bool Satisfied = true;
+      if (auto *CSE = dyn_cast<ConceptSpecializationExpr>(RequiresClause))
+        Satisfied = CSE->isSatisfied();
+      else
+        RequiresClause->EvaluateAsBooleanCondition(Satisfied, SemaRef.Context);
+      if (!Satisfied)
+        return new (SemaRef.Context) NullStmt(S->getKeywordLoc());
+    }
+  }
+
   return getDerived().RebuildContractStmt(
       S->getContractKind(), S->getKeywordLoc(), Cond,
       cast_or_null<DeclStmt>(NewResultName.get()), Message, Label, Captures,

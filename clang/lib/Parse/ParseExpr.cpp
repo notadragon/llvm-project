@@ -194,7 +194,8 @@ ExprResult Parser::ParseConstraintExpression() {
 }
 
 ExprResult
-Parser::ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause) {
+Parser::ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause,
+                                            bool IsContractRequiresClause) {
   EnterExpressionEvaluationContext ConstantEvaluated(
       Actions, Sema::ExpressionEvaluationContext::Unevaluated);
   bool NotPrimaryExpression = false;
@@ -230,7 +231,11 @@ Parser::ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause) {
         // Postfix operators other than '(' (which will be checked for in
         // CheckConstraintExpression).
         Tok.isOneOf(tok::period, tok::plusplus, tok::minusminus) ||
-        (Tok.is(tok::l_square) && !NextToken().is(tok::l_square))) {
+        // In a P4283 contract requires-clause a following '[' introduces the
+        // postcondition captures, not a subscript, so it terminates the
+        // constraint rather than being recovered into it.
+        (!IsContractRequiresClause && Tok.is(tok::l_square) &&
+         !NextToken().is(tok::l_square))) {
       E = RecoverFromNonPrimary(E, /*Note=*/false);
       if (E.isInvalid())
         return ExprError();
@@ -271,14 +276,16 @@ Parser::ParseConstraintLogicalAndExpression(bool IsTrailingRequiresClause) {
 }
 
 ExprResult
-Parser::ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause) {
-  ExprResult LHS(ParseConstraintLogicalAndExpression(IsTrailingRequiresClause));
+Parser::ParseConstraintLogicalOrExpression(bool IsTrailingRequiresClause,
+                                           bool IsContractRequiresClause) {
+  ExprResult LHS(ParseConstraintLogicalAndExpression(IsTrailingRequiresClause,
+                                                     IsContractRequiresClause));
   if (!LHS.isUsable())
     return ExprError();
   while (Tok.is(tok::pipepipe)) {
     SourceLocation LogicalOrLoc = ConsumeToken();
-    ExprResult RHS =
-        ParseConstraintLogicalAndExpression(IsTrailingRequiresClause);
+    ExprResult RHS = ParseConstraintLogicalAndExpression(
+        IsTrailingRequiresClause, IsContractRequiresClause);
     if (!RHS.isUsable()) {
       return ExprError();
     }
@@ -1084,6 +1091,16 @@ Parser::ParseCastExpression(CastParseKind ParseKind, bool isAddressOfOperand,
   case tok::kw__Generic:   // primary-expression: generic-selection [C11 6.5.1]
     Res = ParseGenericSelectionExpression();
     break;
+  case tok::kw_contract_control: {
+    ConsumeToken();
+    BalancedDelimiterTracker T(*this, tok::l_paren);
+    if (T.expectAndConsume(diag::err_expected_lparen_after, "contract_control"))
+      return ExprError();
+    llvm::SaveAndRestore SetFlag(Actions.InAssertionControlExpression, true);
+    Res = ParseConstantExpression();
+    T.consumeClose();
+    break;
+  }
   case tok::kw___builtin_available:
     Res = ParseAvailabilityCheckExpr(Tok.getLocation());
     break;

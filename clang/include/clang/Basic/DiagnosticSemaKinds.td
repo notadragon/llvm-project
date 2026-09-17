@@ -13212,6 +13212,10 @@ def err_contract_facet_not_constant : Error<
 def err_contract_invalid_label : Error<
   "value of type %0 is not a valid assertion-control label; its type must be a "
   "class type with an 'assertion_control_object' member type">;
+// P4283 requires clause on contracts diagnostics
+def err_contract_requires_clause_non_template : Error<
+  "requires clause on contract assertion is only allowed on templated functions">;
+
 // P3097 virtual function contracts diagnostics
 def err_contracts_on_virtual_require_flag : Error<
   "contracts on virtual functions require '-fcontracts-p3097'">;

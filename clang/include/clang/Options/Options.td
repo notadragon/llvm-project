@@ -1896,6 +1896,12 @@ defm contracts_p3400 : BoolFOption<"contracts-p3400",
           "Enable P3400 assertion-control labels">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p4283 : BoolFOption<"contracts-p4283",
+  LangOpts<"ContractsP4283">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4283 requires clauses on contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p3850 : BoolFOption<"contracts-p3850",
   LangOpts<"ContractsP3850">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
