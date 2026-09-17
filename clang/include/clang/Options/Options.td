@@ -1866,6 +1866,12 @@ defm contract_lambda_capture_restrictions : BoolFOption<"contract-lambda-capture
   NegFlag<SetFalse, [], [ClangOption, CC1Option],
     "Disable restrictions on lambda captures caused exclusively by contracts">>;
 
+defm contracts_p3850 : BoolFOption<"contracts-p3850",
+  LangOpts<"ContractsP3850">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3850 contract extensions (implies -fcontracts-p3097, -fcontracts-p3098, -fcontracts-p3099, -fcontracts-p3100, -fcontracts-p3290, -fcontracts-p3400, -fcontracts-p4283, -fcontracts-p4298, -fcontracts-p4301)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,
