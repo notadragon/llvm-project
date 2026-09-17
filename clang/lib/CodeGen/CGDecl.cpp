@@ -107,6 +107,7 @@ void CodeGenFunction::EmitDecl(const Decl &D, bool EvaluateConditionDecl) {
   case Decl::Binding:
   case Decl::UnresolvedUsingIfExists:
   case Decl::HLSLBuffer:
+  case Decl::ContractSpecifier:
   case Decl::HLSLRootSignature:
     llvm_unreachable("Declaration should not be in declstmts!");
   case Decl::Record:    // struct/union/class X;
@@ -150,6 +151,9 @@ void CodeGenFunction::EmitDecl(const Decl &D, bool EvaluateConditionDecl) {
     EmitStmt(ESD->getInstantiations());
     return;
   }
+  case Decl::ResultName:
+    // A result name is never emitted as a function-body declaration.
+    llvm_unreachable("result name in function");
 
   case Decl::NamespaceAlias:
     if (CGDebugInfo *DI = getDebugInfo())
@@ -172,7 +176,8 @@ void CodeGenFunction::EmitDecl(const Decl &D, bool EvaluateConditionDecl) {
       DI->EmitUsingDirective(cast<UsingDirectiveDecl>(D));
     return;
   case Decl::Var:
-  case Decl::Decomposition: {
+  case Decl::Decomposition:
+  case Decl::PostconditionCapture: {
     const VarDecl &VD = cast<VarDecl>(D);
     assert(VD.isLocalVarDecl() &&
            "Should not see file-scope variables inside a function!");

@@ -39,6 +39,7 @@
 #include "llvm/ABI/TargetInfo.h"
 #include "llvm/ABI/Types.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Assumptions.h"
@@ -4386,6 +4387,8 @@ void CodeGenFunction::EmitFunctionEpilog(
 
   // Functions with no result always return void.
   if (!ReturnValue.isValid()) {
+    if (!PostContractsHandledByPrologueCleanup)
+      EmitPostContractsWithRetvalCleanup(nullptr);
     auto *I = Builder.CreateRetVoid();
     if (RetKeyInstructionsSourceAtom)
       addInstToSpecificSourceAtom(I, nullptr, RetKeyInstructionsSourceAtom);
@@ -4567,9 +4570,30 @@ void CodeGenFunction::EmitFunctionEpilog(
       if (ITy != nullptr && isa<RecordType>(RetTy.getCanonicalType()))
         RV = EmitCMSEClearRecord(RV, ITy, RetTy);
     }
+    if (!PostContractsHandledByPrologueCleanup) {
+      RV = EmitPostContractsWithRetvalCleanup(RV);
+
+      // A Direct/Extend result that is COERCED is not a plain load of the
+      // return slot -- a small class comes back as { i64, i64 } or i32 -- so
+      // EmitPostContracts could not re-read it and left RV alone.  The slot
+      // is still where the result binding lives and where a predicate's
+      // writes landed, so redo the coercion here, exactly as it was done
+      // above.  Without this a mutation through a class-typed result binding
+      // is silently dropped.
+      if (ContractResultBoundToReturnSlot && HaveInsertPoint() &&
+          (RetAI.getKind() == ABIArgInfo::Extend ||
+           RetAI.getKind() == ABIArgInfo::Direct) &&
+          !(RetAI.getCoerceToType() == ConvertType(RetTy) &&
+            RetAI.getDirectOffset() == 0)) {
+        Address V = emitAddressAtOffset(*this, ReturnValue, RetAI);
+        RV = CreateCoercedLoad(V, RetTy, RetAI.getCoerceToType(), *this);
+      }
+    }
     EmitReturnValueCheck(RV);
     Ret = Builder.CreateRet(RV);
   } else {
+    if (!PostContractsHandledByPrologueCleanup)
+      EmitPostContractsWithRetvalCleanup(nullptr);
     Ret = Builder.CreateRetVoid();
   }
 
@@ -4581,6 +4605,99 @@ void CodeGenFunction::EmitFunctionEpilog(
     addInstToSpecificSourceAtom(Ret, Backup, RetKeyInstructionsSourceAtom);
   else
     addInstToNewSourceAtom(Ret, Backup);
+}
+
+llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
+  SmallVector<const ContractStmt *, 4> PostContracts;
+  const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl);
+
+  if (!FD || !FD->hasContracts())
+    return RV;
+
+  ContractSpecifierDecl *CSD = FD->getContracts();
+  assert(CSD);
+
+  std::optional<OpaqueValueExpr> OVEStore;
+  std::optional<OpaqueValueMapping> OVEBind;
+  // Whether the binding was made against the return slot, which is what makes
+  // re-reading that slot afterwards meaningful.
+  bool BoundToReturnSlot = false;
+  if (auto CRD = CSD->getCanonicalResultName(); CRD && RV) {
+    QualType ResultTy = CRD->getType();
+    Builder.CreateStore(RV, ReturnValue);
+    if (const auto *RefTy = ResultTy->getAs<ReferenceType>()) {
+      // A reference-returning function.  The slot holds the reference itself
+      // (a pointer) and the binding names the referred-to object, so the
+      // OpaqueValueExpr is of the POINTEE type -- an Expr may not have
+      // reference type, and building one with it asserts here.
+      // EmitDeclRefLValue loads the slot to find that object.
+      //
+      // Nothing needs re-reading afterwards: a write through the binding goes
+      // straight to the referred-to object, and the reference itself is const.
+      QualType Pointee = RefTy->getPointeeType();
+      OVEStore.emplace(CRD->getLocation(), Pointee, VK_LValue, OK_Ordinary,
+                       nullptr);
+      OVEBind.emplace(*this, &OVEStore.value(),
+                      MakeNaturalAlignPointeeAddrLValue(RV, Pointee));
+    } else {
+      OVEStore.emplace(CRD->getLocation(), ResultTy, VK_LValue, OK_Ordinary,
+                       nullptr);
+      OVEBind.emplace(*this, &OVEStore.value(),
+                      MakeAddrLValue(ReturnValue, ResultTy));
+      BoundToReturnSlot = true;
+    }
+  }
+  ContractResultBoundToReturnSlot = BoundToReturnSlot;
+
+  disableDebugInfo();
+  auto Reenabler = llvm::scope_exit([this]() { enableDebugInfo(); });
+  for (auto *CA : FD->postconditions()) {
+    // P3098: a postcondition whose capture construction threw under
+    // 'observe' must have its predicate skipped entirely, not evaluated
+    // against a partially/un-constructed capture.
+    llvm::Value *CaptureFailed =
+        CA->hasCaptures() ? LoadPostconditionCaptureFailed(CA) : nullptr;
+    if (!CaptureFailed) {
+      EmitStmt(CA);
+      continue;
+    }
+    llvm::BasicBlock *EvalBB = createBasicBlock("contract.post.eval");
+    llvm::BasicBlock *SkipBB = createBasicBlock("contract.post.skip");
+    Builder.CreateCondBr(CaptureFailed, SkipBB, EvalBB);
+    EmitBlock(EvalBB);
+    EmitStmt(CA);
+    if (HaveInsertPoint())
+      Builder.CreateBr(SkipBB);
+    EmitBlock(SkipBB);
+  }
+  enableDebugInfo();
+
+  // The result binding names the return slot -- OVEBind above bound it to
+  // ReturnValue, after storing RV there -- so a predicate that mutates it
+  // has written to that slot and RV is now stale.  The caller is about to
+  // return RV, so re-read it.
+  //
+  // A predicate we evaluate is evaluated faithfully: [basic.contract.eval]
+  // permits not evaluating one, but not evaluating one and then discarding
+  // what it did.  GCC makes the same mutation observable (gnu_gcc
+  // 20eed05e8c4).
+  //
+  // Only when we did the store: with no result name there is nothing bound
+  // to the slot, and with no RV there is nothing to re-read.
+  //
+  // And only when a plain load reproduces what the caller is returning.  RV
+  // is not always a straight load of the slot -- a small class comes back
+  // coerced to some other type ({ i64, i64 } for a four-int struct, i32 for a
+  // one-int struct) -- and re-reading the slot there yields the wrong IR type
+  // and a broken module.  Comparing the types keeps this to the case the
+  // epilogue itself would have loaded.  An indirectly-returned (sret) result
+  // needs nothing: the callee writes the caller's object directly, so the
+  // mutation is already visible.
+  if (BoundToReturnSlot && HaveInsertPoint() &&
+      RV->getType() == ReturnValue.getElementType())
+    RV = Builder.CreateLoad(ReturnValue, "contract.post.retval");
+
+  return RV;
 }
 
 void CodeGenFunction::EmitReturnValueCheck(llvm::Value *RV) {

@@ -19,6 +19,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtSYCL.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/Builtins.h"
@@ -169,6 +170,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
     break;
   case Stmt::CoreturnStmtClass:
     EmitCoreturnStmt(cast<CoreturnStmt>(*S));
+    break;
+  case Stmt::ContractStmtClass:
+    EmitContractStmt(cast<ContractStmt>(*S));
     break;
   case Stmt::CapturedStmtClass: {
     const CapturedStmt *CS = cast<CapturedStmt>(S);
@@ -1723,6 +1727,12 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
   ++NumReturnExprs;
   if (!RV || RV->isEvaluatable(getContext()))
     ++NumSimpleReturnExprs;
+
+  // The returned object now exists.  Everything still to come -- destroying
+  // the return expression's temporaries, then the enclosing scopes' locals --
+  // can throw, and [except.ctor]/2 requires the returned object to be
+  // destroyed if it does.  Arm the cleanup pushed in StartFunction.
+  setReturnValueLive();
 
   cleanupScope.ForceCleanup();
   EmitBranchThroughCleanup(ReturnBlock);

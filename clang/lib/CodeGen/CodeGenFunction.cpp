@@ -33,9 +33,12 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
+#include "clang/Frontend/FrontendDiagnostic.h"
+#include "clang/Lex/Lexer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Frontend/OpenMP/OMPIRBuilder.h"
@@ -496,6 +499,11 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
     }
   }
 
+  // One shared enforce block may exist per assertion kind (Pre/Post/Assert).
+  for (ContractKind Kind :
+       {ContractKind::Pre, ContractKind::Post, ContractKind::Assert})
+    EmitIfUsed(*this, GetSharedContractViolationEnforceBlock(Kind, false));
+  EmitIfUsed(*this, GetSharedContractViolationTrapBlock(false));
   EmitIfUsed(*this, EHResumeBlock);
   EmitIfUsed(*this, TerminateLandingPad);
   EmitIfUsed(*this, TerminateHandler);
@@ -753,6 +761,51 @@ static llvm::Constant *getPrologueSignature(CodeGenModule &CGM,
     if (!MD->isStatic())
       return nullptr;
   return CGM.getTargetCodeGenInfo().getUBSanFunctionSignature(CGM);
+}
+
+namespace {
+/// Destroys the returned object when an exception escapes the function after
+/// that object has been initialized -- [except.ctor]/2.  The object lives in
+/// the caller's storage, so no scope cleanup of the callee's covers it.
+///
+/// Only fires once the object exists, which LiveFlag records; before the
+/// return statement runs there is nothing to destroy, and a named return value
+/// is still owned by its own variable's cleanup.
+struct DestroyReturnValueOnUnwind final : EHScopeStack::Cleanup {
+  Address Loc;
+  QualType Ty;
+  llvm::Value *LiveFlag;
+
+  DestroyReturnValueOnUnwind(Address loc, QualType ty, llvm::Value *liveFlag)
+      : Loc(loc), Ty(ty), LiveFlag(liveFlag) {}
+
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    llvm::BasicBlock *RunBB = CGF.createBasicBlock("retval.destroy");
+    llvm::BasicBlock *DoneBB = CGF.createBasicBlock("retval.live.done");
+
+    llvm::Value *Live = CGF.Builder.CreateFlagLoad(LiveFlag, "retval.live");
+    CGF.Builder.CreateCondBr(Live, RunBB, DoneBB);
+
+    CGF.EmitBlock(RunBB);
+    CodeGenFunction::destroyCXXObject(CGF, Loc, Ty);
+    CGF.EmitBranch(DoneBB);
+
+    CGF.EmitBlock(DoneBB);
+  }
+};
+} // namespace
+
+llvm::Value *
+CodeGenFunction::EmitPostContractsWithRetvalCleanup(llvm::Value *RV) {
+  if (!ReturnValueLiveFlag)
+    return EmitPostContracts(RV);
+
+  RunCleanupsScope Scope(*this);
+  EHStack.pushCleanup<DestroyReturnValueOnUnwind>(EHCleanup, ReturnValue,
+                                                  FnRetTy, ReturnValueLiveFlag);
+  RV = EmitPostContracts(RV);
+  Scope.ForceCleanup();
+  return RV;
 }
 
 void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
@@ -1271,6 +1324,54 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
 
   PrologueCleanupDepth = EHStack.stable_begin();
 
+  // A postcondition is checked after the returned object has been initialized
+  // ([stmt.return]/5), so a violation handler that throws unwinds past a live
+  // object in the caller's storage that no scope cleanup of ours covers.
+  // Record whether that object exists, so EmitPostContractsWithRetvalCleanup
+  // can destroy it.  The analogue of GCC's current_retval_sentinel.
+  //
+  // Only the flag is created here, not a cleanup.  A cleanup live across the
+  // body would make EHScopeStack::requiresLandingPad() true from function
+  // entry -- it skips only lifetime markers, not cleanups that are provably
+  // inactive -- turning every potentially-throwing call in the function into
+  // an invoke with a landing pad, to run a cleanup whose flag is still false
+  // there.  The cleanup this flag guards is pushed in the epilogue instead,
+  // after the body is emitted, where it costs nothing.
+  //
+  // Gated on the function actually having a postcondition, so nothing changes
+  // for code that has none.  That deliberately leaves the wider
+  // [except.ctor]/2 case unfixed -- an ordinary local's destructor throwing
+  // after the returned object was initialized, with no contracts involved,
+  // which Clang has never handled.  Fixing that needs the cleanup live across
+  // the body, so it needs the landing-pad cost dealt with first (gate on the
+  // body containing a potentially-throwing destructor, as GCC does).  Tracked
+  // separately; it is a core-language bug, not a contracts one.
+  //
+  // Skipped for a thunk or an implicitly-generated forwarding body (a
+  // lambda's static __invoke, say): those have no return statement of their
+  // own to set the flag.
+  if (getLangOpts().Exceptions && ReturnValue.isValid() &&
+      !RetTy->isVoidType() && !CurFuncIsThunk && CurCodeDecl &&
+      !CurCodeDecl->isImplicit()) {
+    const auto *ContractFD = dyn_cast<FunctionDecl>(CurCodeDecl);
+    bool HasPostcondition = false;
+    if (ContractFD && ContractFD->hasContracts())
+      for (const auto *CS : ContractFD->getContracts()->contracts())
+        if (CS->getContractKind() == ContractKind::Post)
+          HasPostcondition = true;
+
+    if (HasPostcondition)
+      if (const auto *RD = RetTy->getAsCXXRecordDecl())
+        if (RD->hasDefinition() && !RD->hasTrivialDestructor()) {
+          llvm::Value *Zero = Builder.getFalse();
+          RawAddress Flag = CreateTempAlloca(Zero->getType(), CharUnits::One(),
+                                             "retval.live");
+          EnsureInsertPoint();
+          Builder.CreateStore(Zero, Flag);
+          ReturnValueLiveFlag = Flag.getPointer();
+        }
+  }
+
   // Emit OpenMP specific initialization of the device functions.
   if (getLangOpts().OpenMP && CurCodeDecl)
     CGM.getOpenMPRuntime().emitFunctionProlog(*this, CurCodeDecl);
@@ -1565,6 +1666,40 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // Emit the standard function prologue.
   StartFunction(GD, ResTy, Fn, FnInfo, Args, Loc, BodyRange.getBegin());
 
+  // Emit preconditions and postcondition capture initializations in
+  // lexical order (P3098: captures are initialized at function entry).
+  if (FD->hasContracts()) {
+    bool EmittedAnyCapture = false;
+    for (auto *CS : FD->getContracts()->contracts()) {
+      if (CS->getContractKind() == ContractKind::Pre) {
+        EmitStmt(CS);
+      } else if (CS->getContractKind() == ContractKind::Post &&
+                 CS->hasCaptures()) {
+        ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(
+            getContext(),
+            CurFuncDecl ? CurFuncDecl->getDeclContext() : nullptr);
+        // 'assume' lowers to 'ignore' (no check emitted, see
+        // emitCheckForSemantic in CGContracts.cpp): the capture must not be
+        // constructed either, since the whole postcondition is gated as a
+        // unit.
+        if (Sem != ContractEvaluationSemantic::Ignore &&
+            Sem != ContractEvaluationSemantic::Assume) {
+          EmitPostconditionCaptureInit(CS, Sem);
+          EmittedAnyCapture = true;
+        }
+      }
+    }
+    // P3098: once any capture is live, postcondition evaluation must be
+    // ordered ahead of that capture's destructor cleanup (all predicates,
+    // then destroy in reverse) rather than left to run whenever
+    // EmitFunctionEpilog happens to be reached, which is already after the
+    // captures have been destroyed. See EmitPendingPostContracts above.
+    if (EmittedAnyCapture) {
+      EHStack.pushCleanup<EmitPendingPostContracts>(NormalCleanup);
+      PostContractsHandledByPrologueCleanup = true;
+    }
+  }
+
   // Save parameters for coroutine function.
   if (Body && isa_and_nonnull<CoroutineBodyStmt>(Body))
     llvm::append_range(FnArgs, FD->parameters());
@@ -1661,7 +1796,6 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       Builder.ClearInsertionPoint();
     }
   }
-
   // Emit the standard function epilogue.
   FinishFunction(BodyRange.getEnd());
 

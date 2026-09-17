@@ -14,6 +14,8 @@
 #define LLVM_CLANG_LIB_CODEGEN_CODEGENFUNCTION_H
 
 #include "CGBuilder.h"
+#include "CGContracts.h"
+#include "CGDebugInfo.h"
 #include "CGLoopInfo.h"
 #include "CGValue.h"
 #include "CodeGenModule.h"
@@ -104,6 +106,13 @@ class RegionCodeGenTy;
 class TargetCodeGenInfo;
 struct OMPTaskDataTy;
 struct CGCoroData;
+struct CurrentContractInfo;
+struct CGContractData;
+struct CGContractDataDeleter {
+  static CGContractData *Create();
+
+  void operator()(CGContractData *) const;
+};
 
 // clang-format off
 /// The kind of evaluation to perform on values of a particular
@@ -417,9 +426,40 @@ public:
   /// This is invalid if sret is not in use.
   Address ReturnValuePointer = Address::invalid();
 
+  /// A flag recording whether the returned object has been initialized, so
+  /// that an exception escaping the function afterwards destroys it -- see
+  /// [except.ctor]/2.  Null when the return type needs no destruction, or
+  /// when exceptions are off.  The analogue of GCC's current_retval_sentinel.
+  llvm::Value *ReturnValueLiveFlag = nullptr;
+
+  /// Records that the returned object now exists, arming ReturnValueLiveFlag.
+  void setReturnValueLive() {
+    if (ReturnValueLiveFlag)
+      Builder.CreateStore(
+          Builder.getTrue(),
+          Address(ReturnValueLiveFlag, Builder.getInt1Ty(), CharUnits::One()));
+  }
+
   /// If a return statement is being visited, this holds the return statment's
   /// result expression.
   const Expr *RetExpr = nullptr;
+
+  /// If a contract attribute is being visited, this holds the contract
+  std::unique_ptr<CGContractData, CGContractDataDeleter> ContractData{
+      CGContractDataDeleter::Create()};
+
+  CurrentContractInfo *CurContract();
+
+  /// P3098: true once GenerateCode has pushed a prologue cleanup that calls
+  /// EmitPostContracts ahead of a postcondition capture's destructor
+  /// cleanup. When set, EmitFunctionEpilog's own EmitPostContracts calls are
+  /// skipped -- the cleanup already evaluated every postcondition.
+  bool PostContractsHandledByPrologueCleanup = false;
+
+  // This is only used when exceptions are fully disabled. In this case,
+  // an enforced contract violation always terminates the program, so we
+  // can jump to a shared cleanup block without having to worry about continuing
+  // or cleanups;
 
   /// Return true if a label was seen in the current scope.
   bool hasLabelBeenSeenInCurrentScope() const {
@@ -2633,6 +2673,24 @@ public:
   /// Emit a test that checks if the return value \p RV is nonnull.
   void EmitReturnValueCheck(llvm::Value *RV);
 
+  /// Set by EmitPostContracts when it bound a postcondition's result name to
+  /// the return slot, meaning a predicate may have rewritten that slot and
+  /// whatever the caller is about to return needs re-reading from it.
+  bool ContractResultBoundToReturnSlot = false;
+
+  /// Emit the postconditions.  Returns the value the function should return:
+  /// a postcondition's result binding names the return slot, so a predicate
+  /// may have written to it and RV can be stale on return.
+  llvm::Value *EmitPostContracts(llvm::Value *RV);
+
+  /// As EmitPostContracts, but with a cleanup that destroys the returned
+  /// object if a violation handler throws out of the checks.  By then the
+  /// object has been initialized ([stmt.return]/5 sequences postcondition
+  /// evaluation after it), but the prologue cleanup that would otherwise
+  /// cover it has already been popped -- the epilogue runs after
+  /// PopCleanupBlocks(PrologueCleanupDepth).
+  llvm::Value *EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
+
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
 
@@ -3720,6 +3778,16 @@ public:
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
   void ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
 
+  /// A variant of ExitCXXTryStmt for a synthetic try whose (single) catch-all
+  /// handler has no AST representation: instead of emitting the handler body
+  /// with EmitStmt, it is produced by \p EmitCatchBody as direct IR.  \p S must
+  /// have exactly one catch-all handler.  The personality-specific dispatch and
+  /// funclet setup are shared with ExitCXXTryStmt so this stays portable across
+  /// EH models.  Used by contract codegen, whose exception-raised catch(...)
+  /// reports a violation via a runtime call that no Stmt lowers to.
+  void ExitCXXTryStmtWithCatchIR(const CXXTryStmt &S,
+                                 llvm::function_ref<void()> EmitCatchBody);
+
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitSEHTryStmt(const SEHTryStmt &S);
   void EmitSEHLeaveStmt(const SEHLeaveStmt &S);
@@ -4609,6 +4677,197 @@ public:
   LValue EmitPointerToDataMemberBinaryExpr(const BinaryOperator *E);
   LValue EmitObjCSelectorLValue(const ObjCSelectorExpr *E);
   void EmitDeclRefExprDbgValue(const DeclRefExpr *E, const APValue &Init);
+
+  llvm::BasicBlock *GetSharedContractViolationTrapBlock(bool Create = true);
+  llvm::BasicBlock *GetSharedContractViolationEnforceBlock(ContractKind Kind,
+                                                           bool Create = true);
+
+  void EmitContractStmt(const ContractStmt &S);
+
+  /// Emit a virtual contract wrapper function body (P3097).
+  /// Emits interface pre, vtable dispatch, interface post.
+  void EmitVirtualContractWrapperBody(llvm::Function *Fn,
+                                      const CXXMethodDecl *MD);
+
+  /// P3098: emit a postcondition's capture-construction DeclStmt, converting
+  /// a construction exception into a post_capture violation instead of
+  /// letting it propagate. Wraps the DeclStmt in a try/catch(...) only when
+  /// the captures can actually throw; otherwise emits it directly with no
+  /// overhead. \p Sem is CS's already-resolved runtime semantic (the caller
+  /// has already excluded Ignore/Assume).
+  void EmitPostconditionCaptureInit(const ContractStmt *CS,
+                                    ContractEvaluationSemantic Sem);
+
+  /// P3098: if \p CS's capture construction was wrapped in a try/catch (see
+  /// EmitPostconditionCaptureInit) and can fail, return the i1 value that is
+  /// true once an 'observe'-semantic capture-init exception has been caught
+  /// for it (its predicate must then be skipped). Returns nullptr if \p CS's
+  /// captures were never wrapped (they can't throw, or the capture failed
+  /// under 'enforce'/'quick_enforce', which already terminated).
+  llvm::Value *LoadPostconditionCaptureFailed(const ContractStmt *CS);
+
+private:
+  void EmitContractStmtAsFullStmt(const ContractStmt &S);
+
+  // Emit the per-semantic check body for a single, already-resolved evaluation
+  // semantic (ignore/assume -> nothing, observe/enforce -> violation handler,
+  // quick_enforce -> trap).  Shared by the non-dynamic path (called once with
+  // the compile-time semantic) and the P3595 dynamic dispatch (called once per
+  // switch arm with that arm's effective semantic).  When the current insertion
+  // point is inside a dynamic dispatch arm, ContinueBlock is branched to after
+  // a non-terminating (observe/ignore) body so the arms rejoin; it is null on
+  // the non-dynamic path.
+  void emitCheckForSemantic(const ContractStmt &S,
+                            ContractEvaluationSemantic Semantic,
+                            llvm::BasicBlock *ContinueBlock);
+
+public:
+  /// Emit a call to a __cxa_contract_violation_* entry point.
+  /// The entry point name encodes kind, semantic, and detection mode.
+  void EmitCxaContractViolationCall(ContractKind Kind,
+                                    ContractEvaluationSemantic Semantic,
+                                    ContractDetectionMode Mode,
+                                    llvm::Value *DataBlockPtr, bool IsNoExcept,
+                                    bool IsPostCapture);
+
+  /// P3100: emit the implicit contract-assertion reaction for a value-returning
+  /// function that can fall off its end ({stmt.return.flow.off}).  Returns true
+  /// if a non-"assume" reaction was emitted (caller must skip its own
+  /// missing-return handling); false for "assume" (keep today's UB behaviour).
+  bool EmitImplicitFlowOffReaction(const FunctionDecl *FD);
+
+  /// P3100: guard a scalar integer operation that is UB when IsViolation holds,
+  /// for the core-language UB named by GroupName (e.g. ub:expr.mul.div.by.zero,
+  /// ub:expr.shift.neg.and.width).  Resolves the semantic; for "assume" just
+  /// calls EmitOp, otherwise emits `IsViolation ? <reaction> : EmitOp()` so the
+  /// UB operation is skipped on the violation path (ignore/observe produce a
+  /// defined zero; enforce/quick_enforce do not return).  COMMENT is the
+  /// contract-violation comment.
+  llvm::Value *
+  EmitImplicitIntOpGuard(QualType Ty, llvm::Value *IsViolation,
+                         SourceLocation Loc, StringRef GroupName,
+                         StringRef Comment,
+                         llvm::function_ref<llvm::Value *()> EmitOp);
+
+  /// P3100: guard a null-pointer dereference
+  /// (ub:expr.unary.dereference.nullptr) at a
+  /// load/store of `*Ptr`, located at Loc.  Unlike EmitImplicitIntOpGuard this
+  /// is a *void* reaction: `*p` is an lvalue with no defined substitute, so the
+  /// guard is a null test placed before the real access rather than a
+  /// replacement.  Resolves the semantic; for assume/ignore returns false and
+  /// emits nothing (caller performs the raw access).  Otherwise emits
+  /// `if (Ptr == null) <reaction>` and leaves the insertion point at the
+  /// non-null continuation, returning true: quick_enforce traps;
+  /// enforce/noexcept_enforce call the noreturn handler;
+  /// observe/noexcept_observe call the handler and fall through to the real
+  /// dereference (report then proceed).
+  bool EmitImplicitNullDerefGuard(llvm::Value *Ptr, SourceLocation Loc);
+
+  /// P3100: guard a possibly-misaligned data access (Ptr, required alignment
+  /// Align) with an implicit ub:basic.align.object.alignment contract
+  /// assertion. Like the null guard, a misaligned access is an lvalue with no
+  /// defined substitute: assume/ignore emit nothing (caller performs the raw
+  /// access); otherwise emits `if ((Ptr & (Align-1)) != 0) <reaction>` and
+  /// continues at the aligned (and, for observe, post-handler) path, returning
+  /// true.
+  bool EmitImplicitMisalignedGuard(llvm::Value *Ptr, llvm::Align Align,
+                                   SourceLocation Loc);
+
+  /// P3100: emit the reaction for an implicit guard that has already branched
+  /// to ViolBB on its violating condition and continues at ContBB.  Traps
+  /// (quick_enforce) or reports through the CAK_IMPLICIT entry point (enforce
+  /// terminates the block; observe reports and branches to ContBB).  Msg is the
+  /// violation comment; FD the enclosing function.  Leaves the insertion point
+  /// at ContBB.
+  void emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
+                                 llvm::BasicBlock *ViolBB,
+                                 llvm::BasicBlock *ContBB, SourceLocation Loc,
+                                 StringRef Msg, const FunctionDecl *FD);
+
+  /// P3100: if \p Ty is a non-fixed-underlying-type C++ enum that the enum
+  /// sanitizer does not ignore, set [\p Min, \p End) to its [dcl.enum] value
+  /// range and return true; otherwise return false.  Shared by the
+  /// invalid-value load guard and the enum-cast guard (the latter lives in
+  /// ScalarExprEmitter, so this must be accessible outside CodeGenFunction).
+  /// Distinct from getRangeForType, which also covers bool, is gated on
+  /// StrictEnums, and does not apply the sanitizer-ignore filter.
+  bool getStrictEnumRange(QualType Ty, llvm::APInt &Min, llvm::APInt &End);
+
+  /// P3100: emit the reaction for control flowing off the end of a coroutine
+  /// with no usable return_void ({stmt.return.coroutine.flow.off}) at Loc.  No
+  /// return value is substituted (the return object already exists); the
+  /// continuing semantics fall through to the final suspend.  A no-op for
+  /// assume/ignore.
+  void EmitImplicitCoroutineFlowOffReaction(SourceLocation Loc);
+
+  /// P3100: emit the effect of a [[assume]] attribute (AA) as a configurable
+  /// implicit contract assertion.  The predicate's side-effect-freedom decides
+  /// both the group id and the allowed set: a side-effect-free predicate can be
+  /// evaluated, so it reports the qualified group ub:dcl.attr.assume.false.pure
+  /// and every semantic is available; otherwise it reports the unqualified
+  /// ub:dcl.attr.assume.false and only assume/ignore apply.  assume -> the
+  /// status-quo llvm.assume; ignore -> nothing; a checking semantic ->
+  /// EmitCXXAssumeCheck.
+  void EmitCXXAssumeAttr(const CXXAssumeAttr *AA);
+
+  /// P3100: emit `if (!Cond) <reaction>` for a configured [[assume]] resolving
+  /// to a checking semantic Sem, then, for the enforcing family (where Cond
+  /// then provably holds), keep the optimizer assume hint.  Cond is the assumed
+  /// predicate, known side-effect-free so it is safe to evaluate here.
+  void EmitCXXAssumeCheck(const Expr *Cond, ContractEvaluationSemantic Sem,
+                          SourceLocation Loc, const FunctionDecl *FD);
+
+  /// P3100: which signed arithmetic operation EmitImplicitSignedOverflowOp
+  /// guards (unary minus and inc/dec are expressed as Add/Sub of a constant).
+  enum class ImplicitOverflowOp { Add, Sub, Mul };
+
+  /// P3100: emit a signed +, - or *
+  /// (ub:expr.expr.eval.signed.integer) that may overflow,
+  /// choosing codegen per the resolved semantic.  assume -> the nsw form (the
+  /// optimizer keeps assuming no overflow); ignore -> the plain (no-nsw)
+  /// form, i.e. defined 2's-complement wrapping (-fwrapv-equivalent, still
+  /// optimizable but differently from assume); any checking semantic -> the
+  /// s{add,sub,mul}.with.overflow intrinsic, branching on the overflow bit to
+  /// the reaction (quick_enforce traps; enforce/noexcept_enforce call the
+  /// noreturn handler; observe/noexcept_observe call the handler and continue)
+  /// and yielding the wrapped result.  COMMENT is the contract-violation
+  /// comment.  LHS/RHS are the (already promoted) operands.
+  llvm::Value *EmitImplicitSignedOverflowOp(QualType Ty, SourceLocation Loc,
+                                            StringRef GroupName,
+                                            StringRef Comment,
+                                            ImplicitOverflowOp Op,
+                                            llvm::Value *LHS, llvm::Value *RHS);
+
+  /// P3100: guard an lvalue-to-rvalue load of a bool/enum
+  /// (ub:conv.lval.valid.representation) whose stored value may be outside the
+  /// type's valid range.  LOADED is the raw storage-typed loaded value (i8 for
+  /// bool, before EmitFromMemory truncates it), Ty its source type.  Resolves
+  /// the semantic; returns LOADED unchanged for assume (or when no check
+  /// applies / the sanitizer handles it), in which case the caller may attach
+  /// range metadata.  Otherwise substitutes a defined valid value (0 -- false
+  /// for bool, an in-range value for enum) for an out-of-range load and returns
+  /// it: ignore just substitutes; quick_enforce traps; enforce/noexcept_enforce
+  /// call the noreturn handler; observe/noexcept_observe call the handler and
+  /// continue with the substituted value.  Keyed off LOADED's LLVM type (not
+  /// ConvertType(Ty), which would be i1 for bool and mismatch the storage
+  /// value).
+  llvm::Value *EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
+                                             SourceLocation Loc);
+
+  /// P3100: guard an array subscript with a statically-known bound
+  /// (ub:expr.add.out.of.bounds.known).
+  /// Idx is the (integer) subscript, IdxTy its
+  /// source type, Bound the array size (a non-negative constant), Accessed true
+  /// for an element access (valid range [0,Bound)) and false for a one-past
+  /// address (Bound allowed).  Resolves the semantic; returns Idx unchanged for
+  /// assume.  Otherwise redirects an out-of-range subscript to the defined
+  /// valid index 0 (returned via a select) and, for a checking semantic,
+  /// branches to the reaction: quick_enforce traps; enforce/noexcept_enforce
+  /// call the noreturn handler; observe/noexcept_observe call the handler and
+  /// continue with index 0.
+  llvm::Value *EmitImplicitArrayBoundsGuard(llvm::Value *Idx, QualType IdxTy,
+                                            llvm::Value *Bound, bool Accessed,
+                                            SourceLocation Loc);
 
   //===--------------------------------------------------------------------===//
   //                         Scalar Expression Emission
@@ -5515,6 +5774,7 @@ private:
 
 private:
   llvm::MDNode *getRangeForLoadFromType(QualType Ty);
+
   void EmitReturnOfRValue(RValue RV, QualType Ty);
 
   void deferPlaceholderReplacement(llvm::Instruction *Old, llvm::Value *New);
