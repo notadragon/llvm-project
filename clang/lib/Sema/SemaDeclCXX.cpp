@@ -747,6 +747,9 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
       Old->isDefined(OldDefinition, true))
     CheckForFunctionRedefinition(New, OldDefinition);
 
+  if (CheckEquivalentContractSequence(Old, New))
+    Invalid = true;
+
   return Invalid;
 }
 
@@ -2303,6 +2306,13 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
                                       Cxx1yLoc, Cxx2aLoc, Cxx2bLoc, Kind))
         return false;
     }
+    return true;
+  }
+
+  case Stmt::ContractStmtClass: {
+    if (!Cxx1yLoc.isValid())
+      Cxx1yLoc = S->getBeginLoc();
+
     return true;
   }
 
@@ -11102,6 +11112,10 @@ void Sema::ActOnFinishDelayedCXXMethodDeclaration(Scope *S, Decl *MethodD) {
   // Check the default arguments, which we may have added.
   if (!Method->isInvalidDecl())
     CheckCXXDefaultArguments(Method);
+
+  if (!Method->isInvalidDecl() && Method->hasContracts())
+    ActOnContractsOnFinishFunctionDecl(Method,
+                                       Method->isThisDeclarationADefinition());
 }
 
 // Emit the given diagnostic for each non-address-space qualifier.
@@ -12714,6 +12728,48 @@ void Sema::PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir) {
     // Otherwise, it is at block scope. The using-directives will affect lookup
     // only to the end of the scope.
     S->PushUsingDirective(UDir);
+}
+
+Decl *Sema::ActOnContractControlUsingDirective(
+    Scope *S, SourceLocation UsingLoc, SourceLocation NamespcLoc,
+    CXXScopeSpec &SS, SourceLocation IdentLoc, IdentifierInfo *NamespcName) {
+  assert(!SS.isInvalid() && "Invalid CXXScopeSpec.");
+  assert(NamespcName && "Invalid NamespcName.");
+
+  S = S->getDeclParent();
+
+  LookupResult R(*this, NamespcName, IdentLoc, LookupNamespaceName);
+  LookupParsedName(R, S, &SS, /*ObjectType=*/QualType());
+  if (R.isAmbiguous())
+    return nullptr;
+
+  if (R.empty()) {
+    Diag(IdentLoc, diag::err_expected_namespace_name) << SS.getRange();
+    return nullptr;
+  }
+
+  NamedDecl *Named = R.getRepresentativeDecl();
+  NamespaceDecl *NS = R.getAsSingle<NamespaceDecl>();
+  assert(NS && "expected namespace decl");
+
+  DiagnoseUseOfDecl(Named, IdentLoc);
+
+  DeclContext *CommonAncestor = NS;
+  while (CommonAncestor && !CommonAncestor->Encloses(CurContext))
+    CommonAncestor = CommonAncestor->getParent();
+
+  UsingDirectiveDecl *UDir = UsingDirectiveDecl::Create(
+      Context, CurContext, UsingLoc, NamespcLoc,
+      SS.getWithLocInContext(Context), IdentLoc, Named, CommonAncestor);
+  UDir->setContractControl(true);
+
+  DeclContext *Ctx = S->getEntity();
+  if (Ctx && !Ctx->isFunctionOrMethod())
+    Ctx->addDecl(UDir);
+  else
+    S->PushContractControlUsingDirective(UDir);
+
+  return UDir;
 }
 
 Decl *Sema::ActOnUsingDeclaration(Scope *S, AccessSpecifier AS,
