@@ -948,6 +948,44 @@ CodeGenModule::getPureVirtualContractTerminusName(const CXXMethodDecl *MD) {
   }
 }
 
+// P3100: control flowing off the end of a coroutine whose promise type has no
+// usable return_void ({stmt.return.coroutine.flow.off}) is undefined behavior.
+// Emit the configured reaction at the fall-off point.  The point is inside the
+// coroutine's try block, so a throwing enforce/observe is caught by
+// promise.unhandled_exception().  There is no return value to substitute -- the
+// coroutine's return object already exists -- so, unlike
+// EmitImplicitFlowOffReaction, the continuing semantics emit no return branch;
+// control simply falls through to the final suspend.  assume/ignore emit
+// nothing.
+void CodeGenFunction::EmitImplicitCoroutineFlowOffReaction(SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:stmt.return.coroutine.flow.off", FD, Loc);
+
+  // assume / ignore: no check; fall through to the final suspend as today.
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return;
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+    return;
+  }
+
+  bool IsNoExcept =
+      (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+  llvm::Constant *Info = FinishViolationInfo(
+      *this,
+      getContext().BuildViolationObject(
+          Loc, "control flowed off the end of a coroutine", std::nullopt, FD));
+  EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                               ContractDetectionMode::PredicateFailed, Info,
+                               IsNoExcept, /*IsPostCapture=*/false);
+  // enforce/noexcept_enforce: the entry point is noreturn (block terminated).
+  // observe/noexcept_observe: the handler returned -- control falls through to
+  // the final suspend.
+}
+
 llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
     QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
     StringRef GroupName, StringRef Comment,

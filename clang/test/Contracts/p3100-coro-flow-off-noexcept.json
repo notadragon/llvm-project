@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "namespace": "nxo_ns", "group": "ub:stmt.return.coroutine.flow.off"}, "output": {"semantic": "noexcept_observe"}}
+]
