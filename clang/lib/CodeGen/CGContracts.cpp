@@ -821,6 +821,71 @@ resolveImplicitContractSemantic(CodeGenModule &CGM, StringRef Group,
   return CGM.getLangOpts().ContractOpts.resolveContractSemantic(Q);
 }
 
+// P3100: at the point a value-returning function can fall off its end
+// ({stmt.return.flow.off}), resolve the implicit contract assertion's
+// evaluation semantic and emit the corresponding reaction.  Returns true when a
+// (non-"assume") reaction was emitted -- either a terminating call (the
+// insertion point is left cleared) or a defined return branched to the epilogue
+// -- in which case the caller must not emit its own missing-return handling.
+// Returns false for "assume" (the caller keeps today's UB behaviour).
+bool CodeGenFunction::EmitImplicitFlowOffReaction(const FunctionDecl *FD) {
+  using CES = ContractEvaluationSemantic;
+
+  CES Sem = resolveImplicitContractSemantic(CGM, "ub:stmt.return.flow.off", FD,
+                                            FD->getLocation());
+
+  if (Sem == CES::Assume)
+    return false;
+
+  // Store a defined (erroneous) zero into the return slot and branch to the
+  // epilogue -- for scalar return types only (P3100 erroneous behaviour is
+  // built-in-only).  Guarantees the return value is written, not left
+  // indeterminate.
+  auto EmitDefinedReturn = [&]() {
+    QualType RetTy = FD->getReturnType();
+    if (ReturnValue.isValid()) {
+      if (hasScalarEvaluationKind(RetTy))
+        Builder.CreateStore(llvm::Constant::getNullValue(ConvertType(RetTy)),
+                            ReturnValue);
+      else {
+        // Zero every byte of the result object (including padding) so no
+        // indeterminate data leaks, regardless of the return type.
+        llvm::Value *Size = llvm::ConstantInt::get(
+            CGM.SizeTy, getContext().getTypeSizeInChars(RetTy).getQuantity());
+        Builder.CreateMemSet(ReturnValue, Builder.getInt8(0), Size,
+                             /*IsVolatile=*/false);
+      }
+    }
+    EmitBranchThroughCleanup(ReturnBlock);
+  };
+
+  if (Sem == CES::Ignore) {
+    EmitDefinedReturn();
+    return true;
+  }
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+    return true;
+  }
+
+  // enforce / observe / noexcept_enforce / noexcept_observe: report the
+  // violation through the CAK_IMPLICIT entry point.
+  bool IsNoExcept =
+      (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+  bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+  llvm::Constant *Info = FinishViolationInfo(
+      *this, getContext().BuildViolationObject(
+                 FD->getLocation(),
+                 "control reached the end of a value-returning function",
+                 std::nullopt, FD));
+  EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                               ContractDetectionMode::PredicateFailed, Info,
+                               IsNoExcept, /*IsPostCapture=*/false);
+  if (!IsEnforce)
+    EmitDefinedReturn();
+  return true;
+}
+
 llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
     QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
     StringRef GroupName, StringRef Comment,

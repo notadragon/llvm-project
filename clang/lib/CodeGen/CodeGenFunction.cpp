@@ -1788,7 +1788,25 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     EmitCall(FnInfo, GDStubCallee, ReturnValueSlot(), CallArgs, nullptr, false,
              Loc);
   } else if (Body) {
-    EmitFunctionBody(Body);
+    // P3100: for a function-try-block on a value-returning function, guard the
+    // end of the try body from *inside* the try's EH scope, so the
+    // function-try-block's own handlers can catch a throwing observe/enforce
+    // flow-off reaction ({stmt.return.flow.off}).  The generic EmitFunctionBody
+    // path would emit the reaction only after the try scope is popped (handled
+    // below, covering a handler that runs off its own end instead).
+    const auto *FnTry = dyn_cast<CXXTryStmt>(Body);
+    if (FnTry && getLangOpts().ContractsP3100 && getLangOpts().CPlusPlus &&
+        !FD->hasImplicitReturnZero() && !FD->getReturnType()->isVoidType() &&
+        !(CGM.getLangOpts().OpenMPIsTargetDevice &&
+          Target.getTriple().isGPU())) {
+      EnterCXXTryStmt(*FnTry);
+      EmitStmt(FnTry->getTryBlock());
+      if (!SawAsmBlock && Builder.GetInsertBlock())
+        EmitImplicitFlowOffReaction(FD);
+      ExitCXXTryStmt(*FnTry);
+    } else {
+      EmitFunctionBody(Body);
+    }
   } else
     llvm_unreachable("no definition for emitted function");
 
