@@ -404,6 +404,11 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::Empty:
     return true;
 
+  // ContractSpecifierDecl does not inherit Redeclarable, so it never reaches
+  // VisitRedeclarable and this case exists only for switch completeness.
+  case Decl::ContractSpecifier:
+    return false;
+
   // Never redeclarable.
   case Decl::ExplicitInstantiation:
   case Decl::UsingDirective:
@@ -466,6 +471,8 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::OpenACCDeclare:
   case Decl::OpenACCRoutine:
   case Decl::CXXExpansionStmt:
+  case Decl::PostconditionCapture:
+  case Decl::ResultName:
     return false;
 
   // These indirectly derive from Redeclarable<T> but are not actually

@@ -1552,7 +1552,16 @@ enum DeclCode {
   /// An ExplicitInstantiationDecl record.
   DECL_EXPLICIT_INSTANTIATION,
 
-  DECL_LAST = DECL_EXPLICIT_INSTANTIATION
+  /// A ResultNameDecl record
+  DECL_RESULT_NAME,
+
+  /// A PostconditionCaptureDecl record
+  DECL_POSTCONDITION_CAPTURE,
+
+  /// A contract specifier sequence on a function
+  DECL_CONTRACT_SPECIFIER,
+
+  DECL_LAST = DECL_CONTRACT_SPECIFIER
 };
 
 /// Record codes for each kind of statement or expression.
@@ -2068,6 +2077,9 @@ enum StmtCode {
   EXPR_COAWAIT,
   EXPR_COYIELD,
   EXPR_DEPENDENT_COAWAIT,
+
+  // contracts
+  STMT_CXX_CONTRACT,
 
   // FixedPointLiteral
   EXPR_FIXEDPOINT_LITERAL,

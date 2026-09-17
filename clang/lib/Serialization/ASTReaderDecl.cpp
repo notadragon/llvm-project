@@ -138,7 +138,7 @@ public:
 
 //===----------------------------------------------------------------------===//
 // Declaration deserialization
-//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//u
 
 namespace clang {
 class ASTDeclReader : public DeclVisitor<ASTDeclReader, void> {
@@ -454,6 +454,9 @@ public:
   void VisitOMPDeclareMapperDecl(OMPDeclareMapperDecl *D);
   void VisitOMPRequiresDecl(OMPRequiresDecl *D);
   void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
+  void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
+  void VisitResultNameDecl(ResultNameDecl *RND);
+  void VisitContractSpecifierDecl(ContractSpecifierDecl *CSD);
 };
 } // namespace clang
 
@@ -892,6 +895,22 @@ void ASTDeclReader::VisitValueDecl(ValueDecl *VD) {
     VD->setType(Record.readType());
 }
 
+void ASTDeclReader::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  D->setIsParameterCapture(Record.readInt());
+  D->setIsPackExpansion(Record.readInt());
+}
+
+void ASTDeclReader::VisitResultNameDecl(ResultNameDecl *VD) {
+  // Must mirror the writer (VisitValueDecl) so the result type is restored.
+  VisitValueDecl(VD);
+  VD->setFunctionScopeDepth(Record.readInt());
+  bool IsCanonical = Record.readInt();
+  if (!IsCanonical) {
+    VD->setCanonicalResultName(readDeclAs<ResultNameDecl>());
+  }
+}
+
 void ASTDeclReader::VisitEnumConstantDecl(EnumConstantDecl *ECD) {
   VisitValueDecl(ECD);
   if (Record.readInt())
@@ -903,7 +922,10 @@ void ASTDeclReader::VisitEnumConstantDecl(EnumConstantDecl *ECD) {
 void ASTDeclReader::VisitDeclaratorDecl(DeclaratorDecl *DD) {
   VisitValueDecl(DD);
   DD->setInnerLocStart(readSourceLocation());
-  if (Record.readInt()) { // hasExtInfo
+  BitsUnpacker DeclDeclBits(Record.readInt());
+  bool HaveExtInfo = DeclDeclBits.getNextBit();
+
+  if (HaveExtInfo) { // hasExtInfo
     auto *Info = new (Reader.getContext()) DeclaratorDecl::ExtInfo();
     Record.readQualifierInfo(*Info);
     Info->TrailingRequiresClause = AssociatedConstraint(
@@ -1076,6 +1098,7 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   FD->setFriendConstraintRefersToEnclosingTemplate(
       FunctionDeclBits.getNextBit());
   FD->setUsesSEHTry(FunctionDeclBits.getNextBit());
+  bool HasContracts = FunctionDeclBits.getNextBit();
   FD->setIsDestroyingOperatorDelete(FunctionDeclBits.getNextBit());
   FD->setIsTypeAwareOperatorNewOrDelete(FunctionDeclBits.getNextBit());
 
@@ -1147,6 +1170,12 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     Params.push_back(readDeclAs<ParmVarDecl>());
   FD->setParams(Reader.getContext(), Params);
 
+  if (HasContracts) {
+    ContractSpecifierDecl *CSD = readDeclAs<ContractSpecifierDecl>();
+    CSD->setOwningFunction(FD);
+    FD->setContracts(CSD);
+  }
+
   // If the declaration is a SYCL kernel entry point function as indicated by
   // the presence of a sycl_kernel_entry_point attribute, register it so that
   // associated metadata is recreated.
@@ -1166,6 +1195,19 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
       C.registerSYCLEntryPointFunction(FD);
     }
   }
+}
+
+void ASTDeclReader::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
+  // NumContracts was already read in ReadDeclRecord (to size the trailing
+  // storage) and precedes the VisitDecl fields in the record.
+  VisitDecl(CSD);
+  assert(CSD->NumContracts > 0);
+
+  SmallVector<ContractStmt *, 8> Contracts;
+  Contracts.reserve(CSD->NumContracts);
+  for (unsigned I = 0; I < CSD->NumContracts; ++I)
+    Contracts.push_back(cast<ContractStmt>(Record.readStmt()));
+  CSD->setContracts(Contracts);
 }
 
 void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
@@ -1962,6 +2004,7 @@ void ASTDeclReader::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   D->QualifierLoc = Record.readNestedNameSpecifierLoc();
   D->NominatedNamespace = readDeclAs<NamedDecl>();
   D->CommonAncestor = readDeclAs<DeclContext>();
+  D->IsContractControl = Record.readInt();
 }
 
 void ASTDeclReader::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
@@ -4264,6 +4307,16 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
     break;
   case DECL_FILE_SCOPE_ASM:
     D = FileScopeAsmDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_RESULT_NAME:
+    D = ResultNameDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_POSTCONDITION_CAPTURE:
+    D = PostconditionCaptureDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_CONTRACT_SPECIFIER:
+    D = ContractSpecifierDecl::CreateDeserialized(Context, ID,
+                                                  Record.readInt());
     break;
   case DECL_TOP_LEVEL_STMT_DECL:
     D = TopLevelStmtDecl::CreateDeserialized(Context, ID);
