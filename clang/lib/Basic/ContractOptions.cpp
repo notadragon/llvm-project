@@ -636,6 +636,96 @@ static bool configEntryMatches(const ContractConfigEntry &Entry,
   return true;
 }
 
+// The safety level of a semantic: higher is "safer" (more checking).  Two
+// semantics share a level when they differ only in throwing-ness.
+static int semanticLevel(ContractEvaluationSemantic S) {
+  switch (S) {
+  case ContractEvaluationSemantic::Assume:
+    return 0;
+  case ContractEvaluationSemantic::Ignore:
+    return 1;
+  case ContractEvaluationSemantic::Observe:
+  case ContractEvaluationSemantic::NoexceptObserve:
+    return 2;
+  case ContractEvaluationSemantic::Enforce:
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    return 3;
+  case ContractEvaluationSemantic::QuickEnforce:
+    return 4;
+  }
+  return -1;
+}
+
+// Return the semantic present in Mask at safety level Lvl, trying the two
+// variants (levels 2 and 3) in an order that prefers the throwing variant when
+// PreferThrowing, else the noexcept one.  Value 0 (not a valid semantic) means
+// the level has nothing in Mask.
+static ContractEvaluationSemantic semanticAtLevel(int Lvl, unsigned Mask,
+                                                  bool PreferThrowing) {
+  using CES = ContractEvaluationSemantic;
+  CES A = static_cast<CES>(0), B = static_cast<CES>(0);
+  switch (Lvl) {
+  case 0:
+    A = CES::Assume;
+    break;
+  case 1:
+    A = CES::Ignore;
+    break;
+  case 2:
+    A = PreferThrowing ? CES::Observe : CES::NoexceptObserve;
+    B = PreferThrowing ? CES::NoexceptObserve : CES::Observe;
+    break;
+  case 3:
+    A = PreferThrowing ? CES::Enforce : CES::NoexceptEnforce;
+    B = PreferThrowing ? CES::NoexceptEnforce : CES::Enforce;
+    break;
+  case 4:
+    A = CES::QuickEnforce;
+    break;
+  default:
+    return static_cast<CES>(0);
+  }
+  if (static_cast<unsigned>(A) && (Mask & (1u << static_cast<unsigned>(A))))
+    return A;
+  if (static_cast<unsigned>(B) && (Mask & (1u << static_cast<unsigned>(B))))
+    return B;
+  return static_cast<CES>(0);
+}
+
+ContractEvaluationSemantic
+ContractOptions::clampToAllowed(ContractEvaluationSemantic Candidate,
+                                unsigned AllowedMask) {
+  // Walk the safety levels outward from Candidate's own level -- same level,
+  // then upward (nearest safer), then downward (safest available) -- returning
+  // the first semantic present in AllowedMask, preferring at each two-variant
+  // level the variant matching Candidate's throwing-ness (a
+  // potentially-throwing Candidate prefers observe/enforce; a non-throwing one
+  // prefers the noexcept_ variant).  This subsumes the old assume->ignore
+  // special case (assume is level 0, so the upward walk reaches ignore first).
+  using CES = ContractEvaluationSemantic;
+  int L = semanticLevel(Candidate);
+  if (L < 0)
+    return Candidate;
+  bool PreferThrowing =
+      (Candidate == CES::Observe || Candidate == CES::Enforce);
+  const CES None = static_cast<CES>(0);
+
+  if (CES R = semanticAtLevel(L, AllowedMask, PreferThrowing); R != None)
+    return R;
+  for (int Lvl = L + 1; Lvl <= 4; ++Lvl)
+    if (CES R = semanticAtLevel(Lvl, AllowedMask, PreferThrowing); R != None)
+      return R;
+  for (int Lvl = L - 1; Lvl >= 0; --Lvl)
+    if (CES R = semanticAtLevel(Lvl, AllowedMask, PreferThrowing); R != None)
+      return R;
+
+  // Empty allowed set: an empty label mask is diagnosed in Sema
+  // (applyLabelFacets) before resolution, and every other mask contains a
+  // semantic, so this is unreachable in practice.  Return the candidate rather
+  // than inventing an out-of-set semantic.
+  return Candidate;
+}
+
 ContractEvaluationSemantic
 ContractOptions::resolveContractSemantic(const ContractQuery &Query) const {
   initConfig(); // ensures Config is allocated and Entries is built

@@ -540,6 +540,117 @@ callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
   return {};
 }
 
+// Extract the label's allowed_semantics restriction (bit N = semantic value N
+// allowed), probing every valid semantic including "assume" and the D4298
+// noexcept_enforce/noexcept_observe variants.  This is the flag-independent
+// restriction; the -fcontracts-allow-assume / -fcontracts-p4298 gates are
+// applied later, at query construction.  Returns
+// AllContractSemanticsMaskWithExtensions (no restriction) if no
+// allowed_semantics member exists.
+static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                                   const CXXRecordDecl *RD,
+                                   SourceLocation Loc) {
+  DeclarationName ASName = &S.Context.Idents.get("allowed_semantics");
+  LookupResult R(S, ASName, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
+    return AllContractSemanticsMaskWithExtensions;
+  if (R.isAmbiguous()) {
+    R.suppressDiagnostics();
+    return AllContractSemanticsMaskWithExtensions;
+  }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return AllContractSemanticsMaskWithExtensions;
+
+  // The concept requires `__is_const(decltype(_T::allowed_semantics))'.  A
+  // `static constexpr' member is const-qualified already, and so is a plain
+  // `const' one; a non-const member is not a facet.  Honouring it anyway
+  // narrowed the semantic set for a label the library says has no
+  // allowed_semantics facet at all, so a bare label and its combined form
+  // disagreed.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return AllContractSemanticsMaskWithExtensions;
+
+  Sema::SFINAETrap Trap(S);
+  CXXScopeSpec SS;
+
+  ExprResult ASRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  if (ASRef.isInvalid())
+    return AllContractSemanticsMaskWithExtensions;
+
+  QualType ASTy = ASRef.get()->getType();
+  const auto *ASRD = ASTy->getAsCXXRecordDecl();
+  if (!ASRD)
+    return AllContractSemanticsMaskWithExtensions;
+
+  DeclarationName ContainsName = &S.Context.Idents.get("contains");
+  LookupResult CR(S, ContainsName, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(CR, const_cast<CXXRecordDecl *>(ASRD)))
+    return AllContractSemanticsMaskWithExtensions;
+  if (CR.isAmbiguous()) {
+    CR.suppressDiagnostics();
+    return AllContractSemanticsMaskWithExtensions;
+  }
+
+  unsigned Mask = 0;
+  // Query contains() for each valid evaluation-semantic value (Ignore=1 ..
+  // NoexceptObserve=7).  Bit N of the mask corresponds to semantic value N,
+  // matching resolveContractSemantic().  Assume and the D4298 noexcept_*
+  // variants are probed here too; the flag gates that may exclude them
+  // (-fcontracts-allow-assume / -fcontracts-p4298) are applied later, at
+  // query construction.
+  for (unsigned Sem = 1; Sem <= 7; ++Sem) {
+    LookupResult CR2(S, ContainsName, Loc, Sema::LookupMemberName);
+    S.LookupQualifiedName(CR2, const_cast<CXXRecordDecl *>(ASRD));
+
+    ExprResult ContainsRef = S.BuildMemberReferenceExpr(
+        ASRef.get(), ASTy, Loc, /*IsArrow=*/false, SS,
+        /*TemplateKWLoc=*/SourceLocation(),
+        /*FirstQualifierInScope=*/nullptr, CR2,
+        /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+    if (ContainsRef.isInvalid())
+      return AllContractSemanticsMaskWithExtensions;
+
+    FunctionDecl *FD = nullptr;
+    if (auto *ME = dyn_cast<MemberExpr>(ContainsRef.get()))
+      FD = dyn_cast<FunctionDecl>(ME->getMemberDecl());
+
+    QualType ParamTy;
+    if (FD && FD->getNumParams() > 0)
+      ParamTy = FD->getParamDecl(0)->getType();
+    else
+      ParamTy = S.Context.UnsignedCharTy;
+
+    Expr *Arg = IntegerLiteral::Create(S.Context, llvm::APInt(8, Sem),
+                                       S.Context.UnsignedCharTy, Loc);
+    Arg = ImplicitCastExpr::Create(S.Context, ParamTy, CK_IntegralCast, Arg,
+                                   nullptr, VK_PRValue, FPOptionsOverride());
+
+    ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, ContainsRef.get(), Loc,
+                                      {Arg}, Loc, /*ExecConfig=*/nullptr);
+    if (Call.isInvalid())
+      return AllContractSemanticsMaskWithExtensions;
+
+    Expr::EvalResult Eval;
+    if (!Call.get()->EvaluateAsConstantExpr(Eval, S.Context))
+      return AllContractSemanticsMaskWithExtensions;
+
+    if (Eval.Val.getInt().getBoolValue())
+      Mask |= (1u << Sem);
+  }
+
+  return Mask;
+}
+
 // Walk an APValue representing a char array (char[N]) and extract its string.
 static std::string extractStringFromAPValue(const APValue &Val) {
   std::string Str;
