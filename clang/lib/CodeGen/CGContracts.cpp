@@ -925,6 +925,64 @@ void CodeGenFunction::emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
   EmitBlock(ContBB);
 }
 
+bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
+                                                 SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for ub:expr.unary.dereference.nullptr at this site.
+  // See EmitImplicitFlowOffReaction for the allowed-set rationale.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:expr.unary.dereference.nullptr", FD, Loc);
+
+  // assume / ignore: `*p` is an lvalue with no defined substitute, so leave the
+  // raw dereference untouched (byte-identical to no P3100).
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return false;
+
+  // Emit `if (Ptr == null) <reaction>` before the real access.  The reaction is
+  // a void statement (not a value substitution).
+  llvm::BasicBlock *ViolBB = createBasicBlock("nulldref.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("nulldref.ok");
+  llvm::Value *IsNull = Builder.CreateIsNull(Ptr);
+  Builder.CreateCondBr(IsNull, ViolBB, ContBB);
+
+  // observe reports then proceeds into the real (still-null) dereference.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
+                            "null pointer dereference", FD);
+  return true;
+}
+
+bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
+                                                  llvm::Align Align,
+                                                  SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for ub:basic.align.object.alignment at this site.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:basic.align.object.alignment", FD, Loc);
+
+  // assume / ignore: a misaligned access is an lvalue with no defined
+  // substitute, so leave the raw access untouched (byte-identical to no P3100).
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return false;
+
+  // Emit `if ((Ptr & (Align - 1)) != 0) <reaction>` before the real access.
+  llvm::Value *PtrInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+  llvm::Value *Masked = Builder.CreateAnd(
+      PtrInt, llvm::ConstantInt::get(IntPtrTy, Align.value() - 1));
+  llvm::Value *IsMisaligned = Builder.CreateIsNotNull(Masked);
+  llvm::BasicBlock *ViolBB = createBasicBlock("misalign.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("misalign.ok");
+  Builder.CreateCondBr(IsMisaligned, ViolBB, ContBB);
+
+  // observe reports then proceeds into the real (still-misaligned) access.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
+                            "misaligned pointer access", FD);
+  return true;
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.

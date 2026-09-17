@@ -3440,7 +3440,8 @@ public:
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, LValue LV,
                      QualType Type, SanitizerSet SkippedChecks = SanitizerSet(),
                      llvm::Value *ArraySize = nullptr) {
-    if (!sanitizePerformTypeCheck())
+    // P3100 implicit null-dereference assertions also need this path.
+    if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
       return;
     EmitTypeCheck(TCK, Loc, LV.emitRawPointer(*this), Type, LV.getAlignment(),
                   SkippedChecks, ArraySize);
@@ -3450,7 +3451,8 @@ public:
                      QualType Type, CharUnits Alignment = CharUnits::Zero(),
                      SanitizerSet SkippedChecks = SanitizerSet(),
                      llvm::Value *ArraySize = nullptr) {
-    if (!sanitizePerformTypeCheck())
+    // P3100 implicit null-dereference assertions also need this path.
+    if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
       return;
     EmitTypeCheck(TCK, Loc, Addr.emitRawPointer(*this), Type, Alignment,
                   SkippedChecks, ArraySize);
