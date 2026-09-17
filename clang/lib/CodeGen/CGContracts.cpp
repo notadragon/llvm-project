@@ -590,6 +590,97 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
                &S, dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl)));
 }
 
+// P3098: emit a postcondition's capture-construction DeclStmt, converting a
+// construction exception into a post_capture violation. See the
+// CodeGenFunction.h declaration for the contract.
+void CodeGenFunction::EmitPostconditionCaptureInit(
+    const ContractStmt *CS, ContractEvaluationSemantic Sem) {
+  const DeclStmt *CapturesStmt = CS->getCapturesDeclStmt();
+  if (!getLangOpts().Exceptions || !getLangOpts().ContractExceptions) {
+    EmitStmt(CapturesStmt);
+    return;
+  }
+  // Unlike the predicate-throw path (emitCheckForSemantic), which uses
+  // StmtCanThrow to avoid try/catch overhead on a condition expression,
+  // always wrap capture construction here: StmtCanThrow only special-cases
+  // CallExpr and CXXBindTemporaryExpr, not a plain CXXConstructExpr, so it
+  // false-negatives on the common "constructor body itself throws" case
+  // (e.g. `Bad(int) { throw 42; }`) and would let the exception propagate
+  // unguarded.
+
+  Address FailedFlag = CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(),
+                                        "contract.capture.failed");
+  Builder.CreateStore(Builder.getFalse(), FailedFlag);
+  ContractData->CaptureInitFailed.insert({CS, FailedFlag});
+
+  llvm::Constant *ViolationInfo = BuildContractViolationInfo(*this, *CS);
+  auto *Try =
+      BuildContractCatchAllTry(CS->getCapturesDeclStmt()->getBeginLoc(), *this);
+
+  // Catch body for a capture's construction try/catch: report the exception as
+  // a post_capture violation.  Unlike the predicate-throw path there is no
+  // predicate to re-check afterward -- construction either succeeded (no catch)
+  // or failed, and 'observe' must skip the predicate entirely (recorded via
+  // FailedFlag) rather than fall through to evaluate it.
+  auto EmitCaptureCatchBody = [&] {
+    if (Sem == Enforce || Sem == Observe || Sem == NoexceptEnforce ||
+        Sem == NoexceptObserve) {
+      EmitCxaContractViolationCall(
+          ContractKind::Post, Sem, ExceptionRaised, ViolationInfo,
+          /*IsNoExcept=*/Sem == NoexceptEnforce || Sem == NoexceptObserve,
+          /*IsPostCapture=*/true);
+      if (Sem == Observe || Sem == NoexceptObserve)
+        Builder.CreateStore(Builder.getTrue(), FailedFlag);
+    } else if (Sem == QuickEnforce) {
+      CreateTrap(*this);
+    } else {
+      llvm_unreachable("Unhandled semantic");
+    }
+  };
+
+  // Construct each capture in its own try/catch region, split into the
+  // Alloca/Init/Cleanups steps ExitCXXTryStmt normally performs together via
+  // EmitAutoVarDecl. This matters because the catch teardown requires the catch
+  // scope it pushed to still be the top of the EHScopeStack -- but a
+  // capture's destructor cleanup must persist past this function (Task 2's
+  // ordering fix and the body-throws path both depend on it living until
+  // the real function exit), so it cannot be pushed until after the catch
+  // scope is torn down. Deferring EmitAutoVarCleanups until after the catch
+  // teardown satisfies both constraints; a still-throwing later
+  // capture in the same DeclStmt correctly unwinds this one via that
+  // (by-then-active) cleanup, exactly like ordinary sequential construction.
+  llvm::BasicBlock *DoneBB = nullptr;
+  for (Decl *D : CapturesStmt->decls()) {
+    auto *VD = cast<VarDecl>(D);
+    AutoVarEmission Emission = EmitAutoVarAlloca(*VD);
+
+    EnsureInsertPoint();
+    EnterCXXTryStmt(*Try);
+    EmitAutoVarInit(Emission);
+    ExitCXXTryStmtWithCatchIR(*Try, EmitCaptureCatchBody);
+
+    llvm::Value *Failed = Builder.CreateLoad(FailedFlag);
+    llvm::BasicBlock *ContBB = createBasicBlock("contract.capture.cont");
+    if (!DoneBB)
+      DoneBB = createBasicBlock("contract.capture.done");
+    Builder.CreateCondBr(Failed, DoneBB, ContBB);
+    EmitBlock(ContBB);
+    EmitAutoVarCleanups(Emission);
+  }
+  if (DoneBB) {
+    Builder.CreateBr(DoneBB);
+    EmitBlock(DoneBB);
+  }
+}
+
+llvm::Value *
+CodeGenFunction::LoadPostconditionCaptureFailed(const ContractStmt *CS) {
+  auto It = ContractData->CaptureInitFailed.find(CS);
+  if (It == ContractData->CaptureInitFailed.end())
+    return nullptr;
+  return Builder.CreateLoad(It->second);
+}
+
 // Build the Itanium mangled name for a no-argument C++ selector given a
 // (possibly qualified) source name.  The return type is not part of the
 // mangling, so we always produce "...Ev".  A bare identifier "foo" mangles to

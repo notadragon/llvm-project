@@ -641,6 +641,111 @@ StmtResult Parser::ParseFunctionContractSpecifierImpl(
   return Res;
 }
 
+bool Parser::ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures) {
+  assert(Tok.is(tok::l_square) && "Expected '['");
+  ConsumeBracket();
+
+  if (Tok.is(tok::r_square)) {
+    ConsumeBracket();
+    return false;
+  }
+
+  while (true) {
+    SourceLocation Loc = Tok.getLocation();
+    bool IsPackExpansion = false;
+
+    // Reject = (default by-copy)
+    if (Tok.is(tok::equal)) {
+      Diag(Loc, diag::err_postcondition_capture_default);
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return false;
+    }
+
+    // Reject & as default or capture-by-reference
+    if (Tok.is(tok::amp)) {
+      if (NextToken().is(tok::r_square) || NextToken().is(tok::comma)) {
+        Diag(Loc, diag::err_postcondition_capture_default);
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return false;
+      }
+      Diag(Loc, diag::err_postcondition_capture_by_reference);
+      ConsumeToken(); // skip & and try to recover
+    }
+
+    // Reject this / *this
+    if (Tok.is(tok::kw_this)) {
+      Diag(Loc, diag::err_postcondition_capture_this);
+      ConsumeToken();
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+    if (Tok.is(tok::star) && NextToken().is(tok::kw_this)) {
+      Diag(Loc, diag::err_postcondition_capture_this);
+      ConsumeToken(); // *
+      ConsumeToken(); // this
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+
+    // Check for ... prefix (pack init-capture: [...x = args])
+    if (Tok.is(tok::ellipsis)) {
+      IsPackExpansion = true;
+      ConsumeToken();
+    }
+
+    if (Tok.isNot(tok::identifier)) {
+      Diag(Tok, diag::err_expected) << tok::identifier;
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return true;
+    }
+
+    IdentifierInfo *Id = Tok.getIdentifierInfo();
+    SourceLocation IdLoc = ConsumeToken();
+
+    // Check for pack expansion suffix: [args...]
+    if (!IsPackExpansion && Tok.is(tok::ellipsis)) {
+      IsPackExpansion = true;
+      ConsumeToken();
+    }
+
+    ExprResult Init;
+    if (Tok.is(tok::equal)) {
+      ConsumeToken();
+      Init = ParseAssignmentExpression();
+      if (Init.isInvalid()) {
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return true;
+      }
+    }
+
+    Decl *Capture = Actions.ActOnPostconditionCapture(
+        getCurScope(), IdLoc, Id, Init.get(), IsPackExpansion);
+    if (Capture)
+      Captures.push_back(Capture);
+
+    if (Tok.is(tok::comma)) {
+      ConsumeToken();
+      continue;
+    }
+    break;
+  }
+
+  if (ExpectAndConsume(tok::r_square))
+    return true;
+
+  return false;
+}
+
 bool Parser::ParseLexedFunctionContracts(
     CachedTokens &ContractToks, Decl *FD,
     Parser::ContractEnterScopeKind ScopesToEnter) {

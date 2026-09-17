@@ -348,6 +348,104 @@ static void precomputeDynamicTable(Sema &S, ContractStmt *CS,
   CS->setDynamicInfo(StoredName, Dyn.Linkage, Dyn.ProvideWeak, Table);
 }
 
+Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
+                                      IdentifierInfo *Id, Expr *Init,
+                                      bool IsPackExpansion) {
+  DeclContext *DC = CurContext;
+  // When parsing contracts inline in a class body, DC is the CXXRecordDecl.
+  // Captures need an access specifier in that context, and SC_Auto storage
+  // to ensure CodeGen treats them as locals (not globals).
+  bool InClassContext = isa<CXXRecordDecl>(DC);
+  StorageClass CaptureSC = InClassContext ? SC_Auto : SC_None;
+
+  if (!Init) {
+    // Plain capture [i] — look up in function parameter scope.
+    LookupResult R(*this, Id, IdLoc, LookupOrdinaryName);
+    LookupName(R, S);
+    auto *PVD = R.getAsSingle<ParmVarDecl>();
+    if (!PVD) {
+      Diag(IdLoc, diag::err_postcondition_capture_not_parameter);
+      return nullptr;
+    }
+
+    // A pack-expansion capture [i...] is only well-formed when the captured
+    // parameter is itself a function parameter pack.
+    if (IsPackExpansion && !PVD->isParameterPack()) {
+      Diag(IdLoc, diag::err_pack_expansion_without_parameter_packs);
+      return nullptr;
+    }
+
+    QualType T = PVD->getType().getNonReferenceType();
+    TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(T, IdLoc);
+    auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                                 T, TInfo, CaptureSC);
+    Cap->setIsParameterCapture(true);
+    Cap->setIsPackExpansion(IsPackExpansion);
+    if (InClassContext)
+      Cap->setAccess(AS_public);
+
+    // Build copy-init from the parameter.
+    ExprResult CopyInit = BuildDeclRefExpr(
+        PVD, PVD->getType().getNonReferenceType(), VK_LValue, IdLoc);
+    if (!CopyInit.isInvalid()) {
+      if (T->isDependentType()) {
+        Cap->setInit(CopyInit.get());
+      } else {
+        ExprResult InitExpr = PerformCopyInitialization(
+            InitializedEntity::InitializeVariable(Cap), IdLoc, CopyInit.get());
+        if (!InitExpr.isInvalid())
+          Cap->setInit(InitExpr.get());
+      }
+    }
+
+    return Cap;
+  }
+
+  // A pack-expansion init-capture [...old = expr] is only well-formed when the
+  // initializer contains an unexpanded parameter pack.
+  if (IsPackExpansion && !Init->containsUnexpandedParameterPack()) {
+    Diag(IdLoc, diag::err_pack_expansion_without_parameter_packs);
+    return nullptr;
+  }
+
+  // Init-capture [old = expr] — deduce type from initializer.
+  QualType DeducedType = Init->getType();
+  if (DeducedType.isNull() || DeducedType->isDependentType()) {
+    // In dependent context, just use the expression type as-is.
+    DeducedType = Init->getType();
+  }
+
+  TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(DeducedType, IdLoc);
+  auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                               DeducedType, TInfo, CaptureSC);
+  Cap->setIsParameterCapture(false);
+  Cap->setIsPackExpansion(IsPackExpansion);
+  if (InClassContext)
+    Cap->setAccess(AS_public);
+
+  // Build a proper copy-init to the deduced capture type, matching the
+  // parameter-capture path above, so both capture forms produce a uniform,
+  // prvalue-producing initializer for codegen and constant evaluation.
+  if (DeducedType->isDependentType()) {
+    Cap->setInit(Init);
+  } else {
+    ExprResult InitExpr = PerformCopyInitialization(
+        InitializedEntity::InitializeVariable(Cap), IdLoc, Init);
+    if (!InitExpr.isInvalid())
+      Cap->setInit(InitExpr.get());
+  }
+
+  return Cap;
+}
+
+void Sema::ActOnFinishPostconditionCaptures(Scope *S,
+                                            ArrayRef<Decl *> Captures) {
+  for (Decl *D : Captures) {
+    if (auto *Cap = dyn_cast<PostconditionCaptureDecl>(D))
+      PushOnScopeChains(Cap, S, /*AddToContext=*/false);
+  }
+}
+
 StmtResult Sema::BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
                                    Expr *Cond, DeclStmt *RND, Expr *Message,
                                    Expr *Label, DeclStmt *Captures,
@@ -1793,6 +1891,11 @@ DeclResult Sema::RebuildContractsWithPlaceholderReturnType(FunctionDecl *FD) {
 
   return NewCSD;
 }
+
+struct ContractCapturePair {
+  SmallVector<const Capture *> InContract;
+  SmallVector<const Capture *> OutOfContract;
+};
 
 // ActOnContractsOnFinishFunctionBody
 //

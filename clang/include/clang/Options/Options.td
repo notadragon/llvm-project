@@ -1884,6 +1884,12 @@ defm contracts_p3097 : BoolFOption<"contracts-p3097",
           "Enable P3097 virtual function contracts">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p3098 : BoolFOption<"contracts-p3098",
+  LangOpts<"ContractsP3098">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3098 postcondition captures">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p3850 : BoolFOption<"contracts-p3850",
   LangOpts<"ContractsP3850">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],

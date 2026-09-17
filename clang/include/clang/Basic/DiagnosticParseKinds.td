@@ -1753,6 +1753,12 @@ def err_hlsl_number_literal_underflow : Error<
   "float literal has a magnitude that is too small to be represented as a float type">;
 def err_hlsl_rootsig_non_zero_flag : Error<"flag value is neither a literal 0 nor a named value">;
 
+// P3098 postcondition capture diagnostics
+def err_postcondition_captures_require_flag : Error<
+  "postcondition captures require '-fcontracts-p3098'">;
+def err_postcondition_captures_on_non_post : Error<
+  "captures are only allowed on postconditions, not on '%0'">;
+
 def warn_contract_on_parameter_declarator : Warning<
   "contract on a parameter declarator is ignored">,
   InGroup<IgnoredAttributes>;

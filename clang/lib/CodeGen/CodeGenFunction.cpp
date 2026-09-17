@@ -1568,6 +1568,29 @@ QualType CodeGenFunction::BuildFunctionArgList(GlobalDecl GD,
   return ResTy;
 }
 
+namespace {
+// P3098: postcondition captures are ordinary automatic locals, so their
+// destructor cleanups are already on the EHScopeStack in lexical order by
+// the time the prologue capture loop finishes. Pushing this cleanup right
+// after them means it runs (LIFO) before those destructors on every normal
+// exit path -- explicit return, implicit fallthrough, or an early return
+// buried in the body -- without restructuring FinishFunction/
+// EmitFunctionEpilog, which only runs once the captures would already have
+// been destroyed. Being normal-only, it does not run during exceptional
+// unwinding (the body-throws path must destroy captures without evaluating
+// predicates).
+struct EmitPendingPostContracts final : EHScopeStack::Cleanup {
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurCodeDecl);
+    llvm::Value *RV = nullptr;
+    if (FD && CGF.ReturnValue.isValid() &&
+        !CodeGenFunction::hasAggregateEvaluationKind(FD->getReturnType()))
+      RV = CGF.Builder.CreateLoad(CGF.ReturnValue);
+    CGF.EmitPostContracts(RV);
+  }
+};
+} // end anonymous namespace
+
 void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
                                    const CGFunctionInfo &FnInfo) {
   assert(Fn && "generating code for null Function");

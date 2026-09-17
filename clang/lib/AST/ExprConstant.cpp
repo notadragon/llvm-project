@@ -7260,6 +7260,45 @@ static bool EvaluatePreContracts(EvalInfo &Info, const FunctionDecl *Callee,
   return true;
 }
 
+// P3098: bind each postcondition capture in the call frame at entry (before
+// the body runs), so EvaluateContract can read it later when evaluating that
+// postcondition's predicate -- mirroring how a capture is bound in the
+// codegen prologue (CodeGenFunction::GenerateCode). Uses ScopeKind::Call
+// (not the ScopeKind::Block that ordinary body locals get via
+// EvaluateVarDecl) so the value survives the body's own block scopes
+// closing, through to EvaluatePostContracts. ScopeKind::Call cleanups are
+// only actually processed by an explicit CallScopeRAII -- HandleFunctionCall
+// pushes one around this call and EvaluatePostContracts, and destroys it
+// itself before returning, since (unlike a constructor call, which uses
+// CallScopeRAII already) an ordinary function call has no such scope and the
+// callee's CallStackFrame -- and the storage backing this capture -- is
+// gone the instant HandleFunctionCall returns.
+static bool EvaluatePostconditionCaptures(EvalInfo &Info,
+                                          const FunctionDecl *Callee) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return true;
+  for (auto *CS : Contracts->postconditions()) {
+    if (!CS->hasCaptures())
+      continue;
+    if (CS->ensureCESemantic(Info.Ctx, Callee->getDeclContext()) ==
+        ContractEvaluationSemantic::Ignore)
+      continue;
+    for (Decl *D : CS->getCapturesDeclStmt()->decls()) {
+      auto *Cap = cast<PostconditionCaptureDecl>(D);
+      LValue Result;
+      APValue &Val = Info.CurrentCall->createTemporary(Cap, Cap->getType(),
+                                                       ScopeKind::Call, Result);
+      const Expr *InitE = Cap->getInit();
+      if (!InitE || !EvaluateInPlace(Val, Info, Result, InitE)) {
+        Val = APValue();
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 static bool EvaluatePostContracts(EvalInfo &Info, const FunctionDecl *Callee,
                                   APValue &ResultValue,
                                   const LValue *ResultSlot) {
@@ -7370,6 +7409,15 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   if (!EvaluatePreContracts(Info, Callee, &Frame))
     return false;
 
+  // P3098: postcondition captures must be destroyed (their ScopeKind::Call
+  // cleanup run) before this function returns -- unlike a constructor call,
+  // an ordinary call has no other CallScopeRAII, and the storage backing a
+  // capture lives in this Frame, which is gone the instant this function
+  // returns. See EvaluatePostconditionCaptures.
+  CallScopeRAII CaptureScope(Info);
+  if (!EvaluatePostconditionCaptures(Info, Callee))
+    return false;
+
   StmtResult Ret = {Result, ResultSlot};
   EvalStmtResult ESR = EvaluateStmt(Ret, Info, Body);
 
@@ -7382,6 +7430,8 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   } else if (ESR == ESR_Returned) {
     ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
   }
+  if (ContractsOK && !CaptureScope.destroy())
+    ContractsOK = false;
   return ContractsOK;
 }
 
