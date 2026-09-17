@@ -5533,6 +5533,10 @@ public:
 
   void PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir);
 
+  Decl *ActOnContractControlUsingDirective(
+      Scope *CurScope, SourceLocation UsingLoc, SourceLocation NamespcLoc,
+      CXXScopeSpec &SS, SourceLocation IdentLoc, IdentifierInfo *NamespcName);
+
   Decl *ActOnNamespaceAliasDef(Scope *CurScope, SourceLocation NamespaceLoc,
                                SourceLocation AliasLoc, IdentifierInfo *Alias,
                                CXXScopeSpec &SS, SourceLocation IdentLoc,

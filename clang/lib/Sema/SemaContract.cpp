@@ -169,6 +169,35 @@ ExprResult Sema::ActOnContractAssertCondition(Expr *Cond) {
   return Cond;
 }
 
+/// Drop facet candidates this context cannot name, leaving R empty if none
+/// remain.
+///
+/// A facet concept is a requires-expression, so it is simply false for an
+/// inaccessible member: the facet is absent, not an error.  P3400 requires
+/// exactly that, because a label may carry private helpers named after a facet
+/// (tag dispatch) and those must not make the program ill-formed.
+///
+/// Filtering the candidates up front, rather than letting the probe fail on
+/// access, is deliberate.  Contracts are parsed as part of a declarator, and
+/// Clang *delays* access checking across a declaration so it can be redone
+/// once the declaration's context is known.  A probe run inside an SFINAE trap
+/// therefore observes no access failure at all -- the check is not skipped, it
+/// is parked, and it fires later against the contract, long after the trap has
+/// been destroyed.  That is how a private helper turned into a hard error.
+/// Removing the candidate means no member reference is ever built for it, so
+/// no access check is queued in the first place.
+static void dropInaccessibleFacetCandidates(Sema &S, const CXXRecordDecl *RD,
+                                            QualType LabelTy, LookupResult &R) {
+  LookupResult::Filter F = R.makeFilter();
+  while (F.hasNext()) {
+    NamedDecl *D = F.next();
+    if (!S.IsSimplyAccessible(D, const_cast<CXXRecordDecl *>(RD), LabelTy))
+      F.erase();
+  }
+  F.done();
+  R.suppressAccessDiagnostics();
+}
+
 /// The library's std::contracts::contract_violation, or a null QualType when
 /// <contracts> is not in scope.
 ///
@@ -201,6 +230,333 @@ static QualType getContractViolationType(Sema &S, SourceLocation Loc) {
   if (!RD)
     return QualType();
   return S.Context.getCanonicalTagType(RD);
+}
+
+/// Constant-evaluate a facet call, reporting failure rather than hiding it.
+///
+/// No concept can ask whether a member is constexpr, so per D3400R5 a type
+/// with the right member *does* participate in the facet, and the error
+/// arrives when the result is consumed during translation -- which is here.
+/// Failure must not be reported as "absent", which is the quietest way to get
+/// this wrong: the label would look applied and the comment or semantic would
+/// simply be unchanged, with no diagnostic at all.
+///
+/// The diagnostic is NoSFINAE so the surrounding probe trap, which is there to
+/// keep a wrong-shaped member from being reported, does not swallow a genuine
+/// error.
+static bool evaluateFacetConstant(Sema &S, Expr *Call, Expr::EvalResult &Eval,
+                                  StringRef FacetName, QualType LabelTy,
+                                  SourceLocation Loc) {
+  SmallVector<PartialDiagnosticAt, 8> Notes;
+  Eval.Diag = &Notes;
+  if (Call->EvaluateAsConstantExpr(Eval, S.Context))
+    return true;
+
+  // Unqualified: every assertion-control object is constexpr and therefore
+  // const, so printing that on the type is noise.
+  S.Diag(Loc, diag::err_contract_facet_not_constant)
+      << FacetName << LabelTy.getUnqualifiedType();
+  for (const PartialDiagnosticAt &Note : Notes)
+    S.Diag(Note.first, Note.second);
+  return false;
+}
+
+/// The argument list a facet named FacetName is probed with.
+///
+/// Expr is not movable, so the placeholders live in fixed in-place storage
+/// rather than a growable vector; no facet takes more than two arguments.
+struct FacetProbeArgs {
+  std::optional<OpaqueValueExpr> Storage[2];
+  SmallVector<Expr *, 2> Args;
+
+  /// False when the facet takes a shape this does not know how to probe.
+  bool build(Sema &S, StringRef FacetName, NamedDecl *Found,
+             SourceLocation Loc) {
+    unsigned N = 0;
+    auto push = [&](QualType T, ExprValueKind VK) {
+      Storage[N].emplace(Loc, T, VK);
+      Args.push_back(&*Storage[N]);
+      ++N;
+    };
+
+    if (FacetName == "handle_contract_violation") {
+      QualType CVTy = getContractViolationType(S, Loc);
+      if (CVTy.isNull())
+        return false;
+      push(CVTy.withConst(), VK_LValue);
+    } else if (FacetName == "query") {
+      push(S.Context.VoidPtrTy, VK_PRValue);
+      push(S.Context.getSizeType(), VK_PRValue);
+    } else if (FacetName == "compute_comment" ||
+               FacetName == "compute_message") {
+      push(S.Context.getPointerType(S.Context.CharTy.withConst()), VK_PRValue);
+    } else if (FacetName == "compute_semantic") {
+      // Recover the enumeration from the member rather than guessing at it.
+      auto *FD =
+          Found ? dyn_cast<FunctionDecl>(Found->getUnderlyingDecl()) : nullptr;
+      if (!FD || FD->getNumParams() != 1)
+        return false;
+      push(FD->getParamDecl(0)->getType().getNonReferenceType(), VK_PRValue);
+    } else {
+      return false;
+    }
+    return true;
+  }
+};
+
+/// True when calling Found on Obj with the facet's arguments is viable.
+static bool facetCallViable(Sema &S, Expr *Obj, QualType ObjTy,
+                            const CXXRecordDecl *RD, LookupResult &R,
+                            StringRef FacetName, SourceLocation Loc) {
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+  CXXScopeSpec SS;
+  ExprResult MR = S.BuildMemberReferenceExpr(
+      Obj, ObjTy, Loc, /*IsArrow=*/false, SS,
+      /*TemplateKWLoc=*/SourceLocation(),
+      /*FirstQualifierInScope=*/nullptr, R, /*TemplateArgs=*/nullptr,
+      /*S=*/nullptr);
+  if (MR.isInvalid())
+    return false;
+
+  FacetProbeArgs Probe;
+  if (!Probe.build(S, FacetName, R.getRepresentativeDecl(), Loc))
+    return false;
+
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc,
+                                    Probe.Args, Loc, /*ExecConfig=*/nullptr);
+  return !Call.isInvalid();
+}
+
+/// Warn when RD has a member named FacetName that almost provides a facet.
+///
+/// Only two near misses are reported, and each is recognized by relaxing
+/// exactly one thing and seeing whether that alone makes the call viable: an
+/// inaccessible member, and one that is not const.  Anything else stays
+/// silent.  That matters: D3400R5 points out that a label may carry private
+/// helpers sharing a facet's name -- tag-dispatch overloads, say -- and
+/// warning on a name match alone would fire on every one of them.  Relaxing a
+/// single dimension will not make such a helper's signature fit, so it never
+/// reaches a warning.
+static void warnNearMissFacet(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                              const CXXRecordDecl *RD, StringRef FacetName,
+                              SourceLocation Loc) {
+  DeclarationName Name = &S.Context.Idents.get(FacetName);
+
+  auto lookup = [&](LookupResult &R) {
+    return S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)) &&
+           !R.isAmbiguous();
+  };
+
+  LookupResult Raw(S, Name, Loc, Sema::LookupMemberName);
+  if (!lookup(Raw)) {
+    Raw.suppressDiagnostics();
+    return;
+  }
+  Raw.suppressAccessDiagnostics();
+  NamedDecl *Rep = Raw.getRepresentativeDecl();
+
+  // The question detection asked: accessible candidates only, on the const
+  // label.  If that is viable the facet is present and there is nothing to say.
+  LookupResult Accessible(S, Name, Loc, Sema::LookupMemberName);
+  if (!lookup(Accessible)) {
+    Accessible.suppressDiagnostics();
+    return;
+  }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, Accessible);
+  bool AnyAccessible = !Accessible.empty();
+  if (AnyAccessible &&
+      facetCallViable(S, LabelExpr, LabelTy, RD, Accessible, FacetName, Loc))
+    return;
+
+  enum { Inaccessible, NotConst };
+
+  // Relax access only.
+  if (!AnyAccessible &&
+      facetCallViable(S, LabelExpr, LabelTy, RD, Raw, FacetName, Loc)) {
+    S.Diag(Loc, diag::warn_contract_invalid_label_facet)
+        << FacetName << LabelTy.getUnqualifiedType() << Inaccessible;
+    if (Rep)
+      S.Diag(Rep->getLocation(), diag::note_contract_invalid_label_facet);
+    return;
+  }
+
+  // Relax const only.  A facet is always invoked on a constexpr, therefore
+  // const, control object, so a non-const member can never be one.
+  if (AnyAccessible) {
+    QualType NonConstTy = LabelTy.getUnqualifiedType();
+    OpaqueValueExpr NonConstObj(Loc, NonConstTy, VK_LValue);
+    LookupResult Again(S, Name, Loc, Sema::LookupMemberName);
+    if (!lookup(Again)) {
+      Again.suppressDiagnostics();
+      return;
+    }
+    dropInaccessibleFacetCandidates(S, RD, NonConstTy, Again);
+    if (!Again.empty() && facetCallViable(S, &NonConstObj, NonConstTy, RD,
+                                          Again, FacetName, Loc)) {
+      S.Diag(Loc, diag::warn_contract_invalid_label_facet)
+          << FacetName << LabelTy.getUnqualifiedType() << NotConst;
+      if (Rep)
+        S.Diag(Rep->getLocation(), diag::note_contract_invalid_label_facet);
+    }
+  }
+}
+
+// Try to call label.member_name(semantic_arg) and constant-evaluate.
+// Returns the integer result, or -1 on failure.
+static int64_t callLabelMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                               const CXXRecordDecl *RD, StringRef MethodName,
+                               unsigned SemVal, SourceLocation Loc) {
+  // Probing must not diagnose: a member of the wrong shape simply means the
+  // facet is absent.  The trap covers only the construction of the call --
+  // constant evaluation below deliberately runs outside it, because a failure
+  // there IS reportable.
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+  DeclarationName Name = &S.Context.Idents.get(MethodName);
+  LookupResult R(S, Name, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
+    return -1;
+  if (R.isAmbiguous()) {
+    R.suppressDiagnostics();
+    return -1;
+  }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return -1;
+
+  CXXScopeSpec SS;
+
+  ExprResult MemberRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  if (MemberRef.isInvalid())
+    return -1;
+
+  FunctionDecl *FD = nullptr;
+  if (auto *ME = dyn_cast<MemberExpr>(MemberRef.get()))
+    FD = dyn_cast<FunctionDecl>(ME->getMemberDecl());
+  else if (auto *DRE = dyn_cast<DeclRefExpr>(MemberRef.get()))
+    FD = dyn_cast<FunctionDecl>(DRE->getDecl());
+
+  QualType ParamTy;
+  if (FD && FD->getNumParams() > 0)
+    ParamTy = FD->getParamDecl(0)->getType();
+  else
+    ParamTy = S.Context.UnsignedCharTy;
+
+  Expr *Arg = IntegerLiteral::Create(S.Context, llvm::APInt(8, SemVal),
+                                     S.Context.UnsignedCharTy, Loc);
+  Arg = ImplicitCastExpr::Create(S.Context, ParamTy, CK_IntegralCast, Arg,
+                                 nullptr, VK_PRValue, FPOptionsOverride());
+
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc,
+                                    {Arg}, Loc, /*ExecConfig=*/nullptr);
+  if (Call.isInvalid())
+    return -1;
+
+  Expr::EvalResult Eval;
+  if (!evaluateFacetConstant(S, Call.get(), Eval, MethodName, LabelTy, Loc) ||
+      !Eval.Val.isInt())
+    return -1;
+  return Eval.Val.getInt().getExtValue();
+}
+
+// Call label.method_name(const char* arg) and constant-evaluate the result.
+// Returns the resulting string, or empty StringRef on failure or null result.
+static StringRef
+callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                      const CXXRecordDecl *RD, StringRef MethodName,
+                      StringRef CurrentVal, bool IsNull, SourceLocation Loc) {
+  // Probing must not diagnose: a member of the wrong shape simply means the
+  // facet is absent.  The trap covers only the construction of the call --
+  // constant evaluation below deliberately runs outside it, because a failure
+  // there IS reportable.
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+  DeclarationName Name = &S.Context.Idents.get(MethodName);
+  LookupResult R(S, Name, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD)))
+    return {};
+  if (R.isAmbiguous()) {
+    R.suppressDiagnostics();
+    return {};
+  }
+  dropInaccessibleFacetCandidates(S, RD, LabelTy, R);
+  if (R.empty())
+    return {};
+
+  CXXScopeSpec SS;
+
+  ExprResult MemberRef =
+      S.BuildMemberReferenceExpr(LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                 /*TemplateKWLoc=*/SourceLocation(),
+                                 /*FirstQualifierInScope=*/nullptr, R,
+                                 /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+  if (MemberRef.isInvalid())
+    return {};
+
+  QualType ConstCharPtrTy =
+      S.Context.getPointerType(S.Context.CharTy.withConst());
+
+  Expr *Arg;
+  if (IsNull) {
+    Arg = ImplicitCastExpr::Create(S.Context, ConstCharPtrTy, CK_NullToPointer,
+                                   IntegerLiteral::Create(S.Context,
+                                                          llvm::APInt(32, 0),
+                                                          S.Context.IntTy, Loc),
+                                   nullptr, VK_PRValue, FPOptionsOverride());
+  } else {
+    QualType ArrTy = S.Context.getStringLiteralArrayType(S.Context.CharTy,
+                                                         CurrentVal.size());
+    StringLiteral *SL = StringLiteral::Create(S.Context, CurrentVal,
+                                              StringLiteralKind::Ordinary,
+                                              /*Pascal=*/false, ArrTy, {Loc});
+    Arg = ImplicitCastExpr::Create(S.Context, ConstCharPtrTy,
+                                   CK_ArrayToPointerDecay, SL, nullptr,
+                                   VK_PRValue, FPOptionsOverride());
+  }
+
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc,
+                                    {Arg}, Loc, /*ExecConfig=*/nullptr);
+  if (Call.isInvalid())
+    return {};
+
+  Expr::EvalResult Eval;
+  if (!evaluateFacetConstant(S, Call.get(), Eval, MethodName, LabelTy, Loc))
+    return {};
+
+  const APValue &Val = Eval.Val;
+  if (!Val.isLValue())
+    return {};
+
+  if (Val.getLValueBase().isNull())
+    return {};
+
+  if (const auto *Base = Val.getLValueBase().dyn_cast<const Expr *>()) {
+    if (const auto *SL = dyn_cast<StringLiteral>(Base))
+      return SL->getString();
+  }
+
+  return {};
+}
+
+// Walk an APValue representing a char array (char[N]) and extract its string.
+static std::string extractStringFromAPValue(const APValue &Val) {
+  std::string Str;
+  if (!Val.isArray())
+    return Str;
+  unsigned InitElts = Val.getArrayInitializedElts();
+  for (unsigned I = 0, N = Val.getArraySize(); I < N; ++I) {
+    const APValue &Ch =
+        (I < InitElts) ? Val.getArrayInitializedElt(I) : Val.getArrayFiller();
+    if (Ch.isInt()) {
+      char C = static_cast<char>(Ch.getInt().getExtValue());
+      if (C == '\0')
+        break;
+      Str += C;
+    }
+  }
+  return Str;
 }
 
 // Resolve contract config for any contract (with or without label).
@@ -346,6 +702,274 @@ static void precomputeDynamicTable(Sema &S, ContractStmt *CS,
 
   StringRef StoredName = S.Context.backupStr(Dyn.Name);
   CS->setDynamicInfo(StoredName, Dyn.Linkage, Dyn.ProvideWeak, Table);
+}
+
+static void applyLabelFacets(Sema &S, ContractStmt *CS) {
+  Expr *LabelExpr = CS->getLabelExpr();
+  if (!LabelExpr)
+    return;
+  QualType LabelTy = LabelExpr->getType();
+  if (LabelTy->isDependentType())
+    return;
+
+  // Every facet below is read by constant-evaluating a member call built on
+  // the label expression.  Say so, so that the temporaries that come with a
+  // prvalue label -- pre<L{}> rather than pre<named> -- are torn down with
+  // this context instead of leaking into the enclosing function, where they
+  // trip ActOnFinishFunctionBody's "Unaccounted cleanups in function".
+  EnterExpressionEvaluationContext ConstantEvaluated(
+      S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+
+  SourceLocation Loc = CS->getKeywordLoc();
+
+  // An assertion-control label (P3400) must be a value of a class type that has
+  // a member type named 'assertion_control_object'.  Reject anything else --
+  // a non-class type (e.g. a bool comparison result or an integer), or a class
+  // that lacks the marker member type.
+  const auto *RD = LabelTy->getAsCXXRecordDecl();
+  bool IsValidLabel = false;
+  if (RD) {
+    DeclarationName ACOName = &S.Context.Idents.get("assertion_control_object");
+    LookupResult ACO(S, ACOName, Loc, Sema::LookupOrdinaryName);
+    if (S.LookupQualifiedName(ACO, const_cast<CXXRecordDecl *>(RD)) &&
+        !ACO.isAmbiguous() && ACO.getAsSingle<TypeDecl>())
+      IsValidLabel = true;
+    ACO.suppressDiagnostics();
+  }
+  if (!IsValidLabel) {
+    S.Diag(Loc, diag::err_contract_invalid_label)
+        << LabelTy << LabelExpr->getSourceRange();
+    return;
+  }
+
+  // Step 1: Extract the flag-independent label restriction from the label's
+  // allowed_semantics facet.
+  unsigned LabelMask = extractAllowedMask(S, LabelExpr, LabelTy, RD, Loc);
+
+  // Step 2: Extract group names from identification_label facet.
+  SmallVector<std::string> LabelGroups =
+      extractGroupNames(S, LabelExpr, LabelTy, RD, Loc);
+
+  // Step 3: Apply the -fcontracts-allow-assume gate to get the effective
+  // allowed set (base gated by the flag, intersected with the label), then
+  // eagerly resolve.  Labeled contracts must resolve eagerly because label
+  // facets (groups, compute_semantic) require Sema for evaluation.  The
+  // flag-independent restriction is stored so the query builders re-apply the
+  // gate uniformly (e.g. for template instantiations).
+  unsigned AllowedMask =
+      LabelMask & gatedContractSemanticsMask(
+                      S.Context.getLangOpts().ContractOpts.AllowAssume,
+                      S.Context.getLangOpts().ContractsP4298);
+  if (AllowedMask == 0) {
+    S.Diag(Loc, diag::err_typecheck_bool_condition)
+        << "assertion-control label allows no evaluation semantics";
+    return;
+  }
+  CS->setAllowedMask(LabelMask);
+  resolveContractConfig(S, CS, AllowedMask, LabelGroups);
+
+  ContractEvaluationSemantic EffectiveSem = CS->getSemantic(S.Context);
+
+  // Step 4: Apply compute_semantic transformation if present.  It may return
+  // any valid semantic, including assume and the D4298 noexcept_* variants
+  // (1..7); a result outside the allowed set is diagnosed in Step 5.
+  int64_t ComputeResult =
+      callLabelMethod(S, LabelExpr, LabelTy, RD, "compute_semantic",
+                      static_cast<unsigned>(EffectiveSem), Loc);
+  if (ComputeResult >= 1 && ComputeResult <= 7)
+    EffectiveSem = static_cast<ContractEvaluationSemantic>(ComputeResult);
+
+  // Step 5: A compute_semantic result outside the effective allowed set is an
+  // error -- including assume when -fcontracts-allow-assume is not set, since
+  // the gate keeps assume out of the set entirely.
+  if (!(AllowedMask & (1u << static_cast<unsigned>(EffectiveSem)))) {
+    S.Diag(Loc, diag::err_typecheck_bool_condition)
+        << "compute_semantic result is not in the allowed evaluation "
+           "semantics";
+    return;
+  }
+
+  if (EffectiveSem != CS->getSemantic(S.Context))
+    CS->setTransformedSemantic(EffectiveSem);
+
+  // Step 5b: P3595 dynamic selection.  If this contract's runtime resolution
+  // matches a config entry with an "output.dynamic" descriptor, precompute the
+  // per-return-value transform table for codegen.  The eagerly-resolved scalar
+  // above remains the compile-time default (weak-def value + constant
+  // evaluation); this is a separate, per-return-value computation whose
+  // disallowed results become the runtime sentinel rather than a compile error.
+  precomputeDynamicTable(S, CS, AllowedMask, LabelGroups, LabelExpr, LabelTy,
+                         RD, Loc);
+
+  // Also eagerly resolve CE semantic for labeled contracts.
+  {
+    ContractQuery CEQ;
+    CEQ.Kind = CS->getContractKind();
+    CEQ.CallerSide = false;
+    CEQ.InConstantEvaluation = true;
+    CEQ.AllowedMask = AllowedMask;
+    CEQ.Groups = LabelGroups;
+    CEQ.FnContext = S.CurContext;
+    CEQ.Loc = CS->getKeywordLoc();
+    CEQ.SM = &S.getSourceManager();
+
+    const auto &Opts = S.Context.getLangOpts().ContractOpts;
+    ContractEvaluationSemantic CESem = Opts.resolveContractSemantic(CEQ);
+
+    if (ComputeResult >= 0) {
+      int64_t CECompute =
+          callLabelMethod(S, LabelExpr, LabelTy, RD, "compute_semantic",
+                          static_cast<unsigned>(CESem), Loc);
+      if (CECompute >= 1 && CECompute <= 7 &&
+          (AllowedMask & (1u << static_cast<unsigned>(CECompute))))
+        CESem = static_cast<ContractEvaluationSemantic>(CECompute);
+    }
+    CS->setCESemantic(CESem);
+  }
+
+  // Report members that look like they were meant to be facets but are not.
+  // Once per label type: the answer depends only on the type, and a label is
+  // typically named by many contracts.
+  if (!S.getDiagnostics().isIgnored(diag::warn_contract_invalid_label_facet,
+                                    Loc) &&
+      S.ContractNearMissCheckedLabels.insert(RD).second) {
+    static constexpr StringRef Facets[] = {
+        "compute_semantic", "compute_comment", "compute_message",
+        "handle_contract_violation", "query"};
+    for (StringRef Facet : Facets)
+      warnNearMissFacet(S, LabelExpr, LabelTy, RD, Facet, Loc);
+  }
+
+  // Step 6: Detect local_violation_label facet.
+  {
+    // See callLabelMethod: an inaccessible member means the facet is absent.
+    Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+    DeclarationName HCVName =
+        &S.Context.Idents.get("handle_contract_violation");
+    LookupResult HR(S, HCVName, Loc, Sema::LookupMemberName);
+    if (S.LookupQualifiedName(HR, const_cast<CXXRecordDecl *>(RD)) &&
+        !HR.isAmbiguous()) {
+      dropInaccessibleFacetCandidates(S, RD, LabelTy, HR);
+      CXXScopeSpec SS;
+      ExprResult MR = HR.empty()
+                          ? ExprError()
+                          : S.BuildMemberReferenceExpr(
+                                LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                /*TemplateKWLoc=*/SourceLocation(),
+                                /*FirstQualifierInScope=*/nullptr, HR,
+                                /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+      // Forming the member reference is not enough to decide the facet: it
+      // succeeds for a member of any signature, and on a const label it
+      // succeeds even for a non-const member, because the constness of the
+      // implicit object argument is only checked when the call is built.  The
+      // concept asks whether `__t.handle_contract_violation(__v)' is valid for
+      // a `const _T __t', so build exactly that and see.  Use BuildCallExpr
+      // rather than BuildCallToMemberFunction, which asserts on the member
+      // reference produced for a static member.
+      bool Viable = false;
+      if (!MR.isInvalid()) {
+        QualType CVTy = getContractViolationType(S, Loc);
+        if (!CVTy.isNull()) {
+          OpaqueValueExpr CVArg(Loc, CVTy.withConst(), VK_LValue);
+          Expr *ArgExprs[] = {&CVArg};
+          ExprResult Call =
+              S.BuildCallExpr(/*Scope=*/nullptr, MR.get(), Loc, ArgExprs, Loc,
+                              /*ExecConfig=*/nullptr);
+          Viable = !Call.isInvalid();
+        }
+      }
+      if (Viable) {
+        CS->setHasLocalHandler(true);
+
+        // CodeGen's rethrowing-local-handler bypass reads the handler's body to
+        // decide whether the predicate needs an EH region at all, and CodeGen
+        // has no Sema to instantiate one with.  For a template specialization
+        // --
+        // __combined_label's handler above all, which is the case the
+        // optimization most wants to see -- MarkFunctionReferenced would only
+        // queue the definition until end of TU, by which point an eagerly
+        // emitted guarded function has already been code-generated without
+        // it.  Instantiate it here instead.  This does not cause an
+        // instantiation that would not happen anyway: the trampoline odr-uses
+        // the handler, so its definition is required in this TU regardless.
+        // It only moves that instantiation earlier.
+        for (const auto *M : RD->methods()) {
+          if (!M->getDeclName().isIdentifier() ||
+              M->getName() != "handle_contract_violation")
+            continue;
+          auto *MD = const_cast<CXXMethodDecl *>(M);
+          if (!MD->hasBody() && MD->isTemplateInstantiation())
+            S.InstantiateFunctionDefinition(Loc, MD, /*Recursive=*/false,
+                                            /*DefinitionRequired=*/false,
+                                            /*AtEndOfTU=*/false);
+          break;
+        }
+      }
+    } else {
+      HR.suppressDiagnostics();
+    }
+  }
+
+  // Step 6b: Detect queryable_label facet.
+  {
+    // See callLabelMethod: an inaccessible member means the facet is absent.
+    Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+    DeclarationName QName = &S.Context.Idents.get("query");
+    LookupResult QR(S, QName, Loc, Sema::LookupMemberName);
+    if (S.LookupQualifiedName(QR, const_cast<CXXRecordDecl *>(RD)) &&
+        !QR.isAmbiguous()) {
+      dropInaccessibleFacetCandidates(S, RD, LabelTy, QR);
+      CXXScopeSpec SS;
+      ExprResult MR = QR.empty()
+                          ? ExprError()
+                          : S.BuildMemberReferenceExpr(
+                                LabelExpr, LabelTy, Loc, /*IsArrow=*/false, SS,
+                                /*TemplateKWLoc=*/SourceLocation(),
+                                /*FirstQualifierInScope=*/nullptr, QR,
+                                /*TemplateArgs=*/nullptr, /*S=*/nullptr);
+      if (!MR.isInvalid()) {
+        Expr *QueryMember = MR.get();
+        OpaqueValueExpr KeyArg(Loc, S.Context.VoidPtrTy, VK_PRValue);
+        OpaqueValueExpr IdxArg(Loc, S.Context.getSizeType(), VK_PRValue);
+        Expr *ArgExprs[] = {&KeyArg, &IdxArg};
+        // BuildCallToMemberFunction asserts that its callee has bound-member
+        // or overload type, which the member reference for a *static* query
+        // does not -- it is an ordinary function lvalue -- so calling it here
+        // crashed the compiler on a static member.  A static member satisfies
+        // the concept (`__t.query(...)' is valid for one), so this has to
+        // work.  BuildCallExpr dispatches on the callee's actual form and
+        // handles both.
+        ExprResult Call =
+            S.BuildCallExpr(/*Scope=*/nullptr, QueryMember, Loc, ArgExprs, Loc,
+                            /*ExecConfig=*/nullptr);
+        if (!Call.isInvalid() && Call.get()->getType()->isVoidPointerType())
+          CS->setHasQuery(true);
+      }
+    } else {
+      QR.suppressDiagnostics();
+    }
+  }
+
+  // Step 7: Apply compute_comment facet.
+  {
+    std::string Comment = CS->getSourceText(S.Context);
+    StringRef Result = callLabelStringMethod(S, LabelExpr, LabelTy, RD,
+                                             "compute_comment", Comment,
+                                             /*IsNull=*/false, Loc);
+    if (!Result.empty())
+      CS->setTransformedComment(S.Context.backupStr(Result));
+  }
+
+  // Step 8: Apply compute_message facet.
+  {
+    std::string Msg = CS->getUserMessage(S.Context);
+    bool IsNull = Msg.empty() && !CS->hasMessage() &&
+                  !CS->getAttrAs<ContractMessageAttr>();
+    StringRef Result = callLabelStringMethod(
+        S, LabelExpr, LabelTy, RD, "compute_message", Msg, IsNull, Loc);
+    if (!Result.empty())
+      CS->setTransformedMessage(S.Context.backupStr(Result));
+  }
 }
 
 Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
@@ -514,6 +1138,41 @@ StmtResult Sema::BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
   }
 
   return Res;
+}
+
+/// Populate a ContractStmt's label-facet and P3595 dynamic-selection state.
+///
+/// Shared by the primary-parse path (Sema::ActOnContractAssert ->
+/// Sema::BuildContractStmt) and the template-instantiation path
+/// (TreeTransform::RebuildContractStmt -> Sema::BuildContractStmt).  Callers
+/// must only invoke this in a non-dependent context (the label type and any
+/// config resolution must be concrete).
+void Sema::populateContractSemanticState(ContractStmt *CS) {
+  if (CS->hasLabel()) {
+    applyLabelFacets(*this, CS);
+  } else {
+    // P3595 dynamic selection for UNLABELED contracts.  An unlabeled contract
+    // never goes through applyLabelFacets, but it can still match a config
+    // entry carrying an "output.dynamic" descriptor (by group / namespace /
+    // location).  Populate the dynamic descriptor + transform table here so
+    // codegen sees it -- mirroring how a labeled contract's dynamic state is
+    // populated in applyLabelFacets.
+    //
+    // An unlabeled contract has no allowed_semantics narrowing and no
+    // compute_semantic facet, so the transform table is pure clamp (identity
+    // over the full gated set).  precomputeDynamicTable is null-RD-safe and no-
+    // ops when the contract does not resolve to a dynamic entry, so
+    // non-dynamic contracts are left untouched (isDynamic() stays false).
+    unsigned AllowedMask = CS->getAllowedMask() &
+                           gatedContractSemanticsMask(
+                               Context.getLangOpts().ContractOpts.AllowAssume,
+                               Context.getLangOpts().ContractsP4298);
+    // Empty Groups: precomputeDynamicTable falls back to the
+    // [[clang::contract_group]] attribute, matching resolveContractConfig.
+    precomputeDynamicTable(*this, CS, AllowedMask, /*Groups=*/{},
+                           /*LabelExpr=*/nullptr, /*LabelTy=*/QualType(),
+                           /*RD=*/nullptr, CS->getKeywordLoc());
+  }
 }
 
 StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,

@@ -41,8 +41,10 @@ def KEYHLSL : TokenKey<0x8000000>;
 def KEYFIXEDPOINT : TokenKey<0x10000000>;
 def KEYDEFERTS : TokenKey<0x20000000>;
 def KEYNOHLSL : TokenKey<0x40000000>;
+def KEYCONTRACTS : TokenKey<0x80000000>;
+def KEYCONTRACTSP3400 : TokenKey<0x100000000>;
 
-def KEYMAX : TokenKey<KEYNOHLSL.Value>;
+def KEYMAX : TokenKey<KEYCONTRACTSP3400.Value>;
 def KEYALLCXX : TokenKey<!or(KEYCXX.Value, KEYCXX11.Value, KEYCXX20.Value)>;
 def KEYALL : TokenKey<!and(!or(KEYMAX.Value, !sub(KEYMAX.Value, 1)),
                            !xor(KEYNOMS18.Value, -1),

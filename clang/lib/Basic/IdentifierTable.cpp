@@ -142,6 +142,8 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
   case KEYCONTRACTS:
     return (LangOpts.Contracts || LangOpts.ContractsP4299) ? KS_Enabled
                                                            : KS_Unknown;
+  case KEYCONTRACTSP3400:
+    return LangOpts.ContractsP3400 ? KS_Enabled : KS_Unknown;
   case KEYMODULES:
     return KS_Unknown;
   case KEYOPENCLCXX:

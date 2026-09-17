@@ -2607,5 +2607,5 @@ unsigned StringLiteralParser::getOffsetOfStringByte(const Token &Tok,
 bool StringLiteralParser::isValidUDSuffix(const LangOptions &LangOpts,
                                           StringRef Suffix) {
   return NumericLiteralParser::isValidUDSuffix(LangOpts, Suffix) ||
-         Suffix == "sv";
+         Suffix == "sv" || (LangOpts.CPlusPlus26 && Suffix == "group");
 }
