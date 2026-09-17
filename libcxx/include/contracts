@@ -168,6 +168,21 @@ private:
   const __cxxabiv1::__cxa_contract_data_block* __chain_;
 };
 
+// P3400 (D4298): classifies the evaluation semantics that never propagate an
+// exception out of contract-violation handling.  A free function (not a
+// contract_violation member, unlike is_terminating above) because it
+// classifies a bare evaluation_semantic value rather than a violation that
+// has already occurred.  Placed unconditionally alongside the base contracts
+// API, matching is_terminating -- the classification is a static property of
+// the enumerators, usable regardless of whether P3400 labels are in use.
+inline constexpr bool is_nonthrowing(evaluation_semantic __s) noexcept {
+  return __s == evaluation_semantic::ignore
+      || __s == evaluation_semantic::quick_enforce
+      || __s == evaluation_semantic::assume
+      || __s == evaluation_semantic::noexcept_enforce
+      || __s == evaluation_semantic::noexcept_observe;
+}
+
 _LIBCPP_EXPORTED_FROM_ABI void invoke_default_contract_violation_handler(const contract_violation&) noexcept;
 
 _LIBCPP_EXPORTED_FROM_ABI void __handle_manual_contract_violation(
@@ -664,6 +679,44 @@ inline void handle_observed_contract_violation(
 // mixed-flag program is well-formed and a non-inlined call lands on the
 // symbol matching the caller's own flag.
 #ifdef __cpp_contracts_nonthrowing_semantics
+inline namespace __p4298 {
+#endif
+
+inline void handle_observed_contract_violation(
+    nothrow_t,
+    const char* __comment,
+    const std::source_location& __loc = std::source_location::current()) noexcept {
+  __handle_manual_contract_violation(assertion_kind::manual,
+#ifdef __cpp_contracts_nonthrowing_semantics
+      evaluation_semantic::noexcept_observe,
+#else
+      evaluation_semantic::observe,
+#endif
+      detection_mode::unspecified, __comment, __loc, /*__can_throw=*/false);
+}
+
+[[noreturn]] inline void handle_enforced_contract_violation(
+    std::nothrow_t,
+    const char* __comment,
+    const std::source_location& __loc = std::source_location::current()
+    ) noexcept {
+  __handle_manual_contract_violation(assertion_kind::manual,
+#ifdef __cpp_contracts_nonthrowing_semantics
+      evaluation_semantic::noexcept_enforce,
+#else
+      evaluation_semantic::enforce,
+#endif
+      detection_mode::unspecified, __comment, __loc, /*__can_throw=*/false);
+  __libcpp_unreachable();
+}
+
+#ifdef __cpp_contracts_nonthrowing_semantics
+} // inline namespace __p4298
+#endif
+
+} // namespace std::contracts
+#endif // __cpp_lib_contracts_api
+
 __attribute__((weak)) void handle_contract_violation(const std::contracts::contract_violation&);
 
 #endif // _LIBCPP_CONTRACTS
