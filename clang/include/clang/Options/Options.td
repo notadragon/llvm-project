@@ -1902,6 +1902,17 @@ defm contracts_p3850 : BoolFOption<"contracts-p3850",
           "Enable P3850 contract extensions (implies -fcontracts-p3097, -fcontracts-p3098, -fcontracts-p3099, -fcontracts-p3100, -fcontracts-p3290, -fcontracts-p3400, -fcontracts-p4283, -fcontracts-p4298, -fcontracts-p4301)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contract_bypass_rethrowing_local_handler :
+  BoolFOption<"contract-bypass-rethrowing-local-handler",
+  LangOpts<"ContractBypassRethrowingLocalHandler">, DefaultTrue,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option]>,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option],
+          "Where a label's local violation handler answers an "
+          "evaluation_exception by rethrowing, catch the predicate's "
+          "exception to reach that handler rather than letting it "
+          "propagate. A predicate that is merely false reaches the handler "
+          "either way.">>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,
