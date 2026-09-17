@@ -664,6 +664,60 @@ getOrCreateLocalHandlerTrampoline(CodeGenModule &CGM,
   return TrampolineFn;
 }
 
+static llvm::Function *
+getOrCreateQueryTrampoline(CodeGenModule &CGM, const CXXRecordDecl *LabelRD) {
+  LabelMethod Found = findLabelMethod(CGM.getContext(), LabelRD, "query");
+  const CXXMethodDecl *QueryMethod = Found.Method;
+  if (!QueryMethod)
+    return nullptr;
+
+  std::string TrampolineName =
+      ("__clang_contract_query_" + CGM.getMangledName(GlobalDecl(QueryMethod)))
+          .str();
+  if (!Found.ThisOffset.isZero())
+    TrampolineName += "_" + llvm::utostr(Found.ThisOffset.getQuantity());
+
+  if (auto *Existing = CGM.getModule().getFunction(TrampolineName))
+    return Existing;
+
+  llvm::LLVMContext &LLVMCtx = CGM.getLLVMContext();
+  llvm::Type *PtrTy = llvm::PointerType::getUnqual(LLVMCtx);
+  llvm::Type *SizeTy = CGM.SizeTy;
+
+  // Signature: void*(const void* label_ptr, const void* key, size_t index)
+  llvm::FunctionType *TrampolineFTy =
+      llvm::FunctionType::get(PtrTy, {PtrTy, PtrTy, SizeTy}, false);
+
+  llvm::Function *TrampolineFn =
+      llvm::Function::Create(TrampolineFTy, llvm::GlobalValue::InternalLinkage,
+                             TrampolineName, &CGM.getModule());
+
+  llvm::BasicBlock *Entry =
+      llvm::BasicBlock::Create(LLVMCtx, "entry", TrampolineFn);
+  llvm::IRBuilder<> B(Entry);
+
+  llvm::Value *LabelPtrArg = TrampolineFn->getArg(0);
+  llvm::Value *KeyArg = TrampolineFn->getArg(1);
+  llvm::Value *IndexArg = TrampolineFn->getArg(2);
+
+  llvm::Constant *MethodAddr = CGM.GetAddrOfFunction(GlobalDecl(QueryMethod));
+  llvm::FunctionType *MethodFTy = CGM.getTypes().GetFunctionType(
+      CGM.getTypes().arrangeCXXMethodDeclaration(QueryMethod));
+
+  bool IsStatic = QueryMethod->isStatic();
+
+  SmallVector<llvm::Value *, 3> CallArgs;
+  if (!IsStatic)
+    CallArgs.push_back(adjustToBase(B, LabelPtrArg, Found.ThisOffset));
+  CallArgs.push_back(KeyArg);
+  CallArgs.push_back(IndexArg);
+
+  llvm::Value *CallResult = B.CreateCall(MethodFTy, MethodAddr, CallArgs);
+  B.CreateRet(CallResult);
+
+  return TrampolineFn;
+}
+
 // Emit the contract expression.
 void CodeGenFunction::EmitContractStmt(const ContractStmt &S) {
   assert(
