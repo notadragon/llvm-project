@@ -410,6 +410,18 @@ StringRef ContractStmt::SemanticAsString(ContractEvaluationSemantic Sem) {
   llvm_unreachable("Unknown contract evaluation semantic");
 }
 
+// P3100: apply the -fcontracts-allow-assume gate to a contract's
+// (flag-independent) allowed-semantics restriction by intersecting it with the
+// gated base set.  When the flag is off, "assume" is not in the gated base, so
+// it cannot be present in the result -- a label cannot re-add it.  This runs at
+// query construction, so it applies uniformly to every contract, including
+// template instantiations.
+static unsigned applyAssumeGate(unsigned Mask, const ASTContext &Ctx) {
+  return Mask &
+         gatedContractSemanticsMask(Ctx.getLangOpts().ContractOpts.AllowAssume,
+                                    Ctx.getLangOpts().ContractsP4298);
+}
+
 ContractEvaluationSemantic
 ContractStmt::getSemantic(const ASTContext &Ctx) const {
   if (hasTransformedSemantic())

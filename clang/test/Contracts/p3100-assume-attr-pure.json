@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "namespace": "obs_pure", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "obs_opaque", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}}
+]

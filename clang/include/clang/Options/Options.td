@@ -1937,6 +1937,13 @@ defm contract_bypass_rethrowing_local_handler :
           "propagate. A predicate that is merely false reaches the handler "
           "either way.">>;
 
+defm contracts_allow_assume : BoolFOption<"contracts-allow-assume",
+  LangOpts<"ContractOpts.AllowAssume">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Allow the assume contract evaluation semantic to be used; a resolved "
+          "assume is otherwise treated as ignore">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p4299 : BoolFOption<"contracts-p4299",
   LangOpts<"ContractsP4299">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
