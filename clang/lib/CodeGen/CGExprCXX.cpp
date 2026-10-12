@@ -99,6 +99,22 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
                   CE ? CE->getExprLoc() : SourceLocation());
 }
 
+RValue CodeGenFunction::EmitCXXMemberCallWithCallSiteContracts(
+    const CXXMethodDecl *MD, const CGCallee &Callee, ReturnValueSlot Slot,
+    llvm::Value *This, llvm::Value *ContractThis, const CallExpr *CE,
+    llvm::CallBase **CallOrInvoke) {
+  const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
+  CallArgList Args;
+  MemberCallInfo CallInfo = commonEmitCXXMemberOrOperatorCall(
+      *this, MD, This, /*ImplicitParam=*/nullptr, QualType(), CE, Args,
+      /*RtlArgs=*/nullptr);
+  auto &FnInfo = CGM.getTypes().arrangeCXXMethodCall(
+      Args, FPT, CallInfo.ReqArgs, CallInfo.PrefixSize,
+      getCurrentFunctionDecl());
+  return EmitCallWithCallSiteContracts(MD, FnInfo, Callee, Slot, Args,
+                                       ContractThis, CE, CallOrInvoke);
+}
+
 RValue CodeGenFunction::EmitCXXDestructorCall(
     GlobalDecl Dtor, const CGCallee &Callee, llvm::Value *This, QualType ThisTy,
     llvm::Value *ImplicitParam, QualType ImplicitParamTy, const CallExpr *CE,
@@ -367,6 +383,8 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
       SkippedChecks.set(SanitizerKind::Null, true);
   }
 
+  // P3100: the null guard for a member call belongs here, on the object
+  // expression, before a virtual call loads the vptr through it.
   LValue This = getLValueForThis();
   if (sanitizePerformTypeCheck() || getLangOpts().ContractsP3100)
     EmitTypeCheck(CodeGenFunction::TCK_MemberCall, CallLoc,

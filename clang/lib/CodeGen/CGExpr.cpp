@@ -706,7 +706,12 @@ CodeGenFunction::EmitReferenceBindingToExpr(const Expr *E) {
   assert(LV.isSimple());
   llvm::Value *Value = LV.getPointer(*this);
 
-  if (sanitizePerformTypeCheck() && !E->getType()->isFunctionType()) {
+  // P3100 routes this check too, so reach EmitTypeCheck when contracts ask
+  // for it even if no sanitizer does -- otherwise binding a reference to *p
+  // is the one access shape whose configured null/alignment reaction never
+  // fires.
+  if ((sanitizePerformTypeCheck() || getLangOpts().ContractsP3100) &&
+      !E->getType()->isFunctionType()) {
     // C++11 [dcl.ref]p5 (as amended by core issue 453):
     //   If a glvalue to which a reference is directly bound designates neither
     //   an existing object or function of an appropriate type nor a region of
@@ -757,12 +762,51 @@ bool CodeGenFunction::sanitizePerformTypeCheck() const {
          SanOpts.has(SanitizerKind::Vptr);
 }
 
+/// True if a type check of kind TCK is an access that carries the P3100
+/// implicit contract assertions for null dereference and misalignment.
+///
+/// A load or a store is the obvious case.  Binding a reference to *p and
+/// calling a non-static member function through a null this are the same
+/// undefined behaviour reached by different syntax -- [dcl.ref]/5 and
+/// [class.mfct.non-static]/2 respectively -- and UBSan groups all three
+/// under -fsanitize=null.  Taking the address of a dereference is NOT one
+/// of them: &*p accesses nothing and must stay uninstrumented.
+static bool isP3100AccessTypeCheck(CodeGenFunction::TypeCheckKind TCK) {
+  switch (TCK) {
+  case CodeGenFunction::TCK_Load:
+  case CodeGenFunction::TCK_Store:
+  case CodeGenFunction::TCK_ReferenceBinding:
+  case CodeGenFunction::TCK_MemberCall:
+  case CodeGenFunction::TCK_ConstructorCall:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// True if a type check of kind TCK carries the P3100 implicit contract
+/// assertion for null dereference: an access, or a class member access
+/// through the pointer ([expr.ref] makes p->m (*p).m), which the access that
+/// follows it then need not repeat.  The prologue check of a member function's
+/// own this is not one: the call site checks the object expression, where the
+/// optimizer cannot delete the guard on account of a nonnull this.
+static bool isP3100NullCheck(CodeGenFunction::TypeCheckKind TCK,
+                             bool IsOwnThis) {
+  if (TCK == CodeGenFunction::TCK_MemberAccess)
+    return true;
+  if (TCK == CodeGenFunction::TCK_MemberCall && IsOwnThis)
+    return false;
+  return isP3100AccessTypeCheck(TCK);
+}
+
 void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                                     llvm::Value *Ptr, QualType Ty,
                                     CharUnits Alignment,
                                     SanitizerSet SkippedChecks,
                                     llvm::Value *ArraySize) {
-  if (!sanitizePerformTypeCheck())
+  // P3100 implicit null-dereference contract assertions reuse this null-check
+  // choke point even when no sanitizer requests a type check.
+  if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
     return;
 
   // Don't check pointers outside the default address space. The null check
@@ -801,7 +845,19 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
 
     llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
     bool AllowNullPointers = isNullPointerAllowed(TCK);
-    if ((SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
+
+    // P3100: an access through a possibly-null pointer carries an implicit
+    // ub:expr.unary.dereference.nullptr contract assertion.
+    // Emit its configured reaction here; it takes precedence over the sanitizer
+    // null check on the null edge.  (assume/ignore emit nothing and fall
+    // through.)
+    bool P3100NullHandled = false;
+    if (getLangOpts().ContractsP3100 && !IsGuaranteedNonNull &&
+        isP3100NullCheck(TCK, Ptr == CXXABIThisValue))
+      P3100NullHandled = EmitImplicitNullDerefGuard(Ptr, Loc);
+
+    if (!P3100NullHandled &&
+        (SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
         !IsGuaranteedNonNull) {
       // The glvalue must not be an empty glvalue.
       IsNonNull = Builder.CreateIsNotNull(Ptr);
@@ -857,26 +913,42 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
     llvm::MaybeAlign AlignVal;
     llvm::Value *PtrAsInt = nullptr;
 
-    if (SanOpts.has(SanitizerKind::Alignment) &&
-        !SkippedChecks.has(SanitizerKind::Alignment)) {
+    // The required alignment feeds both the P3100
+    // ub:basic.align.object.alignment contract and the -fsanitize=alignment
+    // check; compute it and the "needs checking" predicate once when either
+    // consumer is active.
+    bool AlignNeeded = false;
+    if (!SkippedChecks.has(SanitizerKind::Alignment) &&
+        (getLangOpts().ContractsP3100 ||
+         SanOpts.has(SanitizerKind::Alignment))) {
       AlignVal = Alignment.getAsMaybeAlign();
       if (!Ty->isIncompleteType() && !AlignVal)
         AlignVal = CGM.getNaturalTypeAlignment(Ty, nullptr, nullptr,
                                                /*ForPointeeType=*/true)
                        .getAsMaybeAlign();
+      AlignNeeded = AlignVal && *AlignVal > llvm::Align(1) &&
+                    (!PtrToAlloca || PtrToAlloca->getAlign() < *AlignVal);
+    }
 
+    // P3100: an access through a possibly-misaligned pointer carries an
+    // implicit contract assertion; emit its reaction here
+    // (independent of the null check above), taking precedence over the
+    // sanitizer alignment check, which is then skipped.
+    bool P3100AlignHandled = false;
+    if (getLangOpts().ContractsP3100 && AlignNeeded &&
+        isP3100AccessTypeCheck(TCK))
+      P3100AlignHandled = EmitImplicitMisalignedGuard(Ptr, *AlignVal, Loc);
+
+    if (SanOpts.has(SanitizerKind::Alignment) && !P3100AlignHandled &&
+        AlignNeeded) {
       // The glvalue must be suitably aligned.
-      if (AlignVal && *AlignVal > llvm::Align(1) &&
-          (!PtrToAlloca || PtrToAlloca->getAlign() < *AlignVal)) {
-        PtrAsInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
-        llvm::Value *Align = Builder.CreateAnd(
-            PtrAsInt, llvm::ConstantInt::get(IntPtrTy, AlignVal->value() - 1));
-        llvm::Value *Aligned =
-            Builder.CreateICmpEQ(Align, llvm::ConstantInt::get(IntPtrTy, 0));
-        if (Aligned != True)
-          Checks.push_back(
-              std::make_pair(Aligned, SanitizerKind::SO_Alignment));
-      }
+      PtrAsInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+      llvm::Value *Align = Builder.CreateAnd(
+          PtrAsInt, llvm::ConstantInt::get(IntPtrTy, AlignVal->value() - 1));
+      llvm::Value *Aligned =
+          Builder.CreateICmpEQ(Align, llvm::ConstantInt::get(IntPtrTy, 0));
+      if (Aligned != True)
+        Checks.push_back(std::make_pair(Aligned, SanitizerKind::SO_Alignment));
     }
 
     if (Checks.size() > 0) {
@@ -1704,10 +1776,29 @@ bool CodeGenFunction::IsWrappedCXXThis(const Expr *Obj) {
 
 LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
   LValue LV;
-  if (SanOpts.has(SanitizerKind::ArrayBounds) && isa<ArraySubscriptExpr>(E))
+  // Mark the subscript as accessed so the P3100 implicit bounds guard (like
+  // the array-bounds sanitizer) treats index == bound as a violation for a
+  // dereference; a one-past address &a[N] is formed elsewhere and stays legal.
+  if ((SanOpts.has(SanitizerKind::ArrayBounds) ||
+       getLangOpts().ContractsP3100) &&
+      isa<ArraySubscriptExpr>(E))
     LV = EmitArraySubscriptExpr(cast<ArraySubscriptExpr>(E), /*Accessed*/true);
   else
     LV = EmitLValue(E);
+  // Under P3100 the object expression of a member access (and the pointer of
+  // an accessed subscript) was already checked for null; the member's address
+  // coincides with it for the first member, so checking it again would report
+  // the same null dereference twice.
+  bool P3100BaseChecked = P3100SubscriptBaseGuarded;
+  P3100SubscriptBaseGuarded = false;
+  if (getLangOpts().ContractsP3100) {
+    const Expr *Inner = E->IgnoreParens();
+    if (isa<MemberExpr>(Inner))
+      P3100BaseChecked = true;
+    else if (const auto *BO = dyn_cast<BinaryOperator>(Inner);
+             BO && BO->getOpcode() == BO_PtrMemI)
+      P3100BaseChecked = true;
+  }
   if (!isa<DeclRefExpr>(E) && !LV.isBitField() && LV.isSimple()) {
     SanitizerSet SkippedChecks;
     if (const auto *ME = dyn_cast<MemberExpr>(E)) {
@@ -1717,6 +1808,8 @@ LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
       if (IsBaseCXXThis || isa<DeclRefExpr>(ME->getBase()))
         SkippedChecks.set(SanitizerKind::Null, true);
     }
+    if (P3100BaseChecked)
+      SkippedChecks.set(SanitizerKind::Null, true);
     EmitTypeCheck(TCK, E->getExprLoc(), LV, E->getType(), SkippedChecks);
   }
   return LV;
@@ -2111,6 +2204,16 @@ static bool getRangeForType(CodeGenFunction &CGF, QualType Ty, llvm::APInt &Min,
   return true;
 }
 
+bool CodeGenFunction::getStrictEnumRange(QualType Ty, llvm::APInt &Min,
+                                         llvm::APInt &End) {
+  const EnumDecl *ED = Ty->getAsEnumDecl();
+  if (!(getLangOpts().CPlusPlus && ED && !ED->isFixed()) ||
+      getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, Ty))
+    return false;
+  ED->getValueRange(End, Min);
+  return true;
+}
+
 llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
   llvm::APInt Min, End;
   bool IsBool = Ty->hasBooleanRepresentation() && !Ty->isVectorType();
@@ -2259,9 +2362,18 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(Address Addr, bool Volatile,
 
   CGM.DecorateInstructionWithTBAA(Load, TBAAInfo);
 
-  maybeAttachRangeForLoad(Load, Ty, Loc);
+  // P3100: guard an invalid bool/enum value load.  When the guard is active
+  // (non-assume) it substitutes a defined valid value, and range metadata must
+  // NOT be attached (that would let the optimizer assume validity and discard
+  // the guard); when inactive it returns Load and the metadata/sanitizer path
+  // runs as usual.
+  llvm::Value *V = Load;
+  if (getLangOpts().ContractsP3100)
+    V = EmitImplicitInvalidValueGuard(Load, Ty, Loc);
+  if (V == Load)
+    maybeAttachRangeForLoad(Load, Ty, Loc);
 
-  return EmitFromMemory(Load, Ty);
+  return EmitFromMemory(V, Ty);
 }
 
 /// Converts a scalar value from its primary IR type (as returned
@@ -3704,6 +3816,22 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   assert(E->isNonOdrUse() != NOUR_Unevaluated &&
          "should not emit an unevaluated operand");
 
+  if (const auto *RND = dyn_cast<ResultNameDecl>(ND)) {
+    // In a lambda in the postcondition, the result name is a capture.
+    if (E->refersToEnclosingVariableOrCapture())
+      if (auto *FD = LambdaCaptureFields.lookup(RND))
+        return EmitCapturedFieldLValue(*this, FD, CXXABIThisValue);
+    // For a reference-returning function the return slot holds the reference
+    // itself -- a pointer -- while the binding names the referred-to object,
+    // so load the slot rather than reinterpreting it as that object.  T is
+    // already the pointee type: a reference-typed declaration's DeclRefExpr
+    // has the referred-to type and is an lvalue.
+    if (RND->getType()->isReferenceType())
+      return MakeNaturalAlignPointeeAddrLValue(Builder.CreateLoad(ReturnValue),
+                                               T);
+    return MakeAddrLValue(ReturnValue, T, AlignmentSource::Decl);
+  }
+
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Global Named registers access via intrinsics only
     if (VD->getStorageClass() == SC_Register &&
@@ -3805,7 +3933,10 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Check if this is a global variable.
-    if (VD->hasLinkage() || VD->isStaticDataMember())
+    // PostconditionCaptureDecls are always local, even if their DeclContext
+    // is a CXXRecordDecl (from inline class body parsing).
+    if ((VD->hasLinkage() || VD->isStaticDataMember()) &&
+        !isa<PostconditionCaptureDecl>(VD))
       return EmitGlobalVarDeclLValue(*this, E, VD);
 
     Address addr = Address::invalid();
@@ -3998,7 +4129,10 @@ LValue CodeGenFunction::EmitUnaryOpLValue(const UnaryOperator *E) {
   }
   case UO_PreInc:
   case UO_PreDec: {
-    LValue LV = EmitLValue(E->getSubExpr());
+    // The operand is accessed (read and written): take it as a checked store,
+    // as ScalarExprEmitter does, so that a subscript one past the end is
+    // reported.
+    LValue LV = EmitCheckedLValue(E->getSubExpr(), TCK_Store);
     bool isInc = E->getOpcode() == UO_PreInc;
 
     if (E->getType()->isAnyComplexType())
@@ -5192,6 +5326,7 @@ void CodeGenFunction::EmitCountedByBoundsChecking(
 
 LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
                                                bool Accessed) {
+  bool SubscriptBaseGuarded = false;
   // The index must always be an integer, which is not an aggregate.  Emit it
   // in lexical order (this complexity is, sadly, required by C++17).
   llvm::Value *IdxPre =
@@ -5208,7 +5343,22 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
     SignedIndices |= IdxSigned;
 
-    if (SanOpts.has(SanitizerKind::ArrayBounds))
+    // P3100 implicit array-bounds contract assertion.  Only the statically-
+    // known-bound case is handled; an out-of-range subscript is redirected to
+    // the defined valid index 0.  It takes precedence over the sanitizer,
+    // which checks the subscript only when no contract applies.
+    llvm::Value *Unguarded = Idx;
+    if (getLangOpts().ContractsP3100) {
+      QualType IndexedType;
+      const LangOptions::StrictFlexArraysLevelKind StrictFlexArraysLevel =
+          getLangOpts().getStrictFlexArraysLevel();
+      if (llvm::Value *Bound = getArrayIndexingBound(
+              *this, E->getBase(), IndexedType, StrictFlexArraysLevel))
+        if (isa<llvm::ConstantInt>(Bound))
+          Idx = EmitImplicitArrayBoundsGuard(Idx, IdxTy, Bound, Accessed,
+                                             E->getExprLoc());
+    }
+    if (Idx == Unguarded && SanOpts.has(SanitizerKind::ArrayBounds))
       EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, Accessed);
 
     // Extend or truncate the index type to 32 or 64-bits.
@@ -5373,6 +5523,15 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     // The base must be a pointer; emit it with an estimate of its alignment.
     Address BaseAddr =
         EmitPointerWithAlignment(E->getBase(), &EltBaseInfo, &EltTBAAInfo);
+    // P3100: an accessed p[i] is *(p + i), a dereference of p, so check p
+    // itself; the element's address is not null for a nonzero i.
+    if (Accessed && getLangOpts().ContractsP3100 &&
+        !BaseAddr.isKnownNonNull() && !IsWrappedCXXThis(E->getBase())) {
+      llvm::Value *BasePtr = BaseAddr.emitRawPointer(*this);
+      if (!isa<llvm::AllocaInst>(BasePtr->stripPointerCasts()))
+        SubscriptBaseGuarded =
+            EmitImplicitNullDerefGuard(BasePtr, E->getExprLoc());
+    }
     auto *Idx = EmitIdxAfterBase(/*Promote*/true);
     QualType ptrType = E->getBase()->getType();
     Addr = emitArraySubscriptGEP(*this, BaseAddr, Idx, E->getType(),
@@ -5399,6 +5558,8 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     LV.setNonGC(!E->isOBJCGCCandidate(getContext()));
     setObjCGCLValueClass(getContext(), E, LV);
   }
+  // Set last: evaluating the index may emit other subscripts.
+  P3100SubscriptBaseGuarded = SubscriptBaseGuarded;
   return LV;
 }
 
@@ -7389,14 +7550,19 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType,
 LValue CodeGenFunction::
 EmitPointerToDataMemberBinaryExpr(const BinaryOperator *E) {
   Address BaseAddr = Address::invalid();
+  const auto *MPT = E->getRHS()->getType()->castAs<MemberPointerType>();
   if (E->getOpcode() == BO_PtrMemI) {
     BaseAddr = EmitPointerWithAlignment(E->getLHS());
+    // P3100: p->*pm is (*p).*pm ([expr.mptr.oper]), a dereference of p.
+    if (getLangOpts().ContractsP3100)
+      EmitTypeCheck(TCK_MemberAccess, E->getExprLoc(), BaseAddr,
+                    getContext().getCanonicalTagType(
+                        MPT->getMostRecentCXXRecordDecl()));
   } else {
     BaseAddr = EmitLValue(E->getLHS()).getAddress();
   }
 
   llvm::Value *OffsetV = EmitScalarExpr(E->getRHS());
-  const auto *MPT = E->getRHS()->getType()->castAs<MemberPointerType>();
 
   LValueBaseInfo BaseInfo;
   TBAAAccessInfo TBAAInfo;

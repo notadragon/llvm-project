@@ -2718,6 +2718,29 @@ public:
   /// Emit a test that checks if the return value \p RV is nonnull.
   void EmitReturnValueCheck(llvm::Value *RV);
 
+  /// Set by EmitPostContracts when it bound a postcondition's result name to
+  /// the return slot, meaning a predicate may have rewritten that slot and
+  /// whatever the caller is about to return needs re-reading from it.
+  bool ContractResultBoundToReturnSlot = false;
+
+  /// Emit the postconditions.  Returns the value the function should return:
+  /// a postcondition's result binding names the return slot, so a predicate
+  /// may have written to it and RV can be stale on return.
+  llvm::Value *EmitPostContracts(llvm::Value *RV);
+
+  /// Whether the constructor or destructor variant being generated delegates
+  /// to another variant instead of running the user-written body, so that its
+  /// contracts are evaluated there and must not be evaluated here as well.
+  bool structorVariantDelegates() const;
+
+  /// As EmitPostContracts, but with a cleanup that destroys the returned
+  /// object if a violation handler throws out of the checks.  By then the
+  /// object has been initialized ([stmt.return]/5 sequences postcondition
+  /// evaluation after it), but the prologue cleanup that would otherwise
+  /// cover it has already been popped -- the epilogue runs after
+  /// PopCleanupBlocks(PrologueCleanupDepth).
+  llvm::Value *EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
+
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
 
@@ -3467,7 +3490,8 @@ public:
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, LValue LV,
                      QualType Type, SanitizerSet SkippedChecks = SanitizerSet(),
                      llvm::Value *ArraySize = nullptr) {
-    if (!sanitizePerformTypeCheck())
+    // P3100 implicit null-dereference assertions also need this path.
+    if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
       return;
     EmitTypeCheck(TCK, Loc, LV.emitRawPointer(*this), Type, LV.getAlignment(),
                   SkippedChecks, ArraySize);
