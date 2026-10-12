@@ -2019,6 +2019,18 @@ public:
   std::string getPFPFieldName(const FieldDecl *FD);
   llvm::GlobalValue *getPFPDeactivationSymbol(const FieldDecl *FD);
 
+  /// A routed UBSan runtime check, and its slot in the UBSan routing
+  /// descriptor.
+  struct RoutedUbsanCheck {
+    unsigned Slot;
+    SanitizerMask Kind;
+  };
+  static constexpr unsigned NumRoutedUbsanSlots = 25;
+
+  /// P3100: the UBSan runtime checks whose reports -fcontracts-p3100 can route
+  /// to the contract-violation handler.
+  static ArrayRef<RoutedUbsanCheck> getRoutedUbsanChecks();
+
 private:
   /// Translate an llvm::abi::ArgInfo (computed by the LLVMABI library) into
   /// the clang ABIArgInfo consumed by the rest of CodeGen. Used by the
