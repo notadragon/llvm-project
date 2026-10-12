@@ -413,6 +413,7 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
     return true;
 
   // Never redeclarable.
+  case Decl::ContractSpecifier:
   case Decl::ExplicitInstantiation:
   case Decl::UsingDirective:
   case Decl::Label:
@@ -474,6 +475,8 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::OpenACCDeclare:
   case Decl::OpenACCRoutine:
   case Decl::CXXExpansionStmt:
+  case Decl::PostconditionCapture:
+  case Decl::ResultName:
     return false;
 
   // These indirectly derive from Redeclarable<T> but are not actually
