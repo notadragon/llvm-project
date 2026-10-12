@@ -58,6 +58,16 @@ class source_location {
   using __bsl_ty _LIBCPP_NODEBUG = decltype(__builtin_source_location());
 
 public:
+  // For <contracts>: contract_violation::location() finds a __cxa_source_location
+  // in the violation data block -- a struct with __impl's layout and members --
+  // and builds a source_location from it.  The parameter is const void* because
+  // __impl is private.
+  _LIBCPP_HIDE_FROM_ABI static source_location __create_from_pointer(const void* __ptr) noexcept {
+    source_location __loc;
+    __loc.__ptr_ = static_cast<const __impl*>(__ptr);
+    return __loc;
+  }
+
   // The defaulted __ptr argument is necessary so that the builtin is evaluated
   // in the context of the caller. An explicit value should never be provided.
   static consteval source_location current(__bsl_ty __ptr = __builtin_source_location()) noexcept {
