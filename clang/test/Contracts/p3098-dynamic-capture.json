@@ -1,0 +1,4 @@
+[
+  {"output": {"semantic": "enforce",
+              "dynamic": {"linkage": "C++", "name": "sel"}}}
+]
