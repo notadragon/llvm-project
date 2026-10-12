@@ -227,6 +227,11 @@ std::optional<ExprResult> Sema::BuildImplicitMemberExprInContract(
   return std::nullopt;
 }
 
+bool Sema::isUsingDirectiveInEffect(const UsingDirectiveDecl *UD) {
+  return isVisible(UD) &&
+         (!UD->isContractControl() || InAssertionControlExpression);
+}
+
 void Sema::CheckContractViolationHandler(FunctionDecl *FD) {
   if (!getLangOpts().Contracts)
     return;
