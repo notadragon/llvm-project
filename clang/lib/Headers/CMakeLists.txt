@@ -3,6 +3,7 @@
 # to platform specific lists below.
 set(core_files
   builtins.h
+  contracts.h
   endian.h
   float.h
   __float_float.h
@@ -22,6 +23,7 @@ set(core_files
   __stdarg_va_list.h
   stdatomic.h
   stdbool.h
+  stdcontracts.h
   stdcountof.h
   stdckdint.h
   stddef.h

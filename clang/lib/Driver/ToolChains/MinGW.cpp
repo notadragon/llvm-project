@@ -323,6 +323,11 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         }
       }
 
+      // The contracts runtime, which a translation unit with contracts
+      // references directly (see the GNU linker).
+      if (needsContractsRuntime(TC, JA, Args))
+        CmdArgs.push_back("-lcontracts");
+
       AddLibGCC(Args, CmdArgs);
 
       if (Args.hasArg(options::OPT_pg))
