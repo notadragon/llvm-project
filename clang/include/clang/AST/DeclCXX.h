@@ -72,6 +72,7 @@ class BaseUsingDecl;
 class TemplateDecl;
 class TemplateParameterList;
 class UsingDecl;
+class ContractSpecifierDecl;
 
 /// Represents an access specifier followed by colon ':'.
 ///
@@ -2156,9 +2157,11 @@ protected:
                 QualType T, TypeSourceInfo *TInfo, StorageClass SC,
                 bool UsesFPIntrin, bool isInline,
                 ConstexprSpecKind ConstexprKind, SourceLocation EndLocation,
-                const AssociatedConstraint &TrailingRequiresClause = {})
+                const AssociatedConstraint &TrailingRequiresClause = {},
+                ContractSpecifierDecl *Contracts = nullptr)
       : FunctionDecl(DK, C, RD, StartLoc, NameInfo, T, TInfo, SC, UsesFPIntrin,
-                     isInline, ConstexprKind, TrailingRequiresClause) {
+                     isInline, ConstexprKind, TrailingRequiresClause,
+                     Contracts) {
     if (EndLocation.isValid())
       setRangeEnd(EndLocation);
   }
@@ -2169,7 +2172,8 @@ public:
          const DeclarationNameInfo &NameInfo, QualType T, TypeSourceInfo *TInfo,
          StorageClass SC, bool UsesFPIntrin, bool isInline,
          ConstexprSpecKind ConstexprKind, SourceLocation EndLocation,
-         const AssociatedConstraint &TrailingRequiresClause = {});
+         const AssociatedConstraint &TrailingRequiresClause = {},
+         ContractSpecifierDecl *Contracts = nullptr);
 
   static CXXMethodDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
 
@@ -2654,7 +2658,8 @@ class CXXConstructorDecl final
                      bool UsesFPIntrin, bool isInline,
                      bool isImplicitlyDeclared, ConstexprSpecKind ConstexprKind,
                      InheritedConstructor Inherited,
-                     const AssociatedConstraint &TrailingRequiresClause);
+                     const AssociatedConstraint &TrailingRequiresClause,
+                     ContractSpecifierDecl *Contracts);
 
   void anchor() override;
 
@@ -2698,7 +2703,8 @@ public:
          ExplicitSpecifier ES, bool UsesFPIntrin, bool isInline,
          bool isImplicitlyDeclared, ConstexprSpecKind ConstexprKind,
          InheritedConstructor Inherited = InheritedConstructor(),
-         const AssociatedConstraint &TrailingRequiresClause = {});
+         const AssociatedConstraint &TrailingRequiresClause = {},
+         ContractSpecifierDecl *Contracts = nullptr);
 
   void setExplicitSpecifier(ExplicitSpecifier ES) {
     assert((!ES.getExpr() ||
@@ -2916,10 +2922,11 @@ class CXXDestructorDecl : public CXXMethodDecl {
                     const DeclarationNameInfo &NameInfo, QualType T,
                     TypeSourceInfo *TInfo, bool UsesFPIntrin, bool isInline,
                     bool isImplicitlyDeclared, ConstexprSpecKind ConstexprKind,
-                    const AssociatedConstraint &TrailingRequiresClause = {})
+                    const AssociatedConstraint &TrailingRequiresClause = {},
+                    ContractSpecifierDecl *Contracts = nullptr)
       : CXXMethodDecl(CXXDestructor, C, RD, StartLoc, NameInfo, T, TInfo,
                       SC_None, UsesFPIntrin, isInline, ConstexprKind,
-                      SourceLocation(), TrailingRequiresClause) {
+                      SourceLocation(), TrailingRequiresClause, Contracts) {
     setImplicit(isImplicitlyDeclared);
   }
 
@@ -2931,7 +2938,9 @@ public:
          const DeclarationNameInfo &NameInfo, QualType T, TypeSourceInfo *TInfo,
          bool UsesFPIntrin, bool isInline, bool isImplicitlyDeclared,
          ConstexprSpecKind ConstexprKind,
-         const AssociatedConstraint &TrailingRequiresClause = {});
+         const AssociatedConstraint &TrailingRequiresClause = {},
+         ContractSpecifierDecl *Contracts = nullptr);
+
   static CXXDestructorDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
 
   void setOperatorDelete(FunctionDecl *OD, Expr *ThisArg);
@@ -2980,10 +2989,11 @@ class CXXConversionDecl : public CXXMethodDecl {
                     TypeSourceInfo *TInfo, bool UsesFPIntrin, bool isInline,
                     ExplicitSpecifier ES, ConstexprSpecKind ConstexprKind,
                     SourceLocation EndLocation,
-                    const AssociatedConstraint &TrailingRequiresClause = {})
+                    const AssociatedConstraint &TrailingRequiresClause = {},
+                    ContractSpecifierDecl *Contracts = nullptr)
       : CXXMethodDecl(CXXConversion, C, RD, StartLoc, NameInfo, T, TInfo,
                       SC_None, UsesFPIntrin, isInline, ConstexprKind,
-                      EndLocation, TrailingRequiresClause),
+                      EndLocation, TrailingRequiresClause, Contracts),
         ExplicitSpec(ES) {}
   void anchor() override;
 
@@ -2998,7 +3008,9 @@ public:
          const DeclarationNameInfo &NameInfo, QualType T, TypeSourceInfo *TInfo,
          bool UsesFPIntrin, bool isInline, ExplicitSpecifier ES,
          ConstexprSpecKind ConstexprKind, SourceLocation EndLocation,
-         const AssociatedConstraint &TrailingRequiresClause = {});
+         const AssociatedConstraint &TrailingRequiresClause = {},
+         ContractSpecifierDecl *Contracts = nullptr);
+
   static CXXConversionDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
 
   ExplicitSpecifier getExplicitSpecifier() const {
@@ -3140,6 +3152,9 @@ class UsingDirectiveDecl : public NamedDecl {
   /// namespace.
   DeclContext *CommonAncestor;
 
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned IsContractControl : 1;
+
   UsingDirectiveDecl(DeclContext *DC, SourceLocation UsingLoc,
                      SourceLocation NamespcLoc,
                      NestedNameSpecifierLoc QualifierLoc,
@@ -3148,7 +3163,8 @@ class UsingDirectiveDecl : public NamedDecl {
                      DeclContext *CommonAncestor)
       : NamedDecl(UsingDirective, DC, IdentLoc, getName()), UsingLoc(UsingLoc),
         NamespaceLoc(NamespcLoc), QualifierLoc(QualifierLoc),
-        NominatedNamespace(Nominated), CommonAncestor(CommonAncestor) {}
+        NominatedNamespace(Nominated), CommonAncestor(CommonAncestor),
+        IsContractControl(false) {}
 
   /// Returns special DeclarationName used by using-directives.
   ///
@@ -3202,6 +3218,9 @@ public:
 
   /// Returns the location of this using declaration's identifier.
   SourceLocation getIdentLocation() const { return getLocation(); }
+
+  bool isContractControl() const { return IsContractControl; }
+  void setContractControl(bool V = true) { IsContractControl = V; }
 
   static UsingDirectiveDecl *Create(ASTContext &C, DeclContext *DC,
                                     SourceLocation UsingLoc,
@@ -4501,8 +4520,8 @@ public:
 /// uniquified by value within a translation unit.
 ///
 /// These is currently only used to back the LValue returned by
-/// __builtin_source_location, but could potentially be used for other similar
-/// situations in the future.
+/// __builtin_source_location, as well as for emitting parts of contracts
+/// violations.
 class UnnamedGlobalConstantDecl : public ValueDecl,
                                   public Mergeable<UnnamedGlobalConstantDecl>,
                                   public llvm::FoldingSetNode {
@@ -4550,6 +4569,250 @@ public:
 /// into a diagnostic with <<.
 const StreamingDiagnostic &operator<<(const StreamingDiagnostic &DB,
                                       AccessSpecifier AS);
+
+/// A capture variable in a postcondition. For instance, given:
+///
+///   int foo(int x) post [old = x] (r: r > old);
+///
+/// Where `old` is a PostconditionCaptureDecl capturing the value of `x`.
+class PostconditionCaptureDecl : public VarDecl {
+  friend class ASTDeclReader;
+  friend class ASTDeclWriter;
+
+  bool IsParameterCapture = false;
+  bool IsPackExpansion = false;
+
+  PostconditionCaptureDecl(ASTContext &Ctx, DeclContext *DC,
+                           SourceLocation StartLoc, SourceLocation IdLoc,
+                           const IdentifierInfo *Id, QualType T,
+                           TypeSourceInfo *TInfo, StorageClass SC)
+      : VarDecl(Decl::PostconditionCapture, Ctx, DC, StartLoc, IdLoc, Id, T,
+                TInfo, SC) {}
+
+public:
+  static PostconditionCaptureDecl *
+  Create(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+         SourceLocation IdLoc, const IdentifierInfo *Id, QualType T,
+         TypeSourceInfo *TInfo, StorageClass SC = SC_None);
+
+  /// A copy of \p From in \p DC with type \p T, carrying its locations,
+  /// name, storage class, access and capture flags but not its initializer.
+  static PostconditionCaptureDecl *
+  CreateClone(ASTContext &C, DeclContext *DC,
+              const PostconditionCaptureDecl *From, QualType T,
+              TypeSourceInfo *TInfo);
+  static PostconditionCaptureDecl *CreateDeserialized(ASTContext &C,
+                                                      GlobalDeclID ID);
+
+  bool isParameterCapture() const { return IsParameterCapture; }
+  void setIsParameterCapture(bool V = true) { IsParameterCapture = V; }
+
+  bool isPackExpansion() const { return IsPackExpansion; }
+  void setIsPackExpansion(bool V = true) { IsPackExpansion = V; }
+
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == Decl::PostconditionCapture; }
+};
+
+/// A result name introduced in a postcondition. For instance, given:
+///
+///   int foo() post(r : r > 0);
+///
+/// Where `r` refers to the value returned by the function
+class ResultNameDecl : public ValueDecl {
+  friend class ASTDeclReader;
+
+  /// Whether this result name is using a dummy placeholder type to represent
+  /// the deduced return type of a non-template function until the actual return
+  /// type is known.
+  ///
+  /// Result names are only allowed on non-template functions with deduced
+  /// return types if that function declaration is also a definition.
+  bool HasInventedPlaceholderType = false;
+
+  static constexpr unsigned InvalidFunctionScopeDepth = ~0U;
+
+  /// Needed for checking for structural equivalence.
+  unsigned FunctionScopeDepth = InvalidFunctionScopeDepth;
+
+  ResultNameDecl(DeclContext *DC, SourceLocation IdLoc, IdentifierInfo *Id,
+                 QualType T, bool HasInventedPlaceholderType = false,
+                 unsigned FunctionScopeDepth = InvalidFunctionScopeDepth)
+      : ValueDecl(Decl::ResultName, DC, IdLoc, Id, T),
+        HasInventedPlaceholderType(HasInventedPlaceholderType),
+        FunctionScopeDepth(FunctionScopeDepth) {}
+
+  void anchor() override;
+
+public:
+  static ResultNameDecl *
+  Create(ASTContext &C, DeclContext *DC, SourceLocation IdLoc,
+         IdentifierInfo *Id, QualType T,
+         bool HasInventedPlaceholderType = false,
+         unsigned FunctionScopeDepth = InvalidFunctionScopeDepth);
+  static ResultNameDecl *CreateDeserialized(ASTContext &C, GlobalDeclID ID);
+
+  using ValueDecl::getDeclName;
+  using ValueDecl::setType;
+
+  bool hasInventedPlaceholderType() const { return HasInventedPlaceholderType; }
+
+  void setFunctionScopeDepth(unsigned Depth) {
+    this->FunctionScopeDepth = Depth;
+  }
+
+  unsigned getFunctionScopeDepth() const {
+    assert(this->FunctionScopeDepth != InvalidFunctionScopeDepth &&
+           "FunctionScopeDepth not set");
+    return FunctionScopeDepth;
+  }
+
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == Decl::ResultName; }
+};
+
+/// Represents a series of contracts on a function declaration.
+/// For instance:
+///
+///   int foo(const int x) pre(x) post(r : x < r);
+///
+/// The sequence is invalid exactly when one of its contracts is.
+///
+/// \par Why this is a Decl and not just a list of ContractStmts.
+///
+/// The individual assertions are statements, but the *sequence* is a
+/// declaration, because everything that acts on a contract sequence is
+/// declaration machinery:
+///
+/// \li It is attached to a FunctionDecl (through DeclaratorDecl::ExtInfo) and
+///     has to travel with it. As a Decl it gets its own serialization record
+///     (DECL_CONTRACT_SPECIFIER) and is therefore lazily deserialized and
+///     given a stable ID across modules, it is handled by ASTImporter, and it
+///     is rebuilt during template instantiation like any other declaration
+///     (TreeTransform::RebuildContractSpecifierDecl). None of that exists for
+///     a bare array of statements, and all of it would have to be
+///     reimplemented on FunctionDecl.
+/// \li It owns declarations. A postcondition's result name (ResultNameDecl)
+///     and P3098's postcondition captures (PostconditionCaptureDecl) are
+///     declared while parsing the specifier and outlive the individual
+///     statement; the sequence's first result name is the one constant
+///     evaluation and codegen describe the return value with.
+/// \li It has declaration state of its own: invalidity (each contract
+///     decides its own, and the sequence is invalid if one of them is, or if
+///     it was matched against an invalid one), whether it is still
+///     uninstantiated, and a source range -- and it is
+///     the unit that must compare equal across redeclarations
+///     ([dcl.contract.func]), which needs one node to name in the diagnostic
+///     rather than a list to walk.
+///
+/// The extensions built on top of this reinforce the split rather than
+/// challenge it: a message (P3099), a label (P3400), a requires-clause
+/// (P4283) and captures (P3098) are all per-assertion and live on
+/// ContractStmt, while matching, instantiation and serialization stay
+/// sequence-level and live here. What this node is *not* is a DeclContext.
+class ContractSpecifierDecl final
+    : public Decl,
+      private llvm::TrailingObjects<ContractSpecifierDecl, ContractStmt *> {
+  friend TrailingObjects;
+  friend class ASTDeclReader;
+  friend class ASTDeclWriter;
+
+  bool IsUninstantiated = false;
+
+  /// The number of contracts in this sequence.
+  unsigned NumContracts;
+
+  static ResultNameDecl *ExtractResultName(const ContractStmt *);
+
+  ContractSpecifierDecl(DeclContext *DC, SourceLocation Loc,
+                        unsigned NumContracts)
+      // DC is null on the deserialization path (CreateDeserialized); the real
+      // DeclContext is set later by the ASTReader. Guard the dependent-context
+      // query so it does not dereference a null DC.
+      : Decl(Decl::ContractSpecifier, DC, Loc),
+        IsUninstantiated(DC && DC->isDependentContext()),
+        NumContracts(NumContracts) {
+    std::uninitialized_fill_n(getTrailingObjects(), NumContracts, nullptr);
+  }
+
+  ContractSpecifierDecl(DeclContext *DC, SourceLocation Loc,
+                        ArrayRef<ContractStmt *> Contracts);
+
+  /// Store the contracts, once: from the constructor, or from the AST reader.
+  /// The declarations they own are not touched; they are given their
+  /// function when the sequence is (setOwningFunction).
+  void setContracts(ArrayRef<ContractStmt *> Contracts);
+
+  virtual void anchor();
+
+public:
+  static ContractSpecifierDecl *Create(ASTContext &C, DeclContext *DC,
+                                       SourceLocation Loc,
+                                       ArrayRef<ContractStmt *> Contracts);
+  static ContractSpecifierDecl *
+  CreateDeserialized(ASTContext &C, GlobalDeclID ID, unsigned NumContracts);
+
+public:
+  ArrayRef<ContractStmt *> contracts() const {
+    return getTrailingObjects(NumContracts);
+  }
+
+  /// The predicates preconditions() and postconditions() filter on, shared
+  /// with FunctionDecl's, whose range type (FunctionDecl::ContractRange)
+  /// names a function pointer and so cannot hold a lambda.
+  static bool IsPreconditionPred(const ContractStmt *);
+  static bool IsPostconditionPred(const ContractStmt *);
+
+  /// Returns a range representing the preconditions in this contract sequence
+  /// (in order of declaration)
+  auto preconditions() const {
+    return llvm::make_filter_range(contracts(), IsPreconditionPred);
+  }
+
+  /// Returns a range representing the postconditions in this contract sequence
+  /// (in order of declaration).
+  auto postconditions() const {
+    return llvm::make_filter_range(contracts(), IsPostconditionPred);
+  }
+
+  /// Returns a range representing the result names in this contract sequence
+  /// (in order of declaration).
+  auto result_names() const {
+    return llvm::make_filter_range(
+        llvm::map_range(postconditions(), ExtractResultName),
+        [](ResultNameDecl *R) { return R != nullptr; });
+  }
+
+  bool hasCaptures() const;
+
+  /// Returns true if this function contract sequence contains result names &
+  /// those result names use an invented placeholder type to allow us to delay
+  /// the deduction of the return type.
+  bool hasInventedPlaceholderTypes() const;
+
+  unsigned getNumContracts() const { return NumContracts; }
+
+  /// True if and only if there is a postcondition with a result name in this
+  /// contract sequence.
+  bool hasCanonicalResultName() const;
+
+  /// Returns the first result name in this contract sequence, which stands
+  /// for all of them where one declaration has to describe the return value
+  /// (its type, and whether it is an invented placeholder): every result name
+  /// in a sequence denotes the same object.
+  const ResultNameDecl *getCanonicalResultName() const;
+
+  /// Give this contract sequence, and the result names and postcondition
+  /// captures it owns, their function \p FD: as for a ParmVarDecl, the
+  /// function does not exist yet when they are made.  Called by
+  /// FunctionDecl::setContracts, the one place a sequence is attached.
+  void setOwningFunction(DeclContext *FD);
+
+  SourceRange getSourceRange() const override LLVM_READONLY;
+
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == Decl::ContractSpecifier; }
+};
 
 } // namespace clang
 

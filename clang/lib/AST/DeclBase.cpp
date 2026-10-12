@@ -906,6 +906,7 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case Var:
     case ImplicitParam:
     case ParmVar:
+    case PostconditionCapture:
     case ObjCMethod:
     case ObjCProperty:
     case MSProperty:
@@ -922,6 +923,12 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
       // These (C++-only) declarations are found by redeclaration lookup for
       // tag types, so we include them in the tag namespace.
       return IDNS_Ordinary | IDNS_Tag;
+
+    // A result name is a value-like entity (it names the return value in a
+    // postcondition); like a parameter, it lives only in the ordinary
+    // namespace.
+    case ResultName:
+      return IDNS_Ordinary;
 
     case ObjCCompatibleAlias:
     case ObjCInterface:
@@ -1027,6 +1034,7 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case OpenACCRoutine:
     case ExplicitInstantiation:
     case CXXExpansionStmt:
+    case ContractSpecifier:
       // Never looked up by name.
       return 0;
   }
@@ -1138,7 +1146,7 @@ bool Decl::AccessDeclContextCheck() const {
       isa<StaticAssertDecl>(this) || isa<BlockDecl>(this) ||
       // FIXME: a ParmVarDecl can have ClassTemplateSpecialization
       // as DeclContext (?).
-      isa<ParmVarDecl>(this) ||
+      isa<ParmVarDecl>(this) || isa<ResultNameDecl>(this) ||
       // FIXME: a ClassTemplateSpecialization or CXXRecordDecl can have
       // AS_none as access specifier.
       isa<CXXRecordDecl>(this) || isa<LifetimeExtendedTemporaryDecl>(this))

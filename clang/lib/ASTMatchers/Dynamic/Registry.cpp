@@ -156,6 +156,8 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(booleanType);
   REGISTER_MATCHER(breakStmt);
   REGISTER_MATCHER(builtinType);
+  REGISTER_MATCHER(contractSpecifierDecl);
+  REGISTER_MATCHER(contractStmt);
   REGISTER_MATCHER(cStyleCastExpr);
   REGISTER_MATCHER(callExpr);
   REGISTER_MATCHER(capturesThis);
@@ -235,6 +237,16 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(designatorCountIs);
   REGISTER_MATCHER(doStmt);
   REGISTER_MATCHER(eachOf);
+  REGISTER_MATCHER(forEachContract);
+  REGISTER_MATCHER(hasAnyContract);
+  REGISTER_MATCHER(hasContractSpecifier);
+  REGISTER_MATCHER(hasFunctionContracts);
+  REGISTER_MATCHER(hasResultName);
+  REGISTER_MATCHER(isContractAssert);
+  REGISTER_MATCHER(isPostcondition);
+  REGISTER_MATCHER(isPrecondition);
+  REGISTER_MATCHER(postconditionCaptureDecl);
+  REGISTER_MATCHER(resultNameDecl);
   REGISTER_MATCHER(usingType);
   REGISTER_MATCHER(enumConstantDecl);
   REGISTER_MATCHER(enumDecl);
