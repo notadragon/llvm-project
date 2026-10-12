@@ -20,6 +20,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/DynamicRecursiveASTVisitor.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
@@ -2214,6 +2215,27 @@ void Sema::DiagnoseUnusedDecl(const NamedDecl *D, DiagReceiverTy DiagReceiver) {
   DiagReceiver(DiagLoc, PDiag(DiagID) << D << Hint << SourceRange(DiagLoc));
 }
 
+/// Whether \p PVD is named in its function's contract assertions: in a
+/// predicate, or in a P3098 capture's initializer.
+static bool isParamNamedInContracts(const ParmVarDecl *PVD) {
+  const auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext());
+  if (!FD)
+    return false;
+  struct Finder : ConstDynamicRecursiveASTVisitor {
+    const ParmVarDecl *PVD;
+    bool Found = false;
+    explicit Finder(const ParmVarDecl *PVD) : PVD(PVD) {}
+    bool VisitDeclRefExpr(const DeclRefExpr *E) override {
+      Found = E->getDecl() == PVD;
+      return !Found;
+    }
+  } F(PVD);
+  for (const ContractStmt *CS : FD->contracts())
+    if (!F.TraverseStmt(CS))
+      return true;
+  return false;
+}
+
 void Sema::DiagnoseUnusedButSetDecl(const VarDecl *VD,
                                     DiagReceiverTy DiagReceiver) {
   // If it's not referenced, it can't be set. If it has the Cleanup attribute,
@@ -2277,6 +2299,14 @@ void Sema::DiagnoseUnusedButSetDecl(const VarDecl *VD,
     if (!UnusedCXXCondDecl)
       return;
   }
+
+  // A parameter read in its function's contract assertions is used, but the
+  // count above does not see it: the contracts are parsed in a scope of their
+  // own that re-enters the parameters, and popping it drops their counts
+  // (CLANG-633).
+  if (const auto *PVD = dyn_cast<ParmVarDecl>(VD);
+      PVD && isParamNamedInContracts(PVD))
+    return;
 
   unsigned DiagID;
   if (isa<ParmVarDecl>(VD))
@@ -4243,6 +4273,9 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     // any of the other checks below, which may update the "de facto" NewQType
     // but do not necessarily update the type of New.
     if (CheckEquivalentExceptionSpec(Old, New))
+      return true;
+
+    if (CheckEquivalentContractSequence(Old, New))
       return true;
 
     // C++11 [dcl.attr.noreturn]p1:
@@ -9709,7 +9742,8 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
         SemaRef.Context, DC, D.getBeginLoc(), NameInfo, R, TInfo, SC,
         SemaRef.getCurFPFeatures().isFPConstrained(), isInline, HasPrototype,
         ConstexprSpecKind::Unspecified,
-        /*TrailingRequiresClause=*/{});
+        /*TrailingRequiresClause=*/{}, /*Contracts=*/{});
+
     if (D.isInvalidType())
       NewFD->setInvalidDecl();
 
@@ -9718,6 +9752,7 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
 
   ExplicitSpecifier ExplicitSpecifier = D.getDeclSpec().getExplicitSpecifier();
   AssociatedConstraint TrailingRequiresClause(D.getTrailingRequiresClause());
+  ContractSpecifierDecl *Contracts = D.getContracts();
 
   SemaRef.CheckExplicitObjectMemberFunction(DC, D, Name, R);
 
@@ -9731,7 +9766,7 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
         SemaRef.Context, cast<CXXRecordDecl>(DC), D.getBeginLoc(), NameInfo, R,
         TInfo, ExplicitSpecifier, SemaRef.getCurFPFeatures().isFPConstrained(),
         isInline, /*isImplicitlyDeclared=*/false, ConstexprKind,
-        InheritedConstructor(), TrailingRequiresClause);
+        InheritedConstructor(), TrailingRequiresClause, Contracts);
 
   } else if (Name.getNameKind() == DeclarationName::CXXDestructorName) {
     // This is a C++ destructor declaration.
@@ -9742,7 +9777,7 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
           SemaRef.Context, Record, D.getBeginLoc(), NameInfo, R, TInfo,
           SemaRef.getCurFPFeatures().isFPConstrained(), isInline,
           /*isImplicitlyDeclared=*/false, ConstexprKind,
-          TrailingRequiresClause);
+          TrailingRequiresClause, Contracts);
       // User defined destructors start as not selected if the class definition is still
       // not done.
       if (Record->isBeingDefined())
@@ -9766,7 +9801,8 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
       return FunctionDecl::Create(
           SemaRef.Context, DC, D.getBeginLoc(), D.getIdentifierLoc(), Name, R,
           TInfo, SC, SemaRef.getCurFPFeatures().isFPConstrained(), isInline,
-          /*hasPrototype=*/true, ConstexprKind, TrailingRequiresClause);
+          /*hasPrototype=*/true, ConstexprKind, TrailingRequiresClause,
+          Contracts);
     }
 
   } else if (Name.getNameKind() == DeclarationName::CXXConversionFunctionName) {
@@ -9785,7 +9821,7 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
         SemaRef.Context, cast<CXXRecordDecl>(DC), D.getBeginLoc(), NameInfo, R,
         TInfo, SemaRef.getCurFPFeatures().isFPConstrained(), isInline,
         ExplicitSpecifier, ConstexprKind, SourceLocation(),
-        TrailingRequiresClause);
+        TrailingRequiresClause, Contracts);
 
   } else if (Name.getNameKind() == DeclarationName::CXXDeductionGuideName) {
     if (SemaRef.CheckDeductionGuideDeclarator(D, R, SC))
@@ -9811,7 +9847,7 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
     CXXMethodDecl *Ret = CXXMethodDecl::Create(
         SemaRef.Context, cast<CXXRecordDecl>(DC), D.getBeginLoc(), NameInfo, R,
         TInfo, SC, SemaRef.getCurFPFeatures().isFPConstrained(), isInline,
-        ConstexprKind, SourceLocation(), TrailingRequiresClause);
+        ConstexprKind, SourceLocation(), TrailingRequiresClause, Contracts);
     IsVirtualOkay = !Ret->isStatic();
     return Ret;
   } else {
@@ -9823,10 +9859,11 @@ static FunctionDecl *CreateNewFunctionDecl(Sema &SemaRef, Declarator &D,
     // Determine whether the function was written with a
     // prototype. This true when:
     //   - we're in C++ (where every function has a prototype),
-    return FunctionDecl::Create(
-        SemaRef.Context, DC, D.getBeginLoc(), NameInfo, R, TInfo, SC,
-        SemaRef.getCurFPFeatures().isFPConstrained(), isInline,
-        true /*HasPrototype*/, ConstexprKind, TrailingRequiresClause);
+    return FunctionDecl::Create(SemaRef.Context, DC, D.getBeginLoc(), NameInfo,
+                                R, TInfo, SC,
+                                SemaRef.getCurFPFeatures().isFPConstrained(),
+                                isInline, true /*HasPrototype*/, ConstexprKind,
+                                TrailingRequiresClause, Contracts);
   }
 }
 
@@ -10237,6 +10274,15 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                               MultiTemplateParamsArg TemplateParamListsRef,
                               bool &AddToScope) {
   QualType R = TInfo->getType();
+
+  // A C++ function whose contracts the parser cached, to parse once the
+  // function is declared (so that they can name it): their checks wait for
+  // ActOnLateParsedFunctionContracts.  A member's contracts are late-parsed
+  // at the end of the class instead.
+  llvm::SaveAndRestore ContractsPending(
+      FunctionContractsPending, getLangOpts().CPlusPlus &&
+                                    !D.getLateParsedContracts().empty() &&
+                                    !D.areContractsLateParsed());
 
   assert(R->isFunctionType());
   if (R.getCanonicalType()->castAs<FunctionType>()->getCmseNSCallAttr())
@@ -11057,6 +11103,9 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     if (!NewFD->isInvalidDecl() && NewFD->isMain())
       CheckMain(NewFD, D.getDeclSpec());
 
+    if (!NewFD->isInvalidDecl())
+      CheckContractViolationHandler(NewFD);
+
     if (!NewFD->isInvalidDecl() && NewFD->isMSVCRTEntryPoint())
       CheckMSVCRTEntryPoint(NewFD);
 
@@ -11465,6 +11514,14 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   // `routine(name)`.
   if (getLangOpts().OpenACC)
     OpenACC().ActOnFunctionDeclarator(NewFD);
+
+  // A redeclaration that is not a definition: a definition's parameters are
+  // checked with the contracts rebuilt for it, and a declaration whose
+  // contracts are still to be parsed, with them.
+  if (getLangOpts().Contracts && !D.isFunctionDefinition() &&
+      !NewFD->isInvalidDecl() && !FunctionContractsPending)
+    if (FunctionDecl *Prev = NewFD->getPreviousDecl())
+      CheckPostconditionParamsOnRedecl(Prev, NewFD);
 
   return NewFD;
 }
@@ -12806,6 +12863,8 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
       CUDA().checkTargetOverload(NewFD, Previous);
     }
   }
+
+  ActOnContractsOnFinishFunctionDecl(NewFD, DeclIsDefn);
 
   if (DeclIsDefn && Context.getTargetInfo().getTriple().isAArch64())
     ARM().CheckSMEFunctionDefAttributes(NewFD);
@@ -15272,6 +15331,28 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
     // do this lazily, because the result might depend on things that change
     // later, such as which constexpr functions happen to be defined.
     SmallVector<PartialDiagnosticAt, 8> Notes;
+
+    // Evaluate the initializer to see if it's a constant initializer.
+    //
+    // For variables that can fallback to dynamic initialization
+    // C++ contracts require us to do this in two phases:
+    //
+    // (1) evaluate the initializer with all contracts disabled. If it succeeds
+    //     the variable is 'constant initialized'. Otherwise, perform dynamic
+    //     initialization.
+    //
+    // (2) On success, reevaluate the initializer with contracts having
+    //     their user-specified
+    //     semantics. If it fails, we need to diagnose the failure instead
+    //     of falling back to dynamic initializer.
+    //
+    // A variable that requires a constant initializer gets one evaluation,
+    // with contracts enabled.  The ignore semantic evaluates no predicate, so
+    // enabling contracts can only make an initializer fail, never succeed:
+    // that single evaluation accepts exactly what the two phases would.
+    bool ConstantInitializerIsRequired =
+        var->isConstexpr() || (GlobalStorage && var->hasAttr<ConstInitAttr>());
+
     if (!getLangOpts().CPlusPlus11 && !getLangOpts().C23) {
       // Prior to C++11, in contexts where a constant initializer is required,
       // the set of valid constant initializers is described by syntactic rules
@@ -15302,8 +15383,39 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
         Notes.back().second << CacheCulprit->getSourceRange();
       }
     } else {
-      // Evaluate the initializer to see if it's a constant initializer.
-      HasConstInit = var->checkForConstantInitialization(Notes);
+      // [expr.const]/2 (P2900)
+      // A variable or temporary object o is constant-initialized if
+      // ...
+      //    its initialization is a constant expression when interpreted
+      //    ... with all contract assertions having the ignore evaluation
+      //    semantic.
+
+      HasConstInit = var->checkForConstantInitialization(
+          Notes,
+          /*EnableContracts=*/ConstantInitializerIsRequired);
+    }
+
+    // [intro.compliance]/2 (P2900)
+    // If a program contains ...
+    //    - a contract assertion ([basic.contract.eval]) evaluated with a
+    //    checking semantic
+    //      in a manifestly constant-evaluated context resulting in a contract
+    //      violation
+    //  ... shall issue a diagnostic.
+    if (HasConstInit && getLangOpts().Contracts &&
+        !ConstantInitializerIsRequired) {
+      if (!var->recheckForConstantInitialization(Notes,
+                                                 /*EnableContracts=*/true)) {
+        // The variable would silently fall back to dynamic initialization, so
+        // say that it was a contract, not the initializer, that failed.
+        SourceLocation DiagLoc = var->getLocation();
+        Diag(DiagLoc,
+             diag::err_contract_constant_initialization_failed)
+            << var;
+        Diag(DiagLoc, diag::note_initialization_changed_contract_semantic);
+        for (unsigned I = 0, N = Notes.size(); I != N; ++I)
+          Diag(Notes[I].first, Notes[I].second);
+      }
     }
 
     if (HasConstInit) {
@@ -17270,6 +17382,9 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body, bool IsInstantiation,
       PopFunctionScopeInfo(ActivePolicy, dcl);
       return nullptr;
     }
+
+    if (FD)
+      ActOnContractsOnFinishFunctionBody(FD);
 
     if (Body) {
       if (FSI->HasPotentialAvailabilityViolations)
