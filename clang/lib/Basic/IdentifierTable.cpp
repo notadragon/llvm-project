@@ -144,6 +144,10 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
     // spelling to it), and before C++11 it is an ordinary identifier.
     return (LangOpts.Contracts && LangOpts.CPlusPlus11) ? KS_Enabled
                                                         : KS_Unknown;
+  case KEYCONTRACTSP3400:
+    return LangOpts.ContractsP3400 ? KS_Enabled : KS_Unknown;
+  case KEYCONTRACTSP4299:
+    return LangOpts.ContractsP4299 ? KS_Enabled : KS_Unknown;
   case KEYMODULES:
     return KS_Unknown;
   case KEYOPENCLCXX:
