@@ -485,6 +485,48 @@ void CodeGenFunction::EmitCxaContractViolationCall(
   }
 }
 
+/// The method the local-handler trampoline calls, or null.  The rethrow
+/// analysis below has to reason about exactly that method.  Sema synthesized
+/// the trampoline (getLabelFacetTrampoline in SemaContract.cpp); its body is
+/// the handler call, possibly converted to violation_handled through a
+/// conversion function, so look for the call by name.
+static const CXXMethodDecl *findLocalViolationHandler(const ContractStmt &S) {
+  const FunctionDecl *FD = S.getLocalHandlerFn();
+  if (!FD || !FD->getBody())
+    return nullptr;
+  SmallVector<const Stmt *, 8> Work = {FD->getBody()};
+  while (!Work.empty()) {
+    const Stmt *St = Work.pop_back_val();
+    if (!St)
+      continue;
+    if (const auto *CE = dyn_cast<CallExpr>(St))
+      if (const auto *MD =
+              dyn_cast_or_null<CXXMethodDecl>(CE->getDirectCallee()))
+        if (MD->getDeclName().isIdentifier() &&
+            MD->getName() == "handle_contract_violation")
+          return MD;
+    for (const Stmt *Child : St->children())
+      Work.push_back(Child);
+  }
+  return nullptr;
+}
+
+/// The llvm::Function for a facet trampoline Sema synthesized.  Every contract
+/// naming the same label type shares one, and a TU can hold two declarations
+/// of it (one read from a module) that are the same function: reuse what the
+/// module already holds under the name rather than define it twice.
+static llvm::Function *getFacetTrampoline(CodeGenModule &CGM,
+                                          const FunctionDecl *FD) {
+  if (!FD)
+    return nullptr;
+  GlobalDecl GD(FD);
+  if (llvm::Function *F = CGM.getModule().getFunction(CGM.getMangledName(GD)))
+    return F;
+  // An internal function is emitted only once it is known to be needed.
+  CGM.EmitGlobal(GD);
+  return cast<llvm::Function>(CGM.GetAddrOfFunction(GD));
+}
+
 // Emit the contract expression.
 void CodeGenFunction::EmitContractStmt(const ContractStmt &S) {
   EmitContractStmtAsFullStmt(S);
