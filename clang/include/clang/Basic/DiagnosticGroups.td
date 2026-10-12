@@ -2027,6 +2027,14 @@ def TrivialAutoVarInit : DiagGroup<"trivial-auto-var-init">;
 
 def ContractViolation : DiagGroup<"contract-violation">;
 
+// Warnings about problems in the P3595 contract configuration.
+def ContractConfiguration : DiagGroup<"contract-configuration">;
+
+def ContractWarning : DiagGroup<"contracts",
+                                [ContractViolation, ContractInvalidLabelFacet,
+                                 ContractConfiguration]>;
+
+
 // A warning for options that enable a feature that is not yet complete
 def ExperimentalOption : DiagGroup<"experimental-option">;
 

@@ -1,0 +1,13 @@
+[
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "ns::sel<int>"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "ns::operator()"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "sel(int)"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "ns::1sel"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "a b"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C", "name": "sel<int>"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C", "name": "ns::sel"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C", "name": "1sel"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C", "name": ""}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C++", "name": "::ok_1::$ok::_ok"}}},
+  {"output": {"semantic": "enforce", "dynamic": {"linkage": "C", "name": "_ok$2"}}}
+]

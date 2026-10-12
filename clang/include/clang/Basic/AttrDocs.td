@@ -2769,6 +2769,40 @@ void usages() {
   }];
 }
 
+def ContractGroupDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "clang::contract_group";
+  let Content = [{
+The ``clang::contract_group`` attribute places a contract assertion (a
+precondition, postcondition or ``contract_assert``) in a named group:
+
+.. code-block:: c++
+
+  int f(int x) pre [[clang::contract_group("bounds")]] (x >= 0);
+
+The group name must not be empty or contain ``*``.  The evaluation semantic of
+the assertions in a group can be chosen with
+``-fcontract-group-evaluation-semantic=group:semantic``, and the group is
+reported to the contract-violation handler.  An assertion takes the attribute
+at most once.
+  }];
+}
+
+def ContractMessageDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "clang::contract_message";
+  let Content = [{
+The ``clang::contract_message`` attribute gives a contract assertion the
+message reported when it is violated, in place of its source text.  An
+assertion cannot have both this attribute and a diagnostic message written in
+its parentheses.
+
+.. code-block:: c++
+
+  int h(int x) pre [[clang::contract_message("x must be positive")]] (x > 0);
+  }];
+}
+
 def FallthroughDocs : Documentation {
   let Category = DocCatStmt;
   let Heading = "fallthrough";

@@ -1,0 +1,8 @@
+[
+  {"output": {"semantic": "ignore",
+              "dynamic": {"linkage": "C++", "name": "sel_a"}}},
+  {"output": {"semantic": "observe",
+              "dynamic": {"linkage": "C", "name": "sel_b", "provideweak": false}}},
+  {"output": {"dynamic": {"name": "sel_c"}}},
+  {"output": {"semantic": "enforce"}}
+]
