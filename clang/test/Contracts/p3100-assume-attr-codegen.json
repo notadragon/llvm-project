@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "implicit", "namespace": "ign_ns", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_ns", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}}
+]
