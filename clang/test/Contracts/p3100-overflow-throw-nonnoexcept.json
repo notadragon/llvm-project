@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:expr.expr.eval.signed.integer"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_ns", "group": "ub:expr.expr.eval.signed.integer"}, "output": {"semantic": "enforce"}}
+]
