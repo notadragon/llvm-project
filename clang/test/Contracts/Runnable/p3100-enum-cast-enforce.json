@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.static.cast.enum.outside.range"}, "output": {"semantic": "enforce"}}
+]
