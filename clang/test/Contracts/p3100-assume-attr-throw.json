@@ -1,0 +1,6 @@
+[
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_ns", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "obs_clean", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_clean", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}}
+]
