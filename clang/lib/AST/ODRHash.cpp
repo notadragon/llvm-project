@@ -14,8 +14,10 @@
 
 #include "clang/AST/ODRHash.h"
 
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/AST/TypeVisitor.h"
 
 using namespace clang;
@@ -765,6 +767,20 @@ void ODRHash::AddFunctionDecl(const FunctionDecl *Function,
   AddBoolean(HasBody);
   if (!HasBody) {
     return;
+  }
+
+  // Two definitions that differ only in their function contract specifiers
+  // are different definitions.
+  const ContractSpecifierDecl *Contracts = Function->getContracts();
+  AddBoolean(Contracts);
+  if (Contracts) {
+    unsigned NumContracts = 0;
+    for (const ContractStmt *CS : Contracts->contracts()) {
+      ID.AddInteger(static_cast<unsigned>(CS->getContractKind()));
+      AddStmt(CS->getCond());
+      ++NumContracts;
+    }
+    ID.AddInteger(NumContracts);
   }
 
   auto *Body = Function->getBody();
