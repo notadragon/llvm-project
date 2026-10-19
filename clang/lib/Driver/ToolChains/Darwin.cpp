@@ -812,6 +812,11 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   bool NoStdOrDefaultLibs =
       Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs);
+
+  // The contracts runtime, which a translation unit with contracts references
+  // directly (see the GNU linker).
+  if (!NoStdOrDefaultLibs && needsContractsRuntime(getToolChain(), JA, Args))
+    CmdArgs.push_back("-lcontracts");
   bool ForceLinkBuiltins = Args.hasArg(options::OPT_fapple_link_rtlib);
   if (!NoStdOrDefaultLibs || ForceLinkBuiltins) {
     // link_ssp spec is empty.
