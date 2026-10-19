@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "namespace": "ign_ns", "group": "ub:conv.fpint.float.not.represented"}, "output": {"semantic": "ignore"}}
+]
