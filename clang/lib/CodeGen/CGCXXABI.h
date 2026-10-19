@@ -188,6 +188,15 @@ public:
       llvm::Value *&ThisPtrForCall, llvm::Value *MemPtr,
       const MemberPointerType *MPT);
 
+  /// P3100: an i1 that is true if the pointer to member function MemPtr
+  /// designates a virtual function, whose call reads the vtable pointer
+  /// through the object; null if the ABI cannot tell.
+  virtual llvm::Value *
+  EmitMemberFunctionPointerIsVirtual(CodeGenFunction &CGF, llvm::Value *MemPtr,
+                                     const MemberPointerType *MPT) {
+    return nullptr;
+  }
+
   /// Calculate an l-value from an object and a data member pointer.
   virtual llvm::Value *
   EmitMemberDataPointerAddress(CodeGenFunction &CGF, const Expr *E,

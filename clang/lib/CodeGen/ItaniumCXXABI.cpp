@@ -138,6 +138,11 @@ public:
                                     llvm::Value *MemFnPtr,
                                     const MemberPointerType *MPT) override;
 
+  llvm::Value *
+  EmitMemberFunctionPointerIsVirtual(CodeGenFunction &CGF,
+                                     llvm::Value *MemFnPtr,
+                                     const MemberPointerType *MPT) override;
+
   llvm::Value *EmitMemberDataPointerAddress(CodeGenFunction &CGF, const Expr *E,
                                             Address Base, llvm::Value *MemPtr,
                                             const MemberPointerType *MPT,
@@ -640,6 +645,19 @@ ItaniumCXXABI::ConvertMemberPointerType(const MemberPointerType *MPT) {
 ///
 /// If the member is non-virtual, memptr.ptr is the address of
 /// the function to call.
+/// P3100: as EmitLoadOfMemberFunctionPointer tests it, the low bit of the
+/// function pointer (of the adjustment on ARM).
+llvm::Value *ItaniumCXXABI::EmitMemberFunctionPointerIsVirtual(
+    CodeGenFunction &CGF, llvm::Value *MemFnPtr, const MemberPointerType *MPT) {
+  CGBuilderTy &Builder = CGF.Builder;
+  llvm::Constant *ptrdiff_1 = llvm::ConstantInt::get(CGM.PtrDiffTy, 1);
+  llvm::Value *Field = Builder.CreateExtractValue(
+      MemFnPtr, UseARMMethodPtrABI ? 1 : 0,
+      UseARMMethodPtrABI ? "memptr.adj" : "memptr.ptr");
+  return Builder.CreateIsNotNull(Builder.CreateAnd(Field, ptrdiff_1),
+                                 "memptr.isvirtual");
+}
+
 CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     CodeGenFunction &CGF, const Expr *E, Address ThisAddr,
     llvm::Value *&ThisPtrForCall,
