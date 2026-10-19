@@ -6697,5 +6697,35 @@ TEST(HasNamedTypeLoc, BindsToNonElaboratedObjectDeclaration) {
                   hasAnyTemplateArgumentLoc(templateArgumentLoc()))))));
 }
 
+TEST(ContractSpecificMatcher, breathingTest) {
+  const char *Code = R"cpp(
+      int f(int x, const int y)
+        __pre(x)
+        __post(y)
+        __post(r : r)
+      {
+        int z = x + y;
+        __contract_assert(z);
+        return z;
+      }
+  )cpp";
+  // The extension spellings need contracts enabled, as the standard ones do.
+  std::vector<std::string> Args = getCommandLineArgsForTesting(Lang_CXX23);
+  Args.push_back("-fcontracts");
+
+  EXPECT_TRUE(matchesConditionally(
+      Code,
+      functionDecl(hasName("f"),
+                   hasContractSpecifier(hasAnyContract(contractStmt(
+                       isPostcondition(), hasResultName(hasName("r")))))),
+      true, Args));
+
+  EXPECT_TRUE(matchesConditionally(
+      Code,
+      functionDecl(
+          hasContractSpecifier(hasAnyContract(hasResultName(hasName("r"))))),
+      true, Args));
+}
+
 } // namespace ast_matchers
 } // namespace clang

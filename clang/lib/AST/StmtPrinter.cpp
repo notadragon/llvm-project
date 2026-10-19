@@ -2898,6 +2898,72 @@ void StmtPrinter::VisitCoyieldExpr(CoyieldExpr *S) {
   PrintExpr(S->getOperand());
 }
 
+// C++ contracts
+
+void StmtPrinter::VisitContractStmt(ContractStmt *Node) {
+  // Print the contract keyword -- a contract_assert as a statement of its
+  // own...
+  if (Node->getContractKind() == ContractKind::Assert)
+    Indent();
+  OS << Node->getContractKindString();
+
+  // Then the label (if present)...
+  if (Node->hasLabel()) {
+    OS << "<";
+    PrintExpr(Node->getLabelExpr());
+    OS << ">";
+  }
+
+  // Then the P4283 requires-clause (if present)...
+  if (Expr *RC = Node->getRequiresClause()) {
+    OS << " requires ";
+    PrintExpr(RC);
+  }
+
+  // Then any attributes...
+  // FIXME: We assume any attributes appear in this position rather than at the
+  // start of the statement.
+  llvm::ArrayRef<const Attr *> Attrs = Node->getAttrs();
+  for (const auto *Attr : Attrs) {
+    OS << " ";
+    Attr->printPretty(OS, Policy);
+    if (Attr == Attrs.back())
+      OS << " ";
+  }
+
+  // Then the P3098 postcondition captures (if present), as DeclPrinter
+  // prints each.
+  if (DeclStmt *Captures = Node->getCapturesDeclStmt()) {
+    OS << " [";
+    llvm::ListSeparator Sep;
+    for (Decl *D : Captures->decls()) {
+      auto *Cap = dyn_cast<PostconditionCaptureDecl>(D);
+      if (!Cap)
+        continue;
+      OS << Sep;
+      Cap->print(OS, Policy, IndentLevel);
+    }
+    OS << "]";
+  }
+
+  OS << "(";
+  // A postcondition's result-name introducer is part of the syntax and the
+  // predicate does not parse without it.
+  if (Node->hasResultName())
+    OS << Node->getResultName()->getName() << " : ";
+  PrintExpr(Node->getCond());
+  if (Node->hasMessage()) {
+    OS << ", ";
+    PrintExpr(Node->getMessageExpr());
+  }
+  OS << ")";
+  if (Node->getContractKind() == ContractKind::Assert) {
+    OS << ";";
+    if (Policy.IncludeNewlines)
+      OS << NL;
+  }
+}
+
 // Obj-C
 
 void StmtPrinter::VisitObjCStringLiteral(ObjCStringLiteral *Node) {

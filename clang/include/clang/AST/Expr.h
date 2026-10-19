@@ -633,6 +633,12 @@ public:
     /// whether @ref #Diag is set or not.
     bool DiagEmitted = false;
 
+    /// Whether the evaluation reached a contract assertion that it did not
+    /// evaluate, because it was asked to evaluate with contracts disabled.
+    /// Without one, evaluating again with contracts enabled gives the same
+    /// result.
+    bool SkippedContract = false;
+
     /// Diag - If this is non-null, it will be filled in with a stack of notes
     /// indicating why evaluation failed (or why it failed to produce a constant
     /// expression).
@@ -754,8 +760,8 @@ public:
   /// can be folded to a constant, and produces any relevant notes. In C++11,
   /// notes will be produced if the expression is not a constant expression.
   bool EvaluateAsInitializer(const ASTContext &Ctx, const VarDecl *VD,
-                             EvalResult &Result,
-                             bool IsConstantInitializer) const;
+                             EvalResult &Result, bool IsConstantInitializer,
+                             bool EvaluateContracts = true) const;
 
   /// EvaluateWithSubstitution - Evaluate an expression as if from the context
   /// of a call to the given function with the given arguments, inside an
@@ -1259,6 +1265,17 @@ public:
     return T->getStmtClass() == OpaqueValueExprClass;
   }
 };
+
+// This enum is silly, but avoids creating overload sets where many adjacent
+// arguments are all convertible to/from bool or int.
+enum class ContractConstification {
+  CC_None,
+  CC_ApplyConst,
+};
+
+constexpr ContractConstification CC_None = ContractConstification::CC_None;
+constexpr ContractConstification CC_ApplyConst =
+    ContractConstification::CC_ApplyConst;
 
 /// A reference to a declared variable, function, enum, etc.
 /// [C99 6.5.1p2]
@@ -5063,6 +5080,8 @@ enum class SourceLocIdentKind {
   Column,
   SourceLocStruct
 };
+// We use 3 bits to represent this in the AST
+static_assert(static_cast<int>(SourceLocIdentKind::SourceLocStruct) < 8);
 
 /// Represents a function call to one of __builtin_LINE(), __builtin_COLUMN(),
 /// __builtin_FUNCTION(), __builtin_FUNCSIG(), __builtin_FILE(),
