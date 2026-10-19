@@ -250,6 +250,18 @@ to pointers to types with the `volatile` qualifier.
 
 (minimal-runtime)=
 
+## Reporting through the contract-violation handler
+
+With `-fcontracts-p3100` (one of the proposed C++ contracts extensions this
+branch implements), `-fsanitize-semantic=<check>:<semantic>` routes the
+reports of a check to the C++ contract-violation handler, with a contract
+evaluation semantic such as `quick_enforce` or `noexcept_observe`, instead
+of reporting them through the UBSan runtime.  Every check listed above is
+routed except the `nullability-*` checks and `unsigned-shift-base`.  See {ref}`the Clang User's Manual <fsanitize-semantic>` for the
+semantics each check takes, the semantic a check takes from
+`-fsanitize-recover=` and `-fsanitize-trap=` when none is given, and
+`-fsanitize-noncontract-callbacks`, which turns the routing off.
+
 ## Minimal Runtime
 
 There is a minimal UBSan runtime available suitable for use in production
