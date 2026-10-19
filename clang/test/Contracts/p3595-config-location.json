@@ -1,0 +1,5 @@
+[
+  {"match": {"location": "p3595-config-location.cpp:20-25", "caller": false}, "output": {"semantic": "ignore"}},
+  {"match": {"caller": true}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "observe"}}
+]

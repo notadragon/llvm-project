@@ -1,0 +1,6 @@
+[
+  {"match": {"namespace": "n1"}, "output": {"semantic": "enforce",
+    "dynamic": {"linkage": "C++", "name": "lib::my_sel", "provideweak": true}}},
+  {"match": {"namespace": "n2"}, "output": {"semantic": "enforce",
+    "dynamic": {"linkage": "C++", "name": "lib::tagged", "provideweak": true}}}
+]

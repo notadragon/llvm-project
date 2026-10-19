@@ -1,0 +1,2 @@
+[{"match": {"group": "a", "caller": false}, "output": {"semantic": "observe", "dynamic": {"linkage": "C++", "name": "mylib::sel", "provideweak": true}}},
+ {"match": {"group": "b", "caller": false}, "output": {"semantic": "observe", "dynamic": {"linkage": "C", "name": "_ZN5mylib3selEv", "provideweak": true}}}]

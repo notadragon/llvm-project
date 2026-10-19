@@ -41,6 +41,19 @@ class DeclContext;
 class DiagnosticsEngine;
 class SourceManager;
 
+enum class ContractGroupDiagnostic {
+  // The remaining values map to %select values in diagnostics in both
+  // DiagnosticSemaKinds.td and DiagnosticDriverKinds.td.
+  InvalidFirstChar,
+  InvalidChar,
+  InvalidLastChar,
+  EmptySubGroup,
+  Empty,
+  InvalidSemantic,
+  // -fcontract-group-evaluation-semantic= only: a semantic with no group.
+  MissingGroup,
+};
+
 /// The kind of contract, as classified internally by the implementation.
 ///
 /// NOTE: This is deliberately distinct from ContractAssertionKind (the
@@ -225,6 +238,69 @@ enum class ContractDetectionMode {
 /// when adjusting the context).
 enum class ContractScopeOffset { ParentContext, FunctionContext };
 
+/// Source type for a contract configuration entry.
+enum class ContractConfigSourceKind {
+  GroupSemantic,
+  JSONInline,
+  JSONFile,
+};
+
+/// The parsed P3595 configuration storage.  Its layout (in particular
+/// ContractConfigEntry) evolves as new match criteria are added, so it is
+/// defined in the impl-only header clang/Basic/ContractConfig.h and held by
+/// ContractOptions behind a pointer -- keeping it out of the include graph of
+/// everything that pulls in LangOptions.h.
+struct ContractConfigData;
+struct ContractConfigSource;
+
+/// P3595 dynamic (link-/run-time) selection: the "output.dynamic" descriptor
+/// of a matched contract config entry.  Companion to
+/// ContractOptions::resolveContractSemantic (see resolveContractDynamic).
+/// `Found` is false when the matched entry has no "dynamic" descriptor, or
+/// when resolving in a constant-evaluation context -- a dynamic selector is
+/// never invoked at compile time, so no descriptor is surfaced there (the
+/// entry's Semantic is used instead; see the constant-evaluation rule in
+/// resolveContractSemantic's implementation).
+/// The linkage a P3595 dynamic selector is named with: a qualified C++ name,
+/// which is mangled, or a verbatim C symbol.
+enum class ContractDynamicLinkage : uint8_t { CXX, C };
+
+struct ContractDynamicResult {
+  std::string Name;
+  // Meaningful only when Found.
+  ContractDynamicLinkage Linkage = ContractDynamicLinkage::CXX;
+  bool ProvideWeak = false;
+  bool Found = false;
+};
+
+/// Per-assertion query for P3595 contract config resolution.
+/// Namespace and location are lazily computed from the DeclContext
+/// and SourceLocation to avoid cost when no config entry needs them.
+struct ContractQuery {
+  ContractKind Kind;
+  bool CallerSide = false;
+  bool InConstantEvaluation = false;
+  unsigned AllowedMask = AllContractSemanticsMask;
+  llvm::ArrayRef<std::string> Groups;
+
+  const DeclContext *FnContext = nullptr;
+  SourceLocation Loc;
+  const SourceManager *SM = nullptr;
+
+  llvm::StringRef getNamespace() const;
+  llvm::StringRef getLocationFile() const;
+  int getLocationLine() const;
+  int getLocationColumn() const;
+
+private:
+  mutable std::string CachedNamespace;
+  mutable std::string CachedLocationFile;
+  mutable int CachedLocationLine = 0;
+  mutable int CachedLocationColumn = 0;
+  mutable bool NamespaceComputed = false;
+  mutable bool LocationComputed = false;
+};
+
 /// The contract options for a translation unit: the default evaluation
 /// semantic, the P3100 assume gate, and the P3595 configuration sources that
 /// together decide which evaluation semantic each contract assertion gets.
@@ -321,3 +397,26 @@ public:
   /// configuration contains, each once, in configuration order.
   llvm::SmallVector<llvm::StringRef> getCXXDynamicSelectorNames() const;
 
+private:
+  /// Parse JSON text and append config entries. SourceDesc is for diagnostics,
+  /// which are reported through Diags.
+  void parseConfigJSON(DiagnosticsEngine &Diags, llvm::StringRef JSON,
+                       llvm::StringRef SourceDesc) const;
+
+  /// Read a JSON file (through \p VFS) and parse it as contract configuration.
+  void parseConfigFile(DiagnosticsEngine &Diags, llvm::vfs::FileSystem &VFS,
+                       llvm::StringRef Path) const;
+
+  /// Lazily-allocated parsed configuration (see ContractConfigData).  Shared
+  /// so that copies of ContractOptions (LangOptions is copied) share the
+  /// post-init, effectively-immutable configuration rather than deep-copying
+  /// it.  Null until the first configuration source is added.
+  mutable std::shared_ptr<ContractConfigData> Config;
+
+  /// Ensure Config is allocated; returns it.
+  ContractConfigData &ensureConfig() const;
+};
+
+} // namespace clang
+
+#endif // LLVM_CLANG_BASIC_CONTRACT_OPTIONS_H

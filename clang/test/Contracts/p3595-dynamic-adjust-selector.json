@@ -1,0 +1,5 @@
+[
+  {"output": {"semantic": "enforce",
+              "dynamic": {"linkage": "C", "name": "adjust_sel",
+                          "provideweak": false}}}
+]

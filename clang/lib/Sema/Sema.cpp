@@ -363,6 +363,14 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
   SemaPPCallbackHandler->set(*this);
 
   CurFPFeatures.setFPEvalMethod(PP.getCurrentFPEvalMethod());
+
+  // Parse the contract configuration with a DiagnosticsEngine and the VFS
+  // before any contract is resolved.  CompilerInstance::ExecuteAction has
+  // usually done so already (initConfig is idempotent), but a frontend that
+  // does not go through it -- ASTUnit, for libclang -- has not.
+  if (getLangOpts().Contracts || getLangOpts().ContractsP4299)
+    getLangOpts().ContractOpts.initConfig(
+        Diags, SourceMgr.getFileManager().getVirtualFileSystem());
 }
 
 // Anchor Sema's type info to this TU.
@@ -1386,6 +1394,9 @@ void Sema::ActOnEndOfTranslationUnit() {
   if (LangOpts.CPlusPlus11 &&
       !Diags.isIgnored(diag::warn_delegating_ctor_cycle, SourceLocation()))
     CheckDelegatingCtorCycles();
+
+  if (LangOpts.Contracts && LangOpts.CPlusPlus)
+    DiagnoseMistypedDynamicContractSelectors();
 
   if (!Diags.hasErrorOccurred()) {
     if (ExternalSource)

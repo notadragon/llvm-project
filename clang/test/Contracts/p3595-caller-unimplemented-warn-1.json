@@ -1,0 +1,3 @@
+[
+  {"match": {"caller": true}, "output": {"semantic": "enforce"}}
+]
