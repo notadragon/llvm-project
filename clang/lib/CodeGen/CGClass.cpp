@@ -1240,6 +1240,9 @@ public:
 void CodeGenFunction::EmitCtorPrologue(const CXXConstructorDecl *CD,
                                        CXXCtorType CtorType,
                                        FunctionArgList &Args) {
+  // P3100: a base-class or delegating mem-initializer is where
+  // ub:class.base.init.mem.fun checks an operation on *this.
+  SaveAndRestore P3100Site(P3100InBaseMemInit, true);
   if (CD->isDelegatingConstructor())
     return EmitDelegatingCXXConstructorCall(CD, Args);
 
@@ -1315,6 +1318,7 @@ void CodeGenFunction::EmitCtorPrologue(const CXXConstructorDecl *CD,
       CXXThisValue = Builder.CreateLaunderInvariantGroup(LoadCXXThis());
     EmitBaseInitializer(*this, ClassDecl, Initializer);
   }
+  P3100InBaseMemInit = false;
 
   InitializeVTablePointers(ClassDecl);
 
