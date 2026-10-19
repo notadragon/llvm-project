@@ -622,6 +622,12 @@ class Capture {
   LLVM_PREFERRED_TYPE(bool)
   unsigned NonODRUsed : 1;
 
+  /// Whether the capture is of a variable declared outside of a contract
+  /// context, but was captured by a region enclosed within that same
+  /// contract context.
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned CapturedAcrossContract : 1;
+
   /// Whether the capture is invalid (a capture was required but the entity is
   /// non-capturable).
   LLVM_PREFERRED_TYPE(bool)
@@ -630,13 +636,14 @@ class Capture {
 public:
   Capture(ValueDecl *Var, bool Block, bool ByRef, bool IsNested,
           SourceLocation Loc, SourceLocation EllipsisLoc, QualType CaptureType,
-          bool Invalid)
+          bool AcrossContract, bool Invalid)
       : CapturedVar(Var), Loc(Loc), EllipsisLoc(EllipsisLoc),
         CaptureType(CaptureType), Kind(Block   ? Cap_Block
                                        : ByRef ? Cap_ByRef
                                                : Cap_ByCopy),
         Nested(IsNested), CapturesThis(false), ODRUsed(false),
-        NonODRUsed(false), Invalid(Invalid) {}
+        NonODRUsed(false), CapturedAcrossContract(AcrossContract),
+        Invalid(Invalid) {}
 
   enum IsThisCapture { ThisCapture };
   Capture(IsThisCapture, bool IsNested, SourceLocation Loc,
@@ -644,14 +651,14 @@ public:
       : Loc(Loc), CaptureType(CaptureType),
         Kind(ByCopy ? Cap_ByCopy : Cap_ByRef), Nested(IsNested),
         CapturesThis(true), ODRUsed(false), NonODRUsed(false),
-        Invalid(Invalid) {}
+        CapturedAcrossContract(false), Invalid(Invalid) {}
 
   enum IsVLACapture { VLACapture };
   Capture(IsVLACapture, const VariableArrayType *VLA, bool IsNested,
           SourceLocation Loc, QualType CaptureType)
       : CapturedVLA(VLA), Loc(Loc), CaptureType(CaptureType), Kind(Cap_VLA),
         Nested(IsNested), CapturesThis(false), ODRUsed(false),
-        NonODRUsed(false), Invalid(false) {}
+        NonODRUsed(false), CapturedAcrossContract(false), Invalid(false) {}
 
   bool isThisCapture() const { return CapturesThis; }
   bool isVariableCapture() const {
@@ -688,6 +695,8 @@ public:
     assert(isVLATypeCapture());
     return CapturedVLA;
   }
+
+  bool isCapturedAcrossContract() const { return CapturedAcrossContract; }
 
   /// Retrieve the location at which this variable was captured.
   SourceLocation getLocation() const { return Loc; }
@@ -743,9 +752,10 @@ public:
 
   void addCapture(ValueDecl *Var, bool isBlock, bool isByref, bool isNested,
                   SourceLocation Loc, SourceLocation EllipsisLoc,
-                  QualType CaptureType, bool Invalid) {
+                  QualType CaptureType, bool AcrossContract, bool Invalid) {
     Captures.push_back(Capture(Var, isBlock, isByref, isNested, Loc,
-                               EllipsisLoc, CaptureType, Invalid));
+                               EllipsisLoc, CaptureType, AcrossContract,
+                               Invalid));
     CaptureMap[Var] = Captures.size();
   }
 

@@ -2344,6 +2344,182 @@ QualType Sema::adjustCXXThisTypeForContracts(QualType QT) {
 
 namespace {
 
+struct CaptureUsage {
+  clang::LambdaCapture Capture;
+  const ContractStmt *UsedInContract = nullptr;
+  const Expr *UsageExpr = nullptr;
+  SourceLocation UsageLoc = SourceLocation();
+
+  CaptureUsage(clang::LambdaCapture Capture) : Capture(Capture) {}
+};
+
+/// Diagnoses a lambda's implicit captures that are odr-used only in contract
+/// assertions (its own contracts or a contract_assert in its body), which
+/// [expr.prim.lambda.capture] makes ill-formed.  Run once the lambda is
+/// complete, since only then is it known whether a capture is used elsewhere.
+struct LambdaCaptureChecker : RecursiveASTVisitor<LambdaCaptureChecker> {
+  Sema &Actions;
+  const LambdaExpr *const CurLambda = nullptr;
+  const ContractStmt *CurContract = nullptr;
+
+  // Note: The value `nullptr` is used to denote a capture of CXXThis.
+  DenseMap<const ValueDecl *, CaptureUsage> Captures;
+
+  void observeUsage(const ValueDecl *VD, const Expr *E, SourceLocation Loc) {
+    if (auto Pos = Captures.find(VD); Pos != Captures.end()) {
+      if (!CurContract)
+        Captures.erase(VD);
+      else {
+        auto &Usage = Pos->second;
+        if (Usage.UsageExpr == nullptr ||
+            (isa<LambdaExpr>(Usage.UsageExpr) && !isa<LambdaExpr>(E))) {
+          Usage.UsedInContract = CurContract;
+          Usage.UsageExpr = E;
+          Usage.UsageLoc = Loc;
+        }
+      }
+    }
+  }
+
+private:
+  LambdaCaptureChecker(Sema &S, LambdaExpr *LE) : Actions(S), CurLambda(LE) {
+    Init();
+  }
+
+  void Run() {
+    // Traverse the lambdas function-level contracts and body to find the bad
+    // captures.
+    FunctionDecl *FD = CurLambda->getCallOperator();
+    assert(FD->getBody() && "a lambda is checked once its body is parsed");
+    if (FD->hasContracts())
+      TraverseDecl(FD->getContracts());
+    TraverseStmt(CurLambda->getBody());
+
+    // Finally, diagnose any captures that still remain, since they do not have
+    // any non-contract usages.
+    for (auto &[Var, Bad] : Captures) {
+      // We likely didn't see the usage because there was a intervening lambda
+      // that captured by copy.
+      if (Bad.UsedInContract == nullptr)
+        continue;
+      bool CapturesThis = Bad.Capture.capturesThis();
+      auto *ND = cast_if_present<NamedDecl>(Var);
+      Actions.Diag(CurLambda->getCaptureDefaultLoc(),
+                   diag::err_contract_lambda_implicit_capture_only)
+          << (int)CapturesThis << ND;
+      SourceLocation UsageLoc = Bad.UsageLoc;
+      Actions.Diag(UsageLoc, diag::note_contract_lambda_implicit_capture_usage)
+          << (int)CapturesThis << ND;
+      if (Bad.UsedInContract)
+        Actions.Diag(Bad.UsedInContract->getBeginLoc(),
+                     diag::note_contract_context);
+
+      // Reaching here means the lambda has a capture-default (the capture is
+      // implicit), so its introducer is never empty and the entity can always
+      // be appended to the list as ", x" just inside the ']'.
+      std::string Insertion =
+          CapturesThis ? std::string(", this") : (", " + ND->getNameAsString());
+      Actions.Diag(CurLambda->getIntroducerRange().getEnd(),
+                   diag::note_contract_lambda_implicit_capture_explicit)
+          << (int)CapturesThis << ND
+          << FixItHint::CreateInsertion(
+                 CurLambda->getIntroducerRange().getEnd(), Insertion);
+    }
+  }
+
+  void Init() {
+    // Collect all of the implicit captures of the lambda.
+    // If the lambda capture hasn't been removed after traversing the tree then
+    // that lambda capture is bad, and must be diagnosed as only being used
+    // inside of a contract.
+    for (auto C : CurLambda->captures()) {
+      if (C.capturesThis() && C.isImplicit())
+        Captures.insert({nullptr, {C}});
+      if (!C.capturesVariable())
+        continue;
+      if (C.isExplicit())
+        continue;
+      Captures.insert({C.getCapturedVar(), {C}});
+    }
+  }
+
+public:
+  bool shouldVisitLambdaBody() const { return false; }
+
+  bool TraverseContractStmt(ContractStmt *CS) {
+    assert(CS->getCond() && "a contract has a predicate");
+    const ContractStmt *Prev = CurContract;
+    CurContract = CS;
+    TraverseStmt(CS->getCond());
+    CurContract = Prev;
+    return true;
+  }
+
+  bool TraverseLambdaCapture(LambdaExpr *LE, const LambdaCapture *C,
+                             Expr *Init) {
+    return true;
+  }
+
+  bool TraverseLambdaExpr(LambdaExpr *LE) {
+    assert(LE != CurLambda && "Revisiting the root lambda?");
+    // Iterate over the captures of the nested lambda, and mark any of our
+    // captures as having been seen outside of a contract. This assumes that the
+    // inner lambda has a valid usage of the capture. If it doesn't, we'll
+    // diagnose that separately.
+    for (auto C : LE->captures()) {
+      // A capture of a VLA's type carries the array's bound, which names no
+      // entity: the array itself, and any variable the bound uses, are
+      // captured as variables wherever they are named.  So it takes no part
+      // in the rule, here or among the captures Init collects.
+      if (C.capturesVLAType())
+        continue;
+
+      assert((C.capturesThis() || C.capturesVariable()) &&
+             "the remaining captures are of this or a variable");
+      observeUsage(C.capturesThis() ? nullptr : C.getCapturedVar(), LE,
+                   C.getLocation());
+    }
+    return true;
+  }
+
+  bool VisitDeclRefExpr(DeclRefExpr *E) {
+    if (auto *VD = dyn_cast<ValueDecl>(E->getDecl());
+        VD && E->isNonOdrUse() != NOUR_Unevaluated)
+      observeUsage(VD, E, E->getExprLoc());
+    return true;
+  }
+
+  bool VisitMemberExpr(MemberExpr *E) {
+    if (E->isNonOdrUse() != NOUR_Unevaluated)
+      observeUsage(nullptr, E, E->getExprLoc());
+    return true;
+  }
+
+  bool VisitCXXThisExpr(CXXThisExpr *E) {
+    observeUsage(nullptr, E, E->getExprLoc());
+    return true;
+  }
+
+public:
+  static void Check(Sema &Actions, LambdaExpr *LE) {
+    if (!Actions.LangOpts.ContractLambdaCaptureRestrictions)
+      return;
+    LambdaCaptureChecker Checker(Actions, LE);
+    Checker.Run();
+  }
+};
+
+} // namespace
+
+void Sema::CheckLambdaCapturesForContracts(LambdaExpr *LE) {
+  // Like the other contract hooks called from outside this file, decide here,
+  // and cheaply, that there is nothing to do: without contracts there is no
+  // contract assertion for a capture to be used in.
+  if (!getLangOpts().Contracts)
+    return;
+  LambdaCaptureChecker::Check(*this, LE);
+}
+
 bool Sema::isDirectlyInContractPredicate() const {
   auto *CR = getCurrentContractEntry();
   if (!CR)
