@@ -722,6 +722,140 @@ ContractStmt *Parser::ParseFunctionContractSpecifier(
   return CS ? CS : Invalid();
 }
 
+bool Parser::ParsePostconditionCaptures(SmallVectorImpl<Decl *> &Captures) {
+  assert(Tok.is(tok::l_square) && "Expected '['");
+  ConsumeBracket();
+
+  if (Tok.is(tok::r_square)) {
+    ConsumeBracket();
+    return true;
+  }
+
+  while (true) {
+    SourceLocation Loc = Tok.getLocation();
+    bool IsPackExpansion = false;
+
+    // Reject = (default by-copy)
+    if (Tok.is(tok::equal)) {
+      Diag(Loc, diag::err_contract_postcondition_capture_default);
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return true;
+    }
+
+    // Reject & as default or capture-by-reference
+    if (Tok.is(tok::amp)) {
+      if (NextToken().is(tok::r_square) || NextToken().is(tok::comma)) {
+        Diag(Loc, diag::err_contract_postcondition_capture_default);
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return true;
+      }
+      Diag(Loc, diag::err_contract_postcondition_capture_by_reference);
+      ConsumeToken(); // skip & and try to recover
+    }
+
+    // Reject this / *this
+    if (Tok.is(tok::kw_this)) {
+      Diag(Loc, diag::err_contract_postcondition_capture_this);
+      ConsumeToken();
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+    if (Tok.is(tok::star) && NextToken().is(tok::kw_this)) {
+      Diag(Loc, diag::err_contract_postcondition_capture_this);
+      ConsumeToken(); // *
+      ConsumeToken(); // this
+      if (Tok.is(tok::comma)) {
+        ConsumeToken();
+        continue;
+      }
+      break;
+    }
+
+    // The ellipsis of a pack capture goes before the name of an init-capture
+    // ([...x = args]) and after any other name ([args...]), as in a lambda
+    // ([dcl.contract.capture]); both positions are recorded and checked once
+    // the initializer, or its absence, is known.
+    SourceLocation LeadingEllipsisLoc, TrailingEllipsisLoc;
+    TryConsumeToken(tok::ellipsis, LeadingEllipsisLoc);
+
+    // Having skipped past the ']', recover as the default-capture rejections
+    // do: return true so that the predicate is still parsed in the contract's
+    // scope rather than left over as the declaration's initializer.
+    if (Tok.isNot(tok::identifier)) {
+      Diag(Tok, diag::err_expected) << tok::identifier;
+      SkipUntil(tok::r_square, StopBeforeMatch);
+      ConsumeBracket();
+      return true;
+    }
+
+    IdentifierInfo *Id = Tok.getIdentifierInfo();
+    SourceLocation IdLoc = ConsumeToken();
+
+    TryConsumeToken(tok::ellipsis, TrailingEllipsisLoc);
+
+    ExprResult Init;
+    if (Tok.is(tok::equal)) {
+      ConsumeToken();
+      llvm::SaveAndRestore InCaptureInit(Actions.InPostconditionCaptureInit,
+                                         true);
+      Init = ParseAssignmentExpression();
+      if (Init.isInvalid()) {
+        SkipUntil(tok::r_square, StopBeforeMatch);
+        ConsumeBracket();
+        return true;
+      }
+    }
+
+    // An ellipsis on the wrong side of the name is diagnosed as a lambda's is,
+    // with a fix-it moving it, and the capture recovers as the pack it was
+    // evidently meant to be.  `[...xs...]` has its expected ellipsis too, and
+    // only the leading one is wrong.
+    bool InitCapture = Init.isUsable();
+    SourceLocation ExpectedEllipsisLoc =
+        InitCapture ? LeadingEllipsisLoc : TrailingEllipsisLoc;
+    SourceLocation MisplacedEllipsisLoc =
+        InitCapture ? TrailingEllipsisLoc : LeadingEllipsisLoc;
+    if (MisplacedEllipsisLoc.isValid()) {
+      auto &&D = Diag(MisplacedEllipsisLoc,
+                      diag::err_lambda_capture_misplaced_ellipsis);
+      D << InitCapture << FixItHint::CreateRemoval(MisplacedEllipsisLoc);
+      if (ExpectedEllipsisLoc.isInvalid())
+        D << FixItHint::CreateInsertion(
+            InitCapture ? IdLoc
+                        : Lexer::getLocForEndOfToken(
+                              IdLoc, 0, PP.getSourceManager(), getLangOpts()),
+            "...");
+    }
+    IsPackExpansion =
+        LeadingEllipsisLoc.isValid() || TrailingEllipsisLoc.isValid();
+
+    // A name may appear only once in a capture list, as in a lambda's
+    // ([expr.prim.lambda.capture]); a second capture of it is dropped.
+    bool Repeated = llvm::any_of(Captures, [&](Decl *D) {
+      return cast<NamedDecl>(D)->getIdentifier() == Id;
+    });
+    if (Repeated) {
+      Diag(IdLoc, diag::err_capture_more_than_once) << Id;
+    } else if (Decl *Capture = Actions.ActOnPostconditionCapture(
+                   getCurScope(), IdLoc, Id, Init.get(), IsPackExpansion)) {
+      Captures.push_back(Capture);
+    }
+
+    if (Tok.is(tok::comma)) {
+      ConsumeToken();
+      continue;
+    }
+    break;
+  }
+
+  return !ExpectAndConsume(tok::r_square);
+}
+
 void Parser::ParseLexedFunctionContracts(
     CachedTokens &ContractToks, Decl *FD,
     Parser::ContractEnterScopeKind ScopesToEnter) {
