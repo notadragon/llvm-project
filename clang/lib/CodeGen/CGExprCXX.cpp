@@ -240,6 +240,9 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   // Compute the object pointer.
   bool CanUseVirtualCall = MD->isVirtual() && !HasQualifier;
 
+  // P3100: a member function of *this called in a constructor or destructor
+  // function-try-block handler.
+  EmitImplicitHandlerMemberCheck(Base, IsArrow, CE->getExprLoc());
   const CXXMethodDecl *DevirtualizedMethod = nullptr;
   if (CanUseVirtualCall &&
       MD->getDevirtualizedMethod(Base, getLangOpts().AppleKext)) {
