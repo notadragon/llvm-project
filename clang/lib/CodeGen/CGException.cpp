@@ -1171,6 +1171,10 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
     incrementProfileCounter(C);
 
     // Perform the body of the catch.
+    // P3100: a handler of a constructor's or destructor's function-try-block
+    // is where ub:except.handle.handler.ctor.dtor checks a member of *this.
+    SaveAndRestore P3100Handler(P3100InCdtorHandler,
+                                P3100InCdtorHandler || doImplicitRethrow);
     EmitStmt(C->getHandlerBlock());
 
     // [except.handle]p11:

@@ -1745,6 +1745,46 @@ llvm::Value *CodeGenFunction::EmitP3100NestedPosition(llvm::Value *Pos,
       Builder.CreateAdd(BoundW, llvm::ConstantInt::get(Ty, 1)), Sum);
 }
 
+void CodeGenFunction::EmitImplicitUnconditionalCheck(StringRef Group,
+                                                     StringRef Comment,
+                                                     SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+  if (!HaveInsertPoint())
+    return;
+  CES Sem = resolveImplicitSemantic(Group, Loc);
+  // assume / ignore: the operation goes ahead as written.
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return;
+
+  // The violation is reached whenever the operation is: branch to the
+  // reaction unconditionally, and continue (observe) after it.
+  llvm::BasicBlock *ViolBB = createBasicBlock("ub.uncond.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("ub.uncond.cont");
+  Builder.CreateBr(ViolBB);
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this,
+        getContext().BuildViolationObject(Loc, Comment, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce: the entry point does not return (the insertion point is
+    // cleared); observe: continue into the operation.
+    if (!IsEnforce)
+      Builder.CreateBr(ContBB);
+  }
+  // After enforce or quick_enforce the continuation has no predecessor; the
+  // operation is still emitted there, and dropped as dead code.
+  EmitBlock(ContBB);
+}
+
 // P3100: a function declared [[noreturn]] (or noreturn by any other means)
 // that returns to its caller -- by a return statement or by flowing off its
 // end -- has undefined behavior ({dcl.attr.noreturn.eventually.returns}).  The
@@ -1799,6 +1839,39 @@ void CodeGenFunction::EmitImplicitNoreturnCheck() {
   }
   // The epilogue that follows is unreachable.
   EmitBlock(createBasicBlock("noreturn.returned"));
+}
+
+bool CodeGenFunction::isP3100ThisObject(const Expr *Object, bool IsArrow) {
+  if (!Object)
+    return false;
+  Object = Object->IgnoreParenImpCasts();
+  if (!IsArrow) {
+    const auto *UO = dyn_cast<UnaryOperator>(Object);
+    if (!UO || UO->getOpcode() != UO_Deref)
+      return false;
+    Object = UO->getSubExpr()->IgnoreParenImpCasts();
+  }
+  return isa<CXXThisExpr>(Object);
+}
+
+// P3100: referring to a non-static member or base of an object in a
+// function-try-block handler of its constructor or destructor is undefined
+// ({except.handle.handler.ctor.dtor}): every member and base has been
+// destroyed, or was never initialized, by then.  The check is lexical and
+// unconditional: a data member access or a member function call whose object
+// is *this written directly, in such a handler.  A lambda's captured this is
+// in another function, and a static member or another object is not *this.
+void CodeGenFunction::EmitImplicitHandlerMemberCheck(const Expr *Object,
+                                                     bool IsArrow,
+                                                     SourceLocation Loc) {
+  if (!P3100InCdtorHandler || !getLangOpts().ContractsP3100 ||
+      !isP3100ThisObject(Object, IsArrow))
+    return;
+  EmitImplicitUnconditionalCheck(
+      "ub:except.handle.handler.ctor.dtor",
+      "member referred to in a constructor or destructor function-try-block "
+      "handler",
+      Loc);
 }
 
 // P3100: applying a null pointer to member with .* or ->* is undefined
