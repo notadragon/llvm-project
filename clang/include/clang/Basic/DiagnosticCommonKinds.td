@@ -477,4 +477,107 @@ def warn_exceptions_not_valid_on_target : Warning<
   "target '%0' does not support exception handling;"
   " %select{'throw' is assumed to be never reached|'catch' block is ignored}1">,
   InGroup<OpenMPTargetException>;
+
+// P3595 contract configuration diagnostics.  These describe an external
+// configuration source (inline JSON or a JSON file), so they are reported
+// without a source location; the source description and entry index are
+// carried in the message.
+def err_contract_config_invalid_json : Error<
+  "invalid JSON in contract configuration from %0: %1">;
+def err_contract_config_not_array : Error<
+  "contract configuration from %0 must be a JSON array">;
+def err_contract_config_entry_not_object : Error<
+  "entry %0 in contract configuration from %1 must be a JSON object">;
+def err_contract_config_missing_output : Error<
+  "entry %0 in contract configuration from %1 is missing required "
+  "'output' field">;
+def err_contract_config_output_not_object : Error<
+  "'output' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_invalid_semantic : Error<
+  "invalid contract evaluation semantic '%0' in entry %1 of contract "
+  "configuration from %2">;
+def err_contract_config_output_needs_semantic_or_dynamic : Error<
+  "'output' in entry %0 of contract configuration from %1 must have a "
+  "'semantic' or a 'dynamic' field">;
+def err_contract_config_dynamic_not_object : Error<
+  "'dynamic' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_dynamic_missing_name : Error<
+  "'dynamic' in entry %0 of contract configuration from %1 is missing "
+  "required 'name' field">;
+def err_contract_config_dynamic_bad_name : Error<
+  "'name' '%0' in 'dynamic' in entry %1 of contract configuration from %2 is "
+  "not a valid qualified name">;
+def err_contract_config_dynamic_bad_c_name : Error<
+  "'name' '%0' in 'dynamic' in entry %1 of contract configuration from %2 is "
+  "not a valid identifier">;
+def err_contract_config_dynamic_invalid_linkage : Error<
+  "invalid 'dynamic' linkage '%0' in entry %1 of contract configuration "
+  "from %2; expected 'C' or 'C++'">;
+def err_contract_config_dynamic_provideweak_needs_semantic : Error<
+  "'output' in entry %0 of contract configuration from %1 requests "
+  "'provideweak' for 'dynamic' but has no 'semantic' field to use as the "
+  "weak definition's default">;
+def err_contract_config_match_not_object : Error<
+  "'match' in entry %0 of contract configuration from %1 must be a "
+  "JSON object">;
+def err_contract_config_invalid_kind : Error<
+  "invalid contract kind '%0' in entry %1 of contract configuration "
+  "from %2">;
+def err_contract_config_caller_not_bool_or_object : Error<
+  "'caller' in entry %0 of contract configuration from %1 must be a "
+  "boolean or object">;
+def err_contract_config_cannot_open_file : Error<
+  "cannot open contract configuration file '%0': %1">;
+def err_contract_config_malformed_location : Error<
+  "malformed line range '%0' in 'location'%select{| in 'caller'}1 in entry %2 "
+  "of contract configuration from %3">;
+def err_contract_config_empty_namespace : Error<
+  "'namespace'%select{| in 'caller'}0 in entry %1 of contract configuration "
+  "from %2 must not be empty">;
+def err_contract_config_analysis : Error<
+  "%select{'analysis' and 'caller' cannot both appear in 'match'|"
+  "an entry matching 'analysis' cannot have a 'dynamic' output|"
+  "the 'semantic' of an entry matching 'analysis' must be 'ignore', "
+  "'diagnose' or 'prove'|"
+  "the 'semantic' of an entry matching 'constexpr' cannot be 'prove' or "
+  "'diagnose'}0 (entry %1 of contract configuration from %2)">;
+def err_contract_config_wrong_type : Error<
+  "'%0' in entry %1 of contract configuration from %2 must be %select{a "
+  "string|a boolean}3">;
+def warn_contract_noexcept_semantic_needs_p4298 : Warning<
+  "%select{'-fcontract-evaluation-semantic=%1'|'%1' in contract configuration}0 "
+  "requires '-fcontracts-p4298'; '%2' is used instead">,
+  InGroup<ContractConfiguration>;
+def warn_contract_proving_semantic_needs_p4405 : Warning<
+  "%select{'-fcontract-evaluation-semantic=%1' requires|the contract "
+  "configuration asks for '%1', which requires|"
+  "'-fcontract-analysis-semantic=%1' requires}0 '-fcontracts-p4405'; "
+  "'ignore' is used instead">,
+  InGroup<ContractConfiguration>;
+def err_contract_unproven : Error<
+  "contract assertion cannot be proven%select{| for a call through '%1'}0">;
+def warn_contract_unproven : Warning<
+  "contract assertion cannot be proven%select{| for a call through '%1'}0">,
+  InGroup<ContractUnproven>;
+def err_contract_always_false : Error<
+  "contract predicate is always false%select{| for a call through '%1'}0">;
+def warn_contract_always_false : Warning<
+  "contract predicate is always false%select{| for a call through '%1'}0">,
+  InGroup<ContractUnproven>;
+def note_contract_unproven_predicate : Note<
+  "the predicate of the contract assertion">;
+def note_contract_instantiation_context : Note<"%0">;
+def remark_contract_proof : Remark<
+  "%select{proof|override}2 shadow: %select{proven, sound|proven, "
+  "conditional|not proven|always false}0%select{|; assumed}1">,
+  InGroup<ContractProof>;
+def warn_contract_config_unknown_key : Warning<
+  "unknown key '%0' in '%1' object in contract configuration from %2">,
+  InGroup<ContractConfiguration>;
+def warn_contract_config_caller_unimplemented : Warning<
+  "caller-side contract checking is configured but is not yet implemented "
+  "in this compiler; caller-side checks will not be emitted">,
+  InGroup<ContractConfiguration>;
 }

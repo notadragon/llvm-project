@@ -1,0 +1,4 @@
+[
+  {"match": {"location": "p3595-header-template.h", "caller": false}, "output": {"semantic": "observe"}},
+  {"output": {"semantic": "ignore"}}
+]

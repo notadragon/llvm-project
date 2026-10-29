@@ -1982,6 +1982,20 @@ def CXXAssume : StmtAttr {
   let HasCustomParsing = 1;
 }
 
+def ContractGroup : StmtAttr {
+  let Spellings = [CXX11<"clang", "contract_group">];
+  let Args = [StringArgument<"Group">];
+  let Subjects = SubjectList<[ContractStmt], ErrorDiag, "contract assertions">;
+  let Documentation = [ContractGroupDocs];
+}
+
+def ContractMessage : StmtAttr {
+  let Spellings = [CXX11<"clang", "contract_message">];
+  let Args = [StringArgument<"Message">];
+  let Subjects = SubjectList<[ContractStmt], ErrorDiag, "contract assertions">;
+  let Documentation = [ContractMessageDocs];
+}
+
 def NoMerge : DeclOrStmtAttr {
   let Spellings = [Clang<"nomerge">];
   let Documentation = [NoMergeDocs];

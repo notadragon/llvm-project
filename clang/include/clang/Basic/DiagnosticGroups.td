@@ -2051,6 +2051,22 @@ def TrivialAutoVarInit : DiagGroup<"trivial-auto-var-init">;
 
 def ContractViolation : DiagGroup<"contract-violation">;
 
+// Warnings about problems in the P3595 contract configuration.
+def ContractConfiguration : DiagGroup<"contract-configuration">;
+
+// P4405: an evaluation with the diagnose semantic whose predicate cannot be
+// proven.
+def ContractUnproven : DiagGroup<"contract-unproven">;
+
+// P4405: a remark giving the proof shadow's result for each evaluation it
+// decided (-Rcontract-proof).
+def ContractProof : DiagGroup<"contract-proof">;
+
+def ContractWarning : DiagGroup<"contracts",
+                                [ContractViolation, ContractInvalidLabelFacet,
+                                 ContractConfiguration, ContractUnproven]>;
+
+
 // A warning for options that enable a feature that is not yet complete
 def ExperimentalOption : DiagGroup<"experimental-option">;
 

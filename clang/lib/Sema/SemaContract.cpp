@@ -281,6 +281,172 @@ void Sema::CheckContractViolationHandler(FunctionDecl *FD) {
 }
 
 namespace {
+/// Resolve the contract config of CS, in groups Groups, via the P3595 ordered
+/// config system and D4405's steps 1 to 5 (ContractOptions::resolveContract),
+/// recording the runtime evaluation's semantic and the analysis evaluation's,
+/// callee-side and caller-side, and returning the callee-side runtime and analysis
+/// semantics in \p Runtime and \p Analysis for step 6, and in \p Dynamic
+/// whether the runtime evaluation is selected dynamically.  Returns false,
+/// having diagnosed it, when the best fit finds no semantic in AllowedMask,
+/// which only an empty mask gives; the contract is then recorded as ignore.
+static bool resolveContractConfig(Sema &S, ContractStmt *CS,
+                                  unsigned AllowedMask,
+                                  ArrayRef<std::string> Groups,
+                                  ContractEvaluationSemantic &Runtime,
+                                  ContractEvaluationSemantic &Analysis,
+                                  bool &Dynamic) {
+  const auto &Opts = S.Context.getLangOpts().ContractOpts;
+  ContractResolution Res = Opts.resolveContract(
+      CS->buildConfigQuery(S.Context, S.CurContext, AllowedMask, Groups));
+  ContractEvaluationSemantic Sem = Res.Semantic;
+  Runtime = Res.Runtime;
+  Analysis = Res.Analysis;
+  Dynamic = Res.Dynamic;
+  bool Valid = Sem != InvalidContractEvaluationSemantic;
+  if (!Valid) {
+    S.Diag(CS->getKeywordLoc(), diag::err_contract_no_valid_semantic);
+    Sem = Runtime = Analysis = ContractEvaluationSemantic::Ignore;
+  }
+  CS->setTransformedSemantic(Sem);
+  CS->setAnalysisSemantic(Analysis);
+
+  // A caller-side runtime evaluation always allows ignore
+  // (contractRuntimeAllowedMask), so it always resolves.
+  ContractResolution Caller = Opts.resolveContract(CS->buildConfigQuery(
+      S.Context, S.CurContext, AllowedMask, Groups, /*CallerSide=*/true));
+  CS->setCallerSemantic(Caller.Runtime);
+  CS->setCallerAnalysisSemantic(Caller.Analysis);
+  return Valid;
+}
+
+/// P3595 dynamic selection: when a labeled contract's runtime resolution
+/// matches a config entry carrying an "output.dynamic" descriptor, precompute
+/// the per-return-value transform table
+/// T(R) = compute_semantic(clamp_to_allowed(R)) for every selectable R
+/// (1..ContractStmt::NumDynRawSemantics) and cache it (plus the descriptor) on
+/// the stmt.  Codegen turns this into a dispatch switch; it does no Sema work
+/// of its own.
+///
+/// This mirrors the eagerly-resolved scalar path (steps 3-5 below) but differs
+/// in one way per P3595 design section 4: a compute_semantic result that lands
+/// outside the allowed set records the sentinel 0 for that R (-> runtime
+/// enforced violation in codegen) instead of emitting the compile error.  The
+/// scalar compile-error path (applyLabelFacets step 5) is unchanged for the
+/// eagerly-resolved default.
+///
+/// HasComputeSemantic says whether the label's compute_semantic facet exists
+/// and evaluated when applied to the scalar semantic, as callLabelMethod
+/// decides it: a label whose result does not convert implicitly to
+/// evaluation_semantic has none.  Without it T(R) is just the clamp.  LabelExpr/LabelTy/RD may then be null, for a dynamic contract
+/// with no label facets (matched by group/namespace/location).
+static void
+precomputeDynamicTable(Sema &S, ContractStmt *CS, unsigned AllowedMask,
+                       ArrayRef<std::string> Groups, Expr *LabelExpr,
+                       QualType LabelTy, const CXXRecordDecl *RD,
+                       bool HasComputeSemantic, SourceLocation Loc) {
+  // As in applyLabelFacets: the label methods are constant-evaluated, and a
+  // prvalue label's temporaries must not escape into the enclosing function.
+  EnterExpressionEvaluationContext ConstantEvaluated(
+      S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+  // Match resolveContractConfig's group resolution: if no groups were supplied
+  // (labeled via group_names, or unlabeled), fall back to the
+  // [[clang::contract_group]] attribute so the dynamic scan matches the same
+  // entry the scalar scan did.  Build the same runtime query
+  // resolveContractConfig used, then ask for the matched entry's dynamic
+  // descriptor (never in a constant-evaluation context: a dynamic selector is
+  // never called at compile time).
+  SmallVector<std::string, 1> GroupsStorage;
+  const auto &Opts = S.Context.getLangOpts().ContractOpts;
+  ContractDynamicResult Dyn = Opts.resolveContractDynamic(
+      CS->buildConfigQuery(S.Context, S.CurContext, AllowedMask,
+                           CS->getConfigGroups(Groups, GroupsStorage)));
+  if (!Dyn.Found)
+    return;
+
+  // Compute T(R) for each value R the selector may return: every semantic,
+  // Ignore(1) to Diagnose(9).  One the contract does not allow -- assume
+  // without -fcontracts-allow-assume, a noexcept one without
+  // -fcontracts-p4298, prove or diagnose without -fcontracts-p4405, or one
+  // the label excludes -- is adjusted to the allowed set (D3595R1, "Adjusting
+  // a Semantic to the Allowed Set") by stage a.  Any other value keeps the
+  // sentinel 0.
+  //
+  // When AllowedMask holds no throwing semantic (contractSemanticsNothrow),
+  // stage a prefers noexcept_observe and noexcept_enforce to the throwing
+  // semantics it cannot reach, but a compute_semantic result outside the
+  // allowed set, an observe or enforce included, is an invalid selection
+  // (DECISIONS.md E138), just as the static path rejects it, and codegen
+  // reports it with no throwing semantic either (a noexcept_enforce
+  // violation, or without -fcontracts-p4298 a quick_enforce trap).  The weak
+  // default selector returns the configured semantic (Dyn.Configured), to
+  // which neither the allowed set nor compute_semantic has been applied,
+  // through the same table, so it is evaluated with the compile-time
+  // semantic.
+  //
+  // D4405: the selected semantic is a runtime evaluation's, adjusted to the
+  // runtime allowed set (contractRuntimeAllowedMask) as the compile-time
+  // semantic is, so a selected prove or diagnose is taken as ignore, as the
+  // configured one would be moved to the analysis evaluation, and the walk
+  // never reaches either.  A compute_semantic prove or diagnose likewise
+  // takes the evaluation to ignore, provided it is in the analysis allowed
+  // set and ignore in the runtime one.  (gnu_gcc's transform_semantic.)
+  unsigned RuntimeMask =
+      contractRuntimeAllowedMask(AllowedMask, /*CallerSide=*/false);
+  unsigned AnalysisMask = contractAnalysisAllowedMask(AllowedMask);
+  uint8_t Table[ContractStmt::NumDynRawSemantics] = {};
+  for (unsigned R = 1; R <= ContractStmt::NumDynRawSemantics; ++R) {
+    // Stage a: clamp R into the runtime allowed set using the SAME helper
+    // resolveContract uses (fallback order + P3100 assume rule).  An R the
+    // best fit cannot adjust into the set is an invalid selection.
+    auto Raw = static_cast<ContractEvaluationSemantic>(R);
+    if (isProvingContractSemantic(Raw))
+      Raw = ContractEvaluationSemantic::Ignore;
+    ContractEvaluationSemantic Clamped =
+        ContractOptions::clampToAllowed(Raw, RuntimeMask);
+    if (Clamped == InvalidContractEvaluationSemantic) {
+      Table[R - 1] = 0; // sentinel: no valid semantic
+      continue;
+    }
+
+    ContractEvaluationSemantic Effective = Clamped;
+
+    // Stage b: apply compute_semantic (if the label has it) to the clamped
+    // value.  A result that is not a semantic value is never allowed, so it
+    // records the sentinel; the others are gated by the AllowedMask check in
+    // stage c below.
+    if (HasComputeSemantic) {
+      std::optional<int64_t> Computed = callLabelMethod(
+          S, LabelExpr, LabelTy, RD, LabelFacet::ComputeSemantic,
+          static_cast<unsigned>(Clamped), Loc);
+      if (Computed && !isContractEvaluationSemanticValue(*Computed)) {
+        Table[R - 1] = 0; // sentinel: not a semantic
+        continue;
+      }
+      if (Computed)
+        Effective = static_cast<ContractEvaluationSemantic>(*Computed);
+    }
+
+    // Stage c: unlike the eagerly-resolved scalar path (step 6), a disallowed
+    // effective semantic here is NOT a compile error -- it records the sentinel
+    // 0, which codegen dispatches to a runtime enforced violation.  A prove or
+    // diagnose the analysis evaluation allows is recorded as ignore: the
+    // selection happens at run time, where there is nothing to diagnose.
+    if (isProvingContractSemantic(Effective))
+      Effective = (AnalysisMask & (1u << static_cast<unsigned>(Effective)))
+                      ? ContractEvaluationSemantic::Ignore
+                      : InvalidContractEvaluationSemantic;
+    if (Effective == InvalidContractEvaluationSemantic ||
+        !(RuntimeMask & (1u << static_cast<unsigned>(Effective))))
+      Table[R - 1] = 0; // sentinel: disallowed transform
+    else
+      Table[R - 1] = static_cast<uint8_t>(Effective);
+  }
+
+  StringRef StoredName = S.Context.backupStr(Dyn.Name);
+  CS->setDynamicInfo(StoredName, Dyn.Linkage, Dyn.ProvideWeak, Dyn.Configured,
+                     Table);
+}
+
 /// Whether CS has a requires-clause on a contract of a non-templated function,
 /// which P4283 makes ill-formed.  ActOnContractAssert diagnoses it (only the
 /// parser reaches that, never an instantiation); BuildContractStmt skips the
@@ -398,6 +564,17 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
 
   auto BuiltAttrs = SemaContractHelper::buildAttributesWithDummyNode(
       *this, ContractAttrs, KeywordLoc);
+
+  if (MessageExpr) {
+    for (auto *A : BuiltAttrs) {
+      if (isa<ContractMessageAttr>(A)) {
+        Diag(MessageExpr->getBeginLoc(),
+             diag::err_contract_message_and_attribute);
+        MessageExpr = nullptr;
+        break;
+      }
+    }
+  }
 
   StmtResult Res =
       BuildContractStmt(CK, KeywordLoc, Cond, RNDStmt, MessageExpr, LabelExpr,
@@ -935,6 +1112,8 @@ bool Sema::CheckEquivalentContractSequence(FunctionDecl *OldDecl,
       // different text on different lines is a mismatch).  An empty message
       // is still a message: "" and no message are a mismatch.
       auto HasUserMessage = [](const ContractStmt *C) {
+        if (C->getAttr<ContractMessageAttr>())
+          return true;
         return C->hasMessage();
       };
       if (HasUserMessage(OC) != HasUserMessage(NC) ||
@@ -2068,6 +2247,36 @@ DeclResult Sema::RebuildContractsWithPlaceholderReturnType(FunctionDecl *FD) {
   if (NewCSD->isInvalidDecl())
     FD->setInvalidDecl();
   return NewCSD;
+}
+
+/// ActOnContractsOnFinishFunctionBody
+///
+/// This function ensures there is a usable version of the
+/// function contracts attached to the definition declaration.
+///
+/// This is already the case if the definition declaration was spelled with
+/// contracts.
+///
+/// Otherwise, we might have contracts on the first declaration.
+/// If we do,
+///
+/// (1) attach them to the defining declaration.
+/// (2) rebind any references to parameters contained within the contracts.
+///
+/// This is important because the definition's parameters are the ones
+/// evaluated by ExprConstant/CodeGen.
+void Sema::DiagnoseMistypedDynamicContractSelectors() {
+  for (StringRef Name :
+       getLangOpts().ContractOpts.getCXXDynamicSelectorNames())
+    ContractStmt::lookupDynamicSelector(
+        Context, Name,
+        [&](const NamedDecl *D, ContractStmt::DynamicSelectorMatch M) {
+          if (M != ContractStmt::DynamicSelectorMatch::Mistyped)
+            return;
+          QualType T = cast<ValueDecl>(D)->getType();
+          Diag(D->getLocation(), diag::warn_contract_dynamic_selector_wrong_type)
+              << isa<VarDecl>(D) << D << Name << T;
+        });
 }
 
 void Sema::ActOnContractsOnFinishFunctionBody(FunctionDecl *Def) {

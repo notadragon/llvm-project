@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "post", "caller": false}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "observe"}}
+]

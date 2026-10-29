@@ -13181,6 +13181,8 @@ let CategoryName = "Contract Issue" in {
 def err_contract_on_deleted_or_defaulted : Error<
   "%select{deleted function %1|function %1 defaulted on its first "
   "declaration}0 cannot have a function-contract-specifier">;
+def err_contract_no_valid_semantic : Error<
+  "no valid evaluation semantic for contract assertion">;
 def err_contract_violation_handler_invalid : Error<
   "%select{"
   "'::handle_contract_violation' must not be declared 'inline'|"
@@ -13206,6 +13208,22 @@ def err_contract_result_name_void_return : Error<
   "void return type">;
 def err_contract_result_name_not_allowed : Error<
   "result name %0 not allowed outside of a postcondition">;
+
+// Diagnose clang::contract_group attribute strings
+def err_contract_group_attribute_invalid_group : Error<
+  "clang::contract_group group %select{"
+     "'%1' cannot start with '%2'"
+    "|'%1' cannot contain '%2'"
+    "|'%1' cannot end with '%2'"
+    "|'%1' cannot contain empty subgroup '%2'"
+    "|cannot be empty"
+    "}0">;
+def warn_contract_dynamic_selector_wrong_type : Warning<
+  "%select{function|variable}0 %1 has the name of the dynamic contract "
+  "selector '%2' in the contract configuration, but %select{its type %3 is "
+  "not|it is not a function of type}0 "
+  "'std::contracts::evaluation_semantic ()'">,
+  InGroup<ContractConfiguration>;
 
 def err_constexpr_contract_failure : Error<
   "contract failed during execution of constexpr function%select{|: %1}0">;
@@ -13274,6 +13292,9 @@ def err_keyword_not_allowed_in_contract : Error<
 def err_contract_lambda_decl_ref_not_modifiable_lvalue : Error<
   "cannot assign to a variable captured by %select{reference|copy}0 which was "
   "captured as const because it is inside a contract">;
+def err_contract_message_and_attribute : Error<
+  "cannot use both a syntactic diagnostic message and "
+  "'[[clang::contract_message]]' on the same contract assertion">;
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"

@@ -41,6 +41,19 @@ class DeclContext;
 class DiagnosticsEngine;
 class SourceManager;
 
+enum class ContractGroupDiagnostic {
+  // The remaining values map to %select values in diagnostics in both
+  // DiagnosticSemaKinds.td and DiagnosticDriverKinds.td.
+  InvalidFirstChar,
+  InvalidChar,
+  InvalidLastChar,
+  EmptySubGroup,
+  Empty,
+  InvalidSemantic,
+  // -fcontract-group-evaluation-semantic= only: a semantic with no group.
+  MissingGroup,
+};
+
 /// The kind of contract, as classified internally by the implementation.
 ///
 /// NOTE: This is deliberately distinct from ContractAssertionKind (the
@@ -326,6 +339,136 @@ enum class ContractDetectionMode {
 /// when adjusting the context).
 enum class ContractScopeOffset { ParentContext, FunctionContext };
 
+/// Source type for a contract configuration entry.
+enum class ContractConfigSourceKind {
+  GroupSemantic,
+  JSONInline,
+  JSONFile,
+};
+
+/// The parsed P3595 configuration storage.  Its layout (in particular
+/// ContractConfigEntry) evolves as new match criteria are added, so it is
+/// defined in the impl-only header clang/Basic/ContractConfig.h and held by
+/// ContractOptions behind a pointer -- keeping it out of the include graph of
+/// everything that pulls in LangOptions.h.
+struct ContractConfigData;
+struct ContractConfigSource;
+
+/// P3595 dynamic (link-/run-time) selection: the "output.dynamic" descriptor
+/// of a matched contract config entry.  Companion to
+/// ContractOptions::resolveContractSemantic (see resolveContractDynamic).
+/// `Found` is false when the matched entry has no "dynamic" descriptor, or
+/// when resolving in a constant-evaluation context -- a dynamic selector is
+/// never invoked at compile time, so no descriptor is surfaced there (the
+/// entry's Semantic is used instead; see the constant-evaluation rule in
+/// resolveContractSemantic's implementation).
+/// The linkage a P3595 dynamic selector is named with: a qualified C++ name,
+/// which is mangled, or a verbatim C symbol.
+enum class ContractDynamicLinkage : uint8_t { CXX, C };
+
+struct ContractDynamicResult {
+  std::string Name;
+  // Meaningful only when Found.
+  ContractDynamicLinkage Linkage = ContractDynamicLinkage::CXX;
+  bool ProvideWeak = false;
+  bool Found = false;
+  // The matched entry's own "semantic", before it is adjusted to the allowed
+  // set: what the selector's weak default returns (D3595R1).
+  // InvalidContractEvaluationSemantic when the entry gives none, which is
+  // never the case when ProvideWeak.
+  ContractEvaluationSemantic Configured = InvalidContractEvaluationSemantic;
+};
+
+/// The throwing semantics: observe and enforce, the two whose evaluation may
+/// let an exception leave the check -- the violation handler, which may
+/// throw, is called through an entry point that lets it, as is the report of
+/// an exception from the predicate.  No other semantic can: noexcept_observe
+/// and noexcept_enforce (P4298) call the handler as noexcept, so an exception
+/// from it terminates the program; quick_enforce traps inline and calls none;
+/// ignore and assume evaluate nothing at run time (on the P3595 dynamic path
+/// assume is evaluated as ignore), and neither do the P4405 prove and
+/// diagnose.
+inline constexpr unsigned ThrowingContractSemanticsMask =
+    (1u << static_cast<unsigned>(ContractEvaluationSemantic::Observe)) |
+    (1u << static_cast<unsigned>(ContractEvaluationSemantic::Enforce));
+
+/// P3595, DECISIONS.md E137 and E138: true if \p Mask, the semantics a
+/// dynamically selected contract may be evaluated with -- its label's
+/// allowed_semantics facet intersected with the flag-gated base set -- holds
+/// no throwing semantic (ThrowingContractSemanticsMask).  A dynamic selection
+/// must not then bring one in: the best-fit clamp prefers a noexcept
+/// counterpart, a compute_semantic result outside the set (an observe or
+/// enforce included) is an invalid selection (precomputeDynamicTable), and an
+/// invalid selection is reported, in the dispatch in
+/// EmitContractStmtAsFullStmt, through the noexcept_enforce entry point
+/// rather than the enforce one with -fcontracts-p4298, and without it, where
+/// noexcept_enforce is not available, as a quick_enforce trap calling no
+/// handler, whatever the label allows.  So no exception leaves the check.
+/// Never for a contract with no label, nor in C, which has no labels: the
+/// base set always holds both throwing semantics.  (gnu_gcc's
+/// contract_semantics_nothrow_p.)
+constexpr bool contractSemanticsNothrow(unsigned Mask) {
+  return !(Mask & ThrowingContractSemanticsMask);
+}
+
+/// Per-assertion query for P3595 contract config resolution.
+/// Namespace and location are lazily computed from the DeclContext
+/// and SourceLocation to avoid cost when no config entry needs them.
+struct ContractQuery {
+  ContractKind Kind;
+  bool CallerSide = false;
+  bool InConstantEvaluation = false;
+  unsigned AllowedMask = AllContractSemanticsMask;
+  /// D4405: the semantic the assertion-control object's analysis_semantic
+  /// facet gives the analysis evaluation, which takes the stronger of it and
+  /// its configured semantic; ignore when there is none.  Read only for a
+  /// callee-side query outside constant evaluation.
+  ContractEvaluationSemantic LabelAnalysis = ContractEvaluationSemantic::Ignore;
+  llvm::ArrayRef<std::string> Groups;
+
+  const DeclContext *FnContext = nullptr;
+  SourceLocation Loc;
+  const SourceManager *SM = nullptr;
+
+  llvm::StringRef getNamespace() const;
+  llvm::StringRef getLocationFile() const;
+  int getLocationLine() const;
+  int getLocationColumn() const;
+
+private:
+  mutable std::string CachedNamespace;
+  mutable std::string CachedLocationFile;
+  mutable int CachedLocationLine = 0;
+  mutable int CachedLocationColumn = 0;
+  mutable bool NamespaceComputed = false;
+  mutable bool LocationComputed = false;
+};
+
+/// D4405: the result of resolving a ContractQuery (D4405R0, "Adjusting to the
+/// Allowed Semantics"; ContractOptions::resolveContract).
+struct ContractResolution {
+  /// The semantic of the runtime evaluation queried, adjusted to its allowed
+  /// set (contractRuntimeAllowedMask), never prove or diagnose; for a
+  /// constant evaluation, the semantic it uses
+  /// (contractConstantEvaluationSemantic).  InvalidContractEvaluationSemantic
+  /// if resolution failed.
+  ContractEvaluationSemantic Runtime = InvalidContractEvaluationSemantic;
+  /// The semantic of the analysis evaluation -- ignore, diagnose or prove --
+  /// adjusted to its allowed set (contractAnalysisAllowedMask).  For a
+  /// callee-side query it is the assertion's; for a caller-side one only what
+  /// the caller-side lookup moved into it; always ignore in constant
+  /// evaluation.  InvalidContractEvaluationSemantic if resolution failed.
+  ContractEvaluationSemantic Analysis = ContractEvaluationSemantic::Ignore;
+  /// Runtime, or InvalidContractEvaluationSemantic if either resolution
+  /// failed.  The runtime evaluation is emitted with it; the analysis
+  /// evaluation, the first, is placed on its own (a precondition's at each
+  /// call, a postcondition's or assertion's in the body ahead of the check).
+  ContractEvaluationSemantic Semantic = InvalidContractEvaluationSemantic;
+  /// Whether the matched runtime entry has a dynamic selector (never in
+  /// constant evaluation).
+  bool Dynamic = false;
+};
+
 /// The contract options for a translation unit: the default evaluation
 /// semantic, the P3100 assume gate, and the P3595 configuration sources that
 /// together decide which evaluation semantic each contract assertion gets.
@@ -450,3 +593,26 @@ public:
   /// configuration contains, each once, in configuration order.
   llvm::SmallVector<llvm::StringRef> getCXXDynamicSelectorNames() const;
 
+private:
+  /// Parse JSON text and append config entries. SourceDesc is for diagnostics,
+  /// which are reported through Diags.
+  void parseConfigJSON(DiagnosticsEngine &Diags, llvm::StringRef JSON,
+                       llvm::StringRef SourceDesc) const;
+
+  /// Read a JSON file (through \p VFS) and parse it as contract configuration.
+  void parseConfigFile(DiagnosticsEngine &Diags, llvm::vfs::FileSystem &VFS,
+                       llvm::StringRef Path) const;
+
+  /// Lazily-allocated parsed configuration (see ContractConfigData).  Shared
+  /// so that copies of ContractOptions (LangOptions is copied) share the
+  /// post-init, effectively-immutable configuration rather than deep-copying
+  /// it.  Null until the first configuration source is added.
+  mutable std::shared_ptr<ContractConfigData> Config;
+
+  /// Ensure Config is allocated; returns it.
+  ContractConfigData &ensureConfig() const;
+};
+
+} // namespace clang
+
+#endif // LLVM_CLANG_BASIC_CONTRACT_OPTIONS_H

@@ -353,6 +353,8 @@ std::string ContractStmt::getUserMessage(const ASTContext &Ctx) const {
     if (auto *SL = dyn_cast<StringLiteral>(getMessageExpr()))
       return SL->getString().str();
   }
+  if (auto *A = getAttr<ContractMessageAttr>())
+    return A->getMessage().str();
   return {};
 }
 
@@ -389,6 +391,68 @@ StringRef ContractStmt::ContractKindAsString(ContractKind K) {
   llvm_unreachable("Unknown contract kind");
 }
 
+// Whether T is std::contracts::evaluation_semantic (the namespaces may be
+// reached through inline namespaces, as in libc++).
+static bool isEvaluationSemanticType(QualType T) {
+  const EnumDecl *ED = T->getAsEnumDecl();
+  if (!ED || !ED->getIdentifier() || ED->getName() != "evaluation_semantic")
+    return false;
+  const DeclContext *DC = ED->getDeclContext()->getRedeclContext();
+  while (DC->isInlineNamespace())
+    DC = DC->getParent()->getRedeclContext();
+  const auto *NS = dyn_cast<NamespaceDecl>(DC);
+  return NS && NS->getIdentifier() && NS->getName() == "contracts" &&
+         NS->getParent()->getRedeclContext()->isStdNamespace();
+}
+
+// A selector is a non-template function at namespace scope with no
+// parameters, so it mangles as the configuration's name does.  Any other
+// function of that name has another symbol; a variable of that name has the
+// selector's name but cannot be one.
+static ContractStmt::DynamicSelectorMatch
+classifyDynamicSelectorDecl(const NamedDecl *D) {
+  using Match = ContractStmt::DynamicSelectorMatch;
+  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (FD->getNumParams() != 0 || FD->isVariadic() || FD->isTemplated() ||
+        !FD->getDeclContext()->isFileContext() ||
+        FD->getReturnType()->isUndeducedType())
+      return Match::None;
+    return isEvaluationSemanticType(FD->getReturnType()) ? Match::Selector
+                                                         : Match::Mistyped;
+  }
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (VD->getDeclContext()->isFileContext() && !VD->isTemplated())
+      return Match::Mistyped;
+  return Match::None;
+}
+
+// The lookup tables make members of an inline namespace visible in its
+// enclosing namespace, as qualified lookup does.
+void ContractStmt::lookupDynamicSelector(
+    ASTContext &Ctx, StringRef Name,
+    llvm::function_ref<void(const NamedDecl *, DynamicSelectorMatch)> Fn) {
+  SmallVector<StringRef, 4> Components;
+  Name.split(Components, "::");
+  const DeclContext *DC = Ctx.getTranslationUnitDecl();
+  for (StringRef C : ArrayRef(Components).drop_back()) {
+    if (C.empty())
+      return;
+    const NamespaceDecl *Found = nullptr;
+    for (const NamedDecl *D : DC->lookup(&Ctx.Idents.get(C)))
+      if ((Found = dyn_cast<NamespaceDecl>(D)))
+        break;
+    if (!Found)
+      return;
+    DC = Found;
+  }
+  if (Components.back().empty())
+    return;
+  for (const NamedDecl *D : DC->lookup(&Ctx.Idents.get(Components.back())))
+    if (DynamicSelectorMatch M = classifyDynamicSelectorDecl(D);
+        M != DynamicSelectorMatch::None)
+      Fn(D, M);
+}
+
 ContractEvaluationSemantic
 ContractStmt::getSemantic(const ASTContext &Ctx) const {
   if (hasTransformedSemantic())
@@ -414,6 +478,8 @@ ContractStmt::getConfigGroups(ArrayRef<std::string> Groups,
   if (!Groups.empty())
     return Groups;
   Storage.clear();
+  if (auto *A = getAttr<ContractGroupAttr>())
+    Storage.push_back(A->getGroup().str());
   return Storage;
 }
 

@@ -1,0 +1,2 @@
+[{"match": {}, "output": {"semantic": "enforce",
+  "dynamic": {"linkage": "C++", "name": "::my_sel", "provideweak": false}}}]

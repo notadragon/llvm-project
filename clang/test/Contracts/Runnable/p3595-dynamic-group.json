@@ -1,0 +1,1 @@
+[{"match": {"group": "safety", "caller": false}, "output": {"semantic": "ignore", "dynamic": {"linkage": "C++", "name": "p3595_group_sel"}}}]
