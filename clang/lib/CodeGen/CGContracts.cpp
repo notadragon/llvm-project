@@ -1086,6 +1086,472 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
     Builder.CreateBr(ContinueBlock);
 }
 
+//===----------------------------------------------------------------------===//
+// P3097: Virtual Function Contract Wrappers
+//===----------------------------------------------------------------------===//
+
+void CodeGenFunction::EmitInterfacePreconditionsAndCaptures(
+    const CXXMethodDecl *MD) {
+  if (!MD->hasContracts())
+    return;
+  for (auto *CS : MD->getContracts()->contracts()) {
+    if (CS->getContractKind() == ContractKind::Pre) {
+      EmitStmt(CS);
+    } else if (CS->getContractKind() == ContractKind::Post &&
+               CS->hasCaptures()) {
+      EmitPostconditionCaptures(CS, MD->getDeclContext());
+    }
+  }
+}
+
+/// Whether an exception from the evaluation of \p FD's interface contracts
+/// outside its body -- in its P3097 wrapper, or at a call that checks them
+/// (a C-variadic function, a virtual destructor) -- must terminate the
+/// program: \p FD is noexcept, so it would in \p FD's body.
+static bool interfaceContractsTerminateOnThrow(CodeGenFunction &CGF,
+                                               const FunctionDecl *FD) {
+  if (!CGF.getLangOpts().CXXExceptions)
+    return false;
+  const auto *FPT = FD->getType()->getAs<FunctionProtoType>();
+  return FPT && !isUnresolvedExceptionSpec(FPT->getExceptionSpecType()) &&
+         FPT->isNothrow();
+}
+
+llvm::Function *
+CodeGenModule::getOrEmitVirtualContractWrapper(const CXXMethodDecl *MD) {
+  auto It = VirtualContractWrappers.find(MD);
+  if (It != VirtualContractWrappers.end())
+    return It->second;
+
+  // Build the wrapper function type (same as the method).
+  const CGFunctionInfo &FnInfo = getTypes().arrangeCXXMethodDeclaration(MD);
+  llvm::FunctionType *FnTy = getTypes().GetFunctionType(FnInfo);
+
+  // Mangle the wrapper name.
+  SmallString<256> WrapperName;
+  {
+    llvm::raw_svector_ostream OS(WrapperName);
+    getCXXABI().getMangleContext().mangleName(GlobalDecl(MD), OS);
+    OS << ".__contract_wrapper";
+  }
+
+  // Create the function with internal linkage.
+  llvm::Function *WrapperFn = llvm::Function::Create(
+      FnTy, llvm::GlobalValue::InternalLinkage, WrapperName, &getModule());
+  WrapperFn->addFnAttr(llvm::Attribute::NoInline);
+
+  VirtualContractWrappers[MD] = WrapperFn;
+
+  // Emit the wrapper body.
+  CodeGenFunction CGF(*this);
+  CGF.EmitVirtualContractWrapperBody(WrapperFn, MD);
+
+  return WrapperFn;
+}
+
+void CodeGenFunction::EmitVirtualDtorCallWithContracts(
+    const CXXDestructorDecl *Dtor, llvm::Value *This,
+    llvm::function_ref<void()> EmitCall) {
+  bool AnyActive = false;
+  if (getLangOpts().ContractsP3097 && Dtor->hasContracts())
+    for (auto *CS : Dtor->getContracts()->contracts())
+      // As for EmitCXXMemberOrOperatorMemberCallExpr's wrapper: the P4405
+      // analysis evaluations need no wrapper.
+      if (CS->ensureRuntimeSemantic(getContext(), Dtor->getDeclContext()) !=
+          ContractEvaluationSemantic::Ignore) {
+        AnyActive = true;
+        break;
+      }
+  if (!AnyActive) {
+    EmitCall();
+    return;
+  }
+  // Checked at the call: this caller's own code, which another TU's copy of
+  // it may leave out, so never settled (noteContractEvaluation).
+  CurFnHoldsUnsettledContract = true;
+
+  // As EmitCallWithCallSiteContracts, with no parameters to bind: look at
+  // the call through the destructor for the state the contract emitters
+  // read, and give this call site captures and selections of its own.
+  SmallVector<std::pair<const Decl *, std::optional<Address>>, 4> SavedDecls;
+  SmallVector<std::pair<const ContractStmt *, std::optional<Address>>, 2>
+      SavedCaptureFlags, SavedSelections;
+  auto SaveAndErase = [](auto &Map, auto *Key, auto &Saved) {
+    auto It = Map.find(Key);
+    if (It == Map.end()) {
+      Saved.push_back({Key, std::nullopt});
+    } else {
+      Saved.push_back({Key, It->second});
+      Map.erase(It);
+    }
+  };
+  for (const ContractStmt *CS : Dtor->postconditions()) {
+    if (!CS->hasCaptures())
+      continue;
+    for (const Decl *D : CS->getCapturesDeclStmt()->decls())
+      SaveAndErase(LocalDeclMap, D, SavedDecls);
+    SaveAndErase(ContractData->CaptureInitFailed, CS, SavedCaptureFlags);
+    SaveAndErase(ContractData->DynSelection, CS, SavedSelections);
+  }
+
+  const Decl *SavedCodeDecl = CurCodeDecl;
+  const Decl *SavedFuncDecl = CurFuncDecl;
+  llvm::Value *SavedThis = CXXThisValue;
+  CharUnits SavedThisAlign = CXXThisAlignment;
+  bool SavedInterfaceEvaluation = InContractInterfaceEvaluation;
+  auto EnterDtor = [&] {
+    CurCodeDecl = Dtor;
+    CurFuncDecl = Dtor;
+    CXXThisValue = This;
+    CXXThisAlignment = CharUnits();
+    InContractInterfaceEvaluation = true;
+  };
+  auto LeaveDtor = [&] {
+    CurCodeDecl = SavedCodeDecl;
+    CurFuncDecl = SavedFuncDecl;
+    CXXThisValue = SavedThis;
+    CXXThisAlignment = SavedThisAlign;
+    InContractInterfaceEvaluation = SavedInterfaceEvaluation;
+  };
+
+  // For a noexcept destructor, as in its body, an exception from the
+  // evaluation terminates (interfaceContractsTerminateOnThrow).
+  bool TerminateOnThrow = interfaceContractsTerminateOnThrow(*this, Dtor);
+  if (TerminateOnThrow)
+    EHStack.pushTerminate();
+  RunCleanupsScope CaptureScope(*this);
+  EnterDtor();
+  EmitInterfacePreconditionsAndCaptures(Dtor);
+  LeaveDtor();
+  EmitCall();
+  if (HaveInsertPoint()) {
+    EnterDtor();
+    EmitPostContracts(nullptr);
+    LeaveDtor();
+  }
+  CaptureScope.ForceCleanup();
+  if (TerminateOnThrow)
+    EHStack.popTerminate();
+
+  for (auto &[CS, Flag] : SavedCaptureFlags) {
+    ContractData->CaptureInitFailed.erase(CS);
+    if (Flag)
+      ContractData->CaptureInitFailed.insert({CS, *Flag});
+  }
+  for (auto &[CS, Sel] : SavedSelections) {
+    ContractData->DynSelection.erase(CS);
+    if (Sel)
+      ContractData->DynSelection.insert({CS, *Sel});
+  }
+  for (auto &[D, Addr] : llvm::reverse(SavedDecls)) {
+    LocalDeclMap.erase(D);
+    if (Addr)
+      LocalDeclMap.insert({D, *Addr});
+  }
+}
+
+RValue CodeGenFunction::EmitCallWithCallSiteContracts(
+    const CXXMethodDecl *MD, const CGFunctionInfo &FnInfo,
+    const CGCallee &Callee, ReturnValueSlot Slot, CallArgList &Args,
+    llvm::Value *ContractThis, const CallExpr *CE,
+    llvm::CallBase **CallOrInvoke) {
+  // The contracts name MD's parameters, and are emitted here as they would
+  // be in MD's wrapper: bind each parameter to the argument evaluated for
+  // it, and look at the call through MD for the rest of the state the
+  // contract emitters read.  Entries this displaces are put back at the end.
+  SmallVector<std::pair<const Decl *, std::optional<Address>>, 8> SavedDecls;
+  auto Unbind = [&](const Decl *D) {
+    auto It = LocalDeclMap.find(D);
+    if (It == LocalDeclMap.end()) {
+      SavedDecls.push_back({D, std::nullopt});
+      return;
+    }
+    SavedDecls.push_back({D, It->second});
+    LocalDeclMap.erase(It);
+  };
+
+  // A scalar argument is copied to a temporary the predicates can name, and
+  // passed on from there, so the call sees what the preconditions saw.
+  struct Reload {
+    CallArg *Arg;
+    Address Temp;
+    QualType Ty;
+  };
+  SmallVector<Reload, 4> Reloads;
+  unsigned ArgIdx = 1; // Args[0] is the object argument.
+  for (const ParmVarDecl *PD : MD->parameters()) {
+    CallArg &A = Args[ArgIdx++];
+    Unbind(PD);
+    if (A.hasLValue()) {
+      RValue RV = A.getRValue(*this);
+      A = CallArg(RV, A.Ty);
+    }
+    RValue RV = A.getKnownRValue();
+    Address Addr = Address::invalid();
+    if (RV.isAggregate()) {
+      Addr = RV.getAggregateAddress().withElementType(
+          ConvertTypeForMem(PD->getType()));
+    } else {
+      Addr = CreateMemTemp(PD->getType(), "contract.arg");
+      LValue LV = MakeAddrLValue(Addr, PD->getType());
+      if (RV.isComplex())
+        EmitStoreOfComplex(RV.getComplexVal(), LV, /*isInit=*/true);
+      else
+        EmitStoreOfScalar(RV.getScalarVal(), LV, /*isInit=*/true);
+      Reloads.push_back({&A, Addr, PD->getType()});
+    }
+    LocalDeclMap.insert({PD, Addr});
+  }
+
+  // Every call site makes its own captures, and its own capture-failure
+  // flags.
+  SmallVector<std::pair<const ContractStmt *, std::optional<Address>>, 2>
+      SavedCaptureFlags, SavedSelections;
+  auto SaveAndErase = [](auto &Map, const ContractStmt *CS, auto &Saved) {
+    auto It = Map.find(CS);
+    if (It == Map.end()) {
+      Saved.push_back({CS, std::nullopt});
+    } else {
+      Saved.push_back({CS, It->second});
+      Map.erase(It);
+    }
+  };
+  for (const ContractStmt *CS : MD->postconditions()) {
+    if (!CS->hasCaptures())
+      continue;
+    for (const Decl *D : CS->getCapturesDeclStmt()->decls())
+      Unbind(D);
+    SaveAndErase(ContractData->CaptureInitFailed, CS, SavedCaptureFlags);
+    SaveAndErase(ContractData->DynSelection, CS, SavedSelections);
+  }
+
+  // The state the contract emitters read: the function whose contracts
+  // these are, and its object.
+  const Decl *SavedCodeDecl = CurCodeDecl;
+  const Decl *SavedFuncDecl = CurFuncDecl;
+  llvm::Value *SavedThis = CXXThisValue;
+  CharUnits SavedThisAlign = CXXThisAlignment;
+  bool SavedInterfaceEvaluation = InContractInterfaceEvaluation;
+  auto EnterMD = [&] {
+    CurCodeDecl = MD;
+    CurFuncDecl = MD;
+    CXXThisValue = ContractThis;
+    CXXThisAlignment = CharUnits();
+    InContractInterfaceEvaluation = true;
+  };
+  auto LeaveMD = [&] {
+    CurCodeDecl = SavedCodeDecl;
+    CurFuncDecl = SavedFuncDecl;
+    CXXThisValue = SavedThis;
+    CXXThisAlignment = SavedThisAlign;
+    InContractInterfaceEvaluation = SavedInterfaceEvaluation;
+  };
+
+  // For a noexcept MD, as in its body, an exception from the evaluation
+  // terminates (interfaceContractsTerminateOnThrow).
+  bool TerminateOnThrow = interfaceContractsTerminateOnThrow(*this, MD);
+  if (TerminateOnThrow)
+    EHStack.pushTerminate();
+
+  // The captures are destroyed after the postconditions, before the rest of
+  // the full-expression.
+  RunCleanupsScope CaptureScope(*this);
+
+  EnterMD();
+  EmitInterfacePreconditionsAndCaptures(MD);
+  LeaveMD();
+
+  for (const Reload &R : Reloads) {
+    LValue LV = MakeAddrLValue(R.Temp, R.Ty);
+    R.Arg->setRValue(R.Ty->isAnyComplexType()
+                         ? RValue::getComplex(
+                               EmitLoadOfComplex(LV, CE->getExprLoc()))
+                         : RValue::get(EmitLoadOfScalar(LV, CE->getExprLoc())));
+  }
+
+  QualType ResultTy = MD->getReturnType();
+  ReturnValueSlot CallSlot = Slot;
+  if (hasAggregateEvaluationKind(ResultTy) && Slot.isNull())
+    CallSlot = ReturnValueSlot(CreateMemTemp(ResultTy, "contract.result"),
+                               /*IsVolatile=*/false);
+  RValue RV = EmitCall(FnInfo, Callee, CallSlot, Args, CallOrInvoke,
+                       /*IsMustTail=*/false, CE->getExprLoc());
+
+  llvm::Value *ScalarResult = nullptr;
+  if (HaveInsertPoint()) {
+    Address SavedReturnValue = ReturnValue;
+    bool SavedBound = ContractResultBoundToReturnSlot;
+    EnterMD();
+    if (ResultTy->isVoidType()) {
+      EmitPostContracts(nullptr);
+    } else if (RV.isScalar()) {
+      ReturnValue = CreateIRTempWithoutCast(ResultTy, "contract.retval");
+      ScalarResult = EmitPostContracts(RV.getScalarVal());
+    } else if (RV.isComplex()) {
+      ReturnValue = CreateMemTemp(ResultTy, "contract.retval");
+      EmitStoreOfComplex(RV.getComplexVal(),
+                         MakeAddrLValue(ReturnValue, ResultTy),
+                         /*isInit=*/true);
+      EmitPostContracts(nullptr);
+      RV = RValue::getComplex(EmitLoadOfComplex(
+          MakeAddrLValue(ReturnValue, ResultTy), CE->getExprLoc()));
+    } else {
+      // The call has initialized the result, and nothing owns it yet: a
+      // handler that throws must destroy it ([except.ctor]/2).
+      ReturnValue = RV.getAggregateAddress();
+      RunCleanupsScope ResultScope(*this);
+      if (getLangOpts().Exceptions)
+        if (QualType::DestructionKind DK = ResultTy.isDestructedType())
+          pushDestroy(EHCleanup, ReturnValue, ResultTy, getDestroyer(DK),
+                      /*useEHCleanupForArray=*/true);
+      EmitPostContracts(nullptr);
+      ResultScope.ForceCleanup();
+    }
+    LeaveMD();
+    ReturnValue = SavedReturnValue;
+    ContractResultBoundToReturnSlot = SavedBound;
+  }
+
+  if (ScalarResult)
+    CaptureScope.ForceCleanup({&ScalarResult});
+  else
+    CaptureScope.ForceCleanup();
+  if (TerminateOnThrow)
+    EHStack.popTerminate();
+  if (ScalarResult)
+    RV = RValue::get(ScalarResult);
+
+  for (auto &[CS, Flag] : SavedCaptureFlags) {
+    ContractData->CaptureInitFailed.erase(CS);
+    if (Flag)
+      ContractData->CaptureInitFailed.insert({CS, *Flag});
+  }
+  for (auto &[CS, Sel] : SavedSelections) {
+    ContractData->DynSelection.erase(CS);
+    if (Sel)
+      ContractData->DynSelection.insert({CS, *Sel});
+  }
+  for (auto &[D, Addr] : llvm::reverse(SavedDecls)) {
+    LocalDeclMap.erase(D);
+    if (Addr)
+      LocalDeclMap.insert({D, *Addr});
+  }
+  return RV;
+}
+
+void CodeGenFunction::EmitVirtualContractWrapperBody(llvm::Function *Fn,
+                                                     const CXXMethodDecl *MD) {
+  GlobalDecl GD(MD);
+  const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
+  QualType ResultType = FPT->getReturnType();
+
+  // Set up the function like a thunk.
+  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeCXXMethodDeclaration(MD);
+  CurGD = GD;
+  CurFuncIsThunk = true;
+
+  // Build FunctionArgs.
+  FunctionArgList FunctionArgs;
+  CGM.getCXXABI().buildThisParam(*this, FunctionArgs);
+  FunctionArgs.append(MD->param_begin(), MD->param_end());
+
+  // Start the function.
+  auto NL = ApplyDebugLocation::CreateEmpty(*this);
+  StartFunction(GlobalDecl(), ResultType, Fn, FnInfo, FunctionArgs,
+                MD->getLocation());
+  auto AL = ApplyDebugLocation::CreateArtificial(*this);
+
+  // Set up the this pointer and CurCodeDecl so contract emission works.
+  CGM.getCXXABI().EmitInstanceFunctionProlog(*this);
+  CXXThisValue = CXXABIThisValue;
+  CurCodeDecl = MD;
+  CurFuncDecl = MD;
+  // D4405: the wrapper evaluates MD's contracts, but not their analysis
+  // evaluations, which are at the call (preconditions) and in MD's body.
+  InContractInterfaceEvaluation = true;
+
+  // The interface contracts are evaluated as in MD's body: for a noexcept
+  // MD, an exception from a violation handler, the selector, or a capture
+  // terminates the program rather than leave the wrapper (the vtable call is
+  // to a noexcept function in any case).  StartFunction had no declaration
+  // to take the exception specification from, so enter it here, above the
+  // prologue's cleanups, and leave it below after popping the body's.
+  bool TerminateOnThrow = interfaceContractsTerminateOnThrow(*this, MD);
+  if (TerminateOnThrow)
+    EHStack.pushTerminate();
+  EHScopeStack::stable_iterator BodyDepth = EHStack.stable_begin();
+
+  // Phase 1: Emit interface preconditions and initialize postcondition
+  // captures in lexical order (same as normal function prologue).
+  EmitInterfacePreconditionsAndCaptures(MD);
+
+  // Phase 2: Virtual dispatch through the vtable.
+  // Build call arguments: this + parameters.
+  CallArgList CallArgs;
+  QualType ThisType = MD->getThisType();
+  CallArgs.add(RValue::get(LoadCXXThis()), ThisType);
+  for (const ParmVarDecl *PD : MD->parameters())
+    EmitDelegateCallArg(CallArgs, PD, SourceLocation());
+
+  // Use virtual call mechanism.
+  llvm::FunctionType *CallFnTy = CGM.getTypes().GetFunctionType(FnInfo);
+  Address ThisAddr = LoadCXXThisAddress();
+  CGCallee Callee = CGCallee::forVirtual(nullptr, GD, ThisAddr, CallFnTy);
+
+  // Determine return value slot.
+  ReturnValueSlot Slot;
+  if (!ResultType->isVoidType() &&
+      (FnInfo.getReturnInfo().getKind() == ABIArgInfo::Indirect ||
+       hasAggregateEvaluationKind(ResultType)))
+    Slot = ReturnValueSlot(ReturnValue, ResultType.isVolatileQualified(),
+                           /*IsUnused=*/false, /*IsExternallyDestructed=*/true);
+
+  // Emit the virtual call.
+  llvm::CallBase *CallOrInvoke = nullptr;
+  RValue RV = EmitCall(FnInfo, Callee, Slot, CallArgs, &CallOrInvoke);
+
+  // Phase 3: Emit interface postconditions using the standard path.
+  llvm::Value *RetVal = (!ResultType->isVoidType() && Slot.isNull())
+                            ? RV.getScalarVal()
+                            : nullptr;
+  // The call has initialized the returned object, which a handler that
+  // throws must destroy ([except.ctor]/2).  A thunk gets no live flag from
+  // StartFunction, so make one here, set now that the object exists.
+  if (getLangOpts().Exceptions && !Slot.isNull())
+    if (const auto *RD = ResultType->getAsCXXRecordDecl();
+        RD && RD->hasDefinition() && !RD->hasTrivialDestructor()) {
+      RawAddress Flag = CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(),
+                                         "retval.live");
+      Builder.CreateStore(Builder.getTrue(), Flag);
+      ReturnValueLiveFlag = Flag.getPointer();
+    }
+  // A predicate may mutate through the result binding, which names the return
+  // slot, so take back whatever EmitPostContracts leaves there -- the same
+  // reason the ordinary epilogue does.
+  if (llvm::Value *NewRetVal = EmitPostContractsWithRetvalCleanup(RetVal);
+      NewRetVal && NewRetVal != RetVal)
+    RV = RValue::get(NewRetVal);
+
+  // Emit return via the thunk pattern.
+  if (!ResultType->isVoidType() && Slot.isNull())
+    CGM.getCXXABI().EmitReturnFromThunk(*this, RV, ResultType);
+
+  // Disable tail call / autorelease.
+  AutoreleaseResult = false;
+
+  // Leave the noexcept scope, which FinishFunction, seeing no declaration,
+  // would not.
+  if (TerminateOnThrow) {
+    PopCleanupBlocks(BodyDepth);
+    EHStack.popTerminate();
+  }
+
+  // Clear thunk state and finish.
+  CurCodeDecl = nullptr;
+  CurFuncDecl = nullptr;
+  FinishFunction();
+}
+
 /// Refinable bodies: note an evaluation of \p S in the function being
 /// emitted.  Unless its semantic is settled, another translation unit's copy
 /// of the function may evaluate it differently, so facts about this copy's

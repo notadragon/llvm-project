@@ -1,0 +1,8 @@
+[
+  {"match": {"caller": false, "namespace": "iface"},
+   "output": {"semantic": "enforce",
+              "dynamic": {"linkage": "C++", "name": "sel::iface"}}},
+  {"match": {"caller": false, "namespace": "impl"},
+   "output": {"semantic": "enforce",
+              "dynamic": {"linkage": "C++", "name": "sel::impl"}}}
+]

@@ -13295,6 +13295,10 @@ def err_contract_lambda_decl_ref_not_modifiable_lvalue : Error<
 def err_contract_message_and_attribute : Error<
   "cannot use both a syntactic diagnostic message and "
   "'[[clang::contract_message]]' on the same contract assertion">;
+// P3097 virtual function contracts diagnostics
+def err_contracts_on_virtual_require_flag : Error<
+  "contracts on virtual functions require '-fcontracts-p3097'">;
+
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"

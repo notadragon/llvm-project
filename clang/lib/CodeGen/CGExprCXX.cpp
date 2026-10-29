@@ -380,7 +380,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   }
 
   LValue This = getLValueForThis();
-  if (sanitizePerformTypeCheck())
+  if (sanitizePerformTypeCheck() || getLangOpts().ContractsP3100)
     EmitTypeCheck(CodeGenFunction::TCK_MemberCall, CallLoc,
                   This.emitRawPointer(*this),
                   C.getCanonicalTagType(CalleeDecl->getParent()),
@@ -399,9 +399,11 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
            "Destructor shouldn't have explicit parameters");
     assert(ReturnValue.isNull() && "Destructor shouldn't have return value");
     if (UseVirtualCall) {
-      CGM.getCXXABI().EmitVirtualDestructorCall(
-          *this, Dtor, Dtor_Complete, This.getAddress(),
-          cast<CXXMemberCallExpr>(CE), CallOrInvoke);
+      EmitVirtualDtorCallWithContracts(Dtor, This.getPointer(*this), [&] {
+        CGM.getCXXABI().EmitVirtualDestructorCall(
+            *this, Dtor, Dtor_Complete, This.getAddress(),
+            cast<CXXMemberCallExpr>(CE), CallOrInvoke);
+      });
     } else {
       GlobalDecl GD(Dtor, Dtor_Complete);
       CGCallee Callee;
@@ -427,7 +429,36 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   // 'CalleeDecl' instead.
 
   CGCallee Callee;
-  if (UseVirtualCall) {
+  bool CallSiteChecks = false;
+  llvm::Function *ContractWrapper = nullptr;
+  if (UseVirtualCall && getLangOpts().ContractsP3097 && MD->hasContracts()) {
+    // P3097: a virtual call with an active (non-ignore) interface contract
+    // goes through the contract wrapper, which evaluates the interface
+    // contracts around the vtable dispatch.  A wrapper cannot pass variadic
+    // arguments on, so for a variadic function the interface contracts are
+    // checked at the call site instead (DECISIONS.md K12).
+    // The P4405 analysis evaluations need no wrapper: they are at the call
+    // (preconditions) and in MD's body.
+    bool AnyActive =
+        llvm::any_of(MD->getContracts()->contracts(), [&](ContractStmt *CS) {
+          return CS->ensureRuntimeSemantic(getContext(),
+                                           MD->getDeclContext()) !=
+                 ContractEvaluationSemantic::Ignore;
+        });
+    if (AnyActive && MD->isVariadic())
+      CallSiteChecks = true;
+    else if (AnyActive)
+      ContractWrapper = CGM.getOrEmitVirtualContractWrapper(MD);
+    // The wrapper is this TU's (internal), so its evaluations are this
+    // caller's code, which another TU's copy of the caller may leave out:
+    // never settled (noteContractEvaluation).
+    if (AnyActive)
+      CurFnHoldsUnsettledContract = true;
+  }
+  if (ContractWrapper) {
+    Callee = CGCallee::forDirect(ContractWrapper, GlobalDecl(MD));
+    UseVirtualCall = false; // Skip this-adjustment for virtual below
+  } else if (UseVirtualCall) {
     Callee = CGCallee::forVirtual(CE, MD, This.getAddress(), Ty);
   } else {
     if (SanOpts.has(SanitizerKind::CFINVCall) &&
@@ -451,12 +482,20 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
     }
   }
 
+  // The contracts see the object before any ABI adjustment for the call.
+  llvm::Value *ContractThis = CallSiteChecks ? This.getPointer(*this) : nullptr;
+
   if (MD->isVirtual()) {
     Address NewThisAddr =
         CGM.getCXXABI().adjustThisArgumentForVirtualFunctionCall(
             *this, CalleeDecl, This.getAddress(), UseVirtualCall);
     This.setAddress(NewThisAddr);
   }
+
+  if (CallSiteChecks)
+    return EmitCXXMemberCallWithCallSiteContracts(
+        MD, Callee, ReturnValue, This.getPointer(*this), ContractThis, CE,
+        CallOrInvoke);
 
   return EmitCXXMemberOrOperatorCall(
       CalleeDecl, Callee, ReturnValue, This.getPointer(*this),
@@ -2035,8 +2074,11 @@ static bool EmitObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
                 TryDevirtualizeDtorCall(DE, Dtor, CGF.CGM.getLangOpts())) {
           Dtor = DevirtualizedDtor;
         } else {
-          CGF.CGM.getCXXABI().emitVirtualObjectDelete(CGF, DE, Ptr, ElementType,
-                                                      Dtor);
+          CGF.EmitVirtualDtorCallWithContracts(
+              Dtor, Ptr.emitRawPointer(CGF), [&] {
+                CGF.CGM.getCXXABI().emitVirtualObjectDelete(CGF, DE, Ptr,
+                                                            ElementType, Dtor);
+              });
           return false;
         }
       }
