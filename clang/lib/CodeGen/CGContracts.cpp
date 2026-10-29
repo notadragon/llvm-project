@@ -1932,6 +1932,11 @@ static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
 void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
                                            ContractEvaluationSemantic Semantic,
                                            llvm::BasicBlock *ContinueBlock) {
+  // P4405 proving hook: in a proof shadow, an assumption.
+  // Elsewhere, a terminating check is noted as a premise of this function.
+  if (emitContractShadowAssumption(S, Semantic, ContinueBlock != nullptr))
+    return;
+
   // P3100 "assume" deliberately emits no check today, exactly like "ignore".
   // GCC does the same (gcc/cp/contracts.cc, contract_semantic_emits_no_check),
   // so the two implementations agree on the observable behaviour.  Lowering it

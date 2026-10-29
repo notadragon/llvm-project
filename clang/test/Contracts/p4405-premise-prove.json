@@ -1,0 +1,13 @@
+[
+  {"match": {"location": "p4405-premise-prove.cpp:23"}, "output": {"semantic": "prove"}},
+  {"match": {"location": "p4405-premise-prove.cpp:30"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "p4405-premise-prove.cpp:31"}, "output": {"semantic": "prove"}},
+  {"match": {"location": "p4405-premise-prove.cpp:38"}, "output": {"semantic": "observe"}},
+  {"match": {"location": "p4405-premise-prove.cpp:39"}, "output": {"semantic": "prove"}},
+  {"match": {"location": "p4405-premise-prove.cpp:46"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "p4405-premise-prove.cpp:47"}, "output": {"semantic": "prove"}},
+  {"match": {"location": "p4405-premise-prove.cpp:60"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-prove.cpp:61"}, "output": {"semantic": "prove"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

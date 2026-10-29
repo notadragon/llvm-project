@@ -8,6 +8,7 @@
 
 #include "clang/CodeGen/BackendUtil.h"
 #include "BackendConsumer.h"
+#include "ContractProveShadow.h"
 #include "LinkInModulesPass.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
@@ -1011,6 +1012,31 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   PB.registerFunctionAnalyses(FAM);
   PB.registerLoopAnalyses(LAM);
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  // P4405 proving hook: decide the contract proof shadows, in a module of
+  // their own, and remove them from this one, before it is optimized.
+  // An assumption is not kept when an instrumenting sanitizer would check
+  // its predicate's memory accesses, nor when this module is not optimized
+  // (-save-temps' first step), which would leave it to whatever compiles
+  // the output.
+  if (CodeGen::moduleHasContractProofs(*TheModule)) {
+    bool AllowAssumptions =
+        !CodeGenOpts.DisableLLVMPasses &&
+        !LangOpts.Sanitize.hasOneOf(
+            SanitizerKind::Address | SanitizerKind::KernelAddress |
+            SanitizerKind::HWAddress | SanitizerKind::KernelHWAddress |
+            SanitizerKind::Memory | SanitizerKind::KernelMemory |
+            SanitizerKind::Thread | SanitizerKind::Type |
+            SanitizerKind::DataFlow | SanitizerKind::NumericalStability);
+    if (CodeGen::decideContractProofs(
+            *TheModule, TM.get(), PTO, *TLII, mapToLevel(CodeGenOpts),
+            CodeGenOpts.VerifyModule, AllowAssumptions,
+            CI.getVirtualFileSystemPtr(), Diags,
+            CI.hasASTContext() ? &CI.getASTContext() : nullptr))
+      CodeGen::registerContractAssumeCleanup(PB);
+    if (Diags.hasErrorOccurred())
+      return;
+  }
 
   ModulePassManager MPM;
   // Add a verifier pass, before any other passes, to catch CodeGen issues.

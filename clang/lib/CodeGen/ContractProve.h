@@ -177,6 +177,9 @@ bool takeContractDiagnostic(const ContractProofQuery &Q, ContractProofResult R,
 /// -fcontracts-prove-fold (ContractProveFold.cpp).
 extern const ContractProofStrategy ContractProveFoldStrategy;
 
+/// -fcontracts-prove-shadow (ContractProveShadow.cpp).
+extern const ContractProofStrategy ContractProveShadowStrategy;
+
 } // namespace CodeGen
 } // namespace clang
 

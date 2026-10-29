@@ -1926,6 +1926,12 @@ defm contracts_prove_fold : BoolFOption<"contracts-prove-fold",
           "Prove the predicates of prove and diagnose evaluations that fold to true, and diagnose those that fold to false as always false (implied by -fcontracts-p4405)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_prove_shadow : BoolFOption<"contracts-prove-shadow",
+  LangOpts<"ContractsProveShadow">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "When optimizing, prove the predicates of prove and diagnose evaluations in an optimized copy of each function holding one, never emitted (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_prove_assume : BoolFOption<"contracts-prove-assume",
   LangOpts<"ContractsProveAssume">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],

@@ -1,0 +1,8 @@
+[
+  {"match": {"location": "p4405-premise-allowed.cpp:209"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-allowed.cpp:226"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-allowed.cpp:243"}, "output": {"semantic": "assume"}},
+  {"match": {"caller": true, "namespace": "cs"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

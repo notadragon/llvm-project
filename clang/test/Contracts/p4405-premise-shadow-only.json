@@ -1,0 +1,14 @@
+[
+  {"match": {"location": "p4405-premise-shadow-only.cpp:43"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-shadow-only.cpp:62"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-shadow-only.cpp:82"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-shadow-only.cpp:101"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-premise-shadow-only.cpp:120"}, "output": {"semantic": "assume"}},
+  {"match": {"caller": false, "namespace": "sem_enforce_inline"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "sem_enforce_static"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "sem_enforce_template"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "sem_assume_assume"}, "output": {"semantic": "assume"}},
+  {"match": {"caller": false, "namespace": "sem_observe_observe"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

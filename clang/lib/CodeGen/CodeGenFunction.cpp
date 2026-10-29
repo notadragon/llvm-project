@@ -1840,6 +1840,10 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // Emit the standard function epilogue.
   FinishFunction(BodyRange.getEnd());
 
+  // P4405 proving hook.
+  if (CurFnHoldsUnsettledContract)
+    noteContractRefinableBody();
+
   PGO->verifyCounterMap();
 
   if (CurCodeDecl->hasAttr<PersonalityAttr>()) {
@@ -3054,6 +3058,9 @@ void CodeGenFunction::InsertHelper(llvm::Instruction *I,
   LoopStack.InsertHelper(I);
   if (IsSanitizerScope)
     I->setNoSanitizeMetadata();
+  // P4405 proving hook.
+  if (ContractShadow)
+    noteContractShadowInstruction(I);
 }
 
 void CGBuilderInserter::InsertHelper(
