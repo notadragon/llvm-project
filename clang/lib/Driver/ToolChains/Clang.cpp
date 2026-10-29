@@ -5252,6 +5252,21 @@ static void ProcessVSRuntimeLibrary(const ToolChain &TC, const ArgList &Args,
     CmdArgs.push_back("--dependent-lib=softintrin");
 }
 
+/// Render the options that configure contract evaluation, which C++ contracts
+/// and P4299's C contracts share.
+static void RenderContractConfigurationArgs(const ArgList &Args,
+                                            ArgStringList &CmdArgs) {
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_evaluation_semantic_EQ);
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_analysis_semantic_EQ);
+  for (const Arg *A :
+       Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                     options::OPT_fcontract_configuration_EQ,
+                     options::OPT_fcontract_configuration_file_EQ)) {
+    A->claim();
+    A->render(Args, CmdArgs);
+  }
+}
+
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                          const InputInfo &Output, const InputInfoList &Inputs,
                          const ArgList &Args, const char *LinkingOutput) const {
@@ -8039,6 +8054,95 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fno-aligned-allocation");
     else
       CmdArgs.push_back("-faligned-allocation");
+  }
+
+  // Contracts (C++26).  -fcontracts is enabled by the base flag, by C++26 mode,
+  // or by any per-paper C++ contracts sub-flag; an explicit -fno-contracts
+  // suppresses it.  tools::wantsCxxContracts is the single predicate shared
+  // with the link decision in Gnu.cpp so the two never disagree.
+  //
+  // -fcontracts itself is the C++ option: on a C input say so, as for any
+  // option that does nothing there (C contracts are -fcontracts-p4299).  The
+  // per-paper sub-flags are left alone, since several of them apply to C.
+  if (!types::isCXX(InputType))
+    if (Arg *A = Args.getLastArg(options::OPT_fcontracts,
+                                 options::OPT_fno_contracts);
+        A && A->getOption().matches(options::OPT_fcontracts))
+      D.Diag(diag::warn_drv_unused_argument) << A->getAsString(Args);
+  const bool RenderCxxContracts = tools::wantsCxxContracts(Args);
+  if (RenderCxxContracts) {
+    CmdArgs.push_back("-fcontracts");
+    RenderContractConfigurationArgs(Args, CmdArgs);
+
+    Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_exceptions,
+                       options::OPT_fno_contract_exceptions);
+
+    Args.addOptOutFlag(CmdArgs, options::OPT_fcontract_constification,
+                       options::OPT_fno_contract_constification);
+    Args.addOptOutFlag(CmdArgs,
+                       options::OPT_fcontract_lambda_capture_restrictions,
+                       options::OPT_fno_contract_lambda_capture_restrictions);
+
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3097,
+                    options::OPT_fno_contracts_p3097);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3098,
+                    options::OPT_fno_contracts_p3098);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3099,
+                    options::OPT_fno_contracts_p3099);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3290,
+                    options::OPT_fno_contracts_p3290);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3400,
+                    options::OPT_fno_contracts_p3400);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4283,
+                    options::OPT_fno_contracts_p4283);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3850,
+                    options::OPT_fno_contracts_p3850);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3100,
+                    options::OPT_fno_contracts_p3100);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4298,
+                    options::OPT_fno_contracts_p4298);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4301,
+                    options::OPT_fno_contracts_p4301);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4405,
+                    options::OPT_fno_contracts_p4405);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_fold,
+                    options::OPT_fno_contracts_prove_fold);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_shadow,
+                    options::OPT_fno_contracts_prove_shadow);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_assume,
+                    options::OPT_fno_contracts_prove_assume);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_override,
+                    options::OPT_fno_contracts_prove_override);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
+                      options::OPT_fno_contracts_allow_assume);
+    Args.addOptOutFlag(
+        CmdArgs, options::OPT_fcontract_bypass_rethrowing_local_handler,
+        options::OPT_fno_contract_bypass_rethrowing_local_handler);
+  } else if (Args.hasArg(options::OPT_fno_contracts)) {
+    // Explicitly disabled (e.g. -std=c++26 -fno-contracts): tell -cc1.
+    CmdArgs.push_back("-fno-contracts");
+  }
+
+  // P4299: C contracts support.  The configuration options are rendered
+  // here only when the C++ contracts block above has not already done so.
+  if (Arg *A = Args.getLastArg(options::OPT_fcontracts_p4299,
+                               options::OPT_fno_contracts_p4299);
+      A && A->getOption().matches(options::OPT_fcontracts_p4299)) {
+    CmdArgs.push_back("-fcontracts-p4299");
+    if (!RenderCxxContracts) {
+      RenderContractConfigurationArgs(Args, CmdArgs);
+      Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
+                        options::OPT_fno_contracts_allow_assume);
+      // P4405's prove and diagnose are supported in C too.
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4405,
+                      options::OPT_fno_contracts_p4405);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_fold,
+                      options::OPT_fno_contracts_prove_fold);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_shadow,
+                      options::OPT_fno_contracts_prove_shadow);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_assume,
+                      options::OPT_fno_contracts_prove_assume);
+    }
   }
 
   // The default new alignment can be specified using a dedicated option or via

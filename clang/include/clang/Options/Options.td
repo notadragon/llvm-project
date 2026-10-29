@@ -1864,6 +1864,13 @@ def fcontract_configuration_file_EQ : Joined<["-"], "fcontract-configuration-fil
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Load contract configuration from a JSON file">;
 
+defm contract_exceptions : BoolFOption<"contract-exceptions",
+  LangOpts<"ContractExceptions">, DefaultTrue,
+  PosFlag<SetTrue, [], [ClangOption],
+          "Enable contract violation on exception">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option],
+    "Disable contract violations on exception">>;
+
 defm contract_constification : BoolFOption<"contract-constification",
   LangOpts<"ContractConstification">, DefaultTrue,
   PosFlag<SetTrue, [], [ClangOption],
