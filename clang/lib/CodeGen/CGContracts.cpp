@@ -1712,6 +1712,39 @@ llvm::Value *CodeGenFunction::EmitImplicitArrayBoundsGuard(
       Comment);
 }
 
+// P3100: arithmetic or a subscript applied to known-bound pointer arithmetic,
+// (a + i) + j or (a + i)[j], is checked against a's bound at the position
+// i + j.  EmitPointerArithmetic records each known-bound result it produces
+// in P3100KnownArith; the result value must match, so a record left by an
+// earlier emission of the same expression is never used.
+const CodeGenFunction::P3100KnownArithInfo *
+CodeGenFunction::getP3100KnownArith(const Expr *E, llvm::Value *Ptr) {
+  auto It = P3100KnownArith.find(E->IgnoreParens());
+  if (It == P3100KnownArith.end() || It->second.Result != Ptr)
+    return nullptr;
+  return &It->second;
+}
+
+llvm::Value *CodeGenFunction::EmitP3100NestedPosition(llvm::Value *Pos,
+                                                      llvm::Value *Idx,
+                                                      bool IdxSigned,
+                                                      llvm::ConstantInt *Bound) {
+  unsigned PosBits = cast<llvm::IntegerType>(Pos->getType())->getBitWidth();
+  unsigned IdxBits = cast<llvm::IntegerType>(Idx->getType())->getBitWidth();
+  llvm::Type *Ty = PosBits >= IdxBits ? Pos->getType() : Idx->getType();
+  llvm::Value *PosW = Builder.CreateIntCast(Pos, Ty, /*isSigned=*/true);
+  llvm::Value *IdxW = Builder.CreateIntCast(Idx, Ty, IdxSigned);
+  llvm::Value *Sum = Builder.CreateAdd(PosW, IdxW, "known.pos");
+  if (IdxSigned)
+    return Sum;
+  // An unsigned index above the bound is outside the array wherever it is
+  // applied; the sum could wrap back into range.
+  llvm::Value *BoundW = Builder.CreateIntCast(Bound, Ty, /*isSigned=*/false);
+  return Builder.CreateSelect(
+      Builder.CreateICmpUGT(IdxW, BoundW),
+      Builder.CreateAdd(BoundW, llvm::ConstantInt::get(Ty, 1)), Sum);
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
