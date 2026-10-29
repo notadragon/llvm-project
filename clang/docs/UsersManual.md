@@ -4651,6 +4651,194 @@ Sets the limit for iterative calls to 'operator->' functions to N.  The
 default is 256.
 :::
 
+(p3100-implicit-assertions)=
+
+### Implicit contract assertions for undefined behavior
+
+These options belong to the proposed C++ contracts extensions this branch
+implements (P3850).
+
+:::{option} -fcontracts-p3100, -fno-contracts-p3100
+
+Enable P3100 implicit contract assertions: an assertion, evaluated as a
+contract assertion of kind `implicit`, before an operation whose
+undefined behavior Clang can detect at that point.  Implied by
+`-fcontracts-p3850`.  Where contracts are enabled, defines
+`__clang_contracts_p3100`, and the library defines
+`__cpp_lib_contracts_implicit`.
+:::
+
+Each implicit contract assertion belongs to a group named `ub:` followed by
+the identifier of the undefined behavior it guards against, such as
+`ub:expr.mul.div.by.zero.int.div`.  Implicit contract assertions take the
+`assume` semantic unless a configuration selects another for their group:
+`assume` emits no check, so the program behaves as it does without
+`-fcontracts-p3100`, and it needs no `-fcontracts-allow-assume`.
+`-fcontract-evaluation-semantic` does not apply to them.  Select a
+semantic with `-fcontract-group-evaluation-semantic=<group>:<semantic>`, or
+with a `-fcontract-configuration=` / `-fcontract-configuration-file=` entry
+whose `match` object gives the `group` (or `"kind": "implicit"`, for every
+implicit assertion).  A group name also selects every group that extends it
+by `.`-separated components, so `ub:expr.unary.dereference.nullptr`
+selects both its leaves below, and `ub:expr` every group under
+`[expr]`.  The group `ub:conv.lval.valid.representation.bool.enum`, which
+the invalid-value check reported before its leaves were separated, selects
+`ub:conv.lval.valid.representation.bool` and `.enum`:
+
+```console
+$ clang++ -std=c++26 -fcontracts -fcontracts-p3100 -fcontracts-p4298 \
+    -fcontract-group-evaluation-semantic=ub:expr.mul:noexcept_observe t.cpp
+```
+
+Every semantic can be selected.  After a violation under `observe` or
+`noexcept_observe` returns, the program goes on with the operation, which
+may still be undefined (a null pointer dereferenced after the handler
+returns faults), except where a check continues with a substitute value (a
+floating-point division by zero continues with 0, an out-of-bounds pointer
+arithmetic with the unmoved pointer).  Manifestly constant evaluation is
+not changed.
+
+The groups Clang checks:
+
+| Group | Undefined behavior checked |
+| ----- | -------------------------- |
+| `ub:basic.align.object.alignment.store` / `.nostore` | an access through, or a placement new into, a misaligned pointer; `.nostore` for a new-expression that stores nothing |
+| `ub:class.abstract.pure.virtual.indirect` | a pure virtual function called through the vtable (`.direct` is not checked) |
+| `ub:class.base.init.mem.fun.*` (five leaves) | a member function call, `typeid` or `dynamic_cast` of `*this` in a base-class or delegating mem-initializer, a constructor's precondition or a destructor's postcondition |
+| `ub:conv.fpint.float.not.represented` | a floating-point value converted to an integer type that cannot represent it |
+| `ub:conv.lval.valid.representation.bool` / `.enum` | a `bool` (`.bool`) or enumeration (`.enum`) object read with an invalid value |
+| `ub:dcl.attr.assume.false.pure` / `.nonpure.opaque` / `.nonpure.side.effects` | an `[[assume]]` predicate that is false |
+| `ub:dcl.attr.noreturn.eventually.returns` | a `[[noreturn]]` function that returns |
+| `ub:except.handle.handler.ctor.dtor` | a non-static member referred to in a constructor's or destructor's function-try-block handler |
+| `ub:expr.add.out.of.bounds.known.subscript` / `.arithmetic` | a subscript or pointer arithmetic outside an array of known bound |
+| `ub:expr.add.out.of.bounds.pointer.arithmetic` | pointer arithmetic that overflows |
+| `ub:expr.assign.overlap` | an assignment between overlapping objects |
+| `ub:expr.expr.eval.signed.integer.add` / `.sub` / `.mul` / `.negate` | signed integer overflow of `+` (and `++`), `-` (and `--`), `*`, unary `-` |
+| `ub:expr.mptr.oper.member.func.null.data` / `.function` | `.*` or `->*` with a null pointer to member |
+| `ub:expr.mul.div.by.zero.fp.div` / `.int.div` / `.int.mod` | division (`.fp.div`, `.int.div`) or remainder (`.int.mod`) by zero |
+| `ub:expr.mul.representable.type.result.int.div` / `.int.mod` | an integer division or remainder whose result is not representable (`INT_MIN / -1`, `INT_MIN % -1`) |
+| `ub:expr.new.non.allocating.null` | a placement new into a null pointer |
+| `ub:expr.shift.neg.and.width.shl` / `.shr` | a left or right shift by a negative amount or by at least the width |
+| `ub:expr.static.cast.enum.outside.range.integral` / `.floating` | a conversion to an enumeration type of a value outside its range |
+| `ub:expr.unary.dereference.invalid.known` | an indirection past the end of an array of known bound |
+| `ub:expr.unary.dereference.nullptr.access` / `.indirection` | an indirection through a null pointer (see below) |
+| `ub:stmt.return.flow.off` / `ub:stmt.return.coroutine.flow.off` | flowing off the end of a function returning a value |
+
+Where a group has leaves, each check reports one leaf, so each leaf can be
+configured on its own.  Two checks report their parent group instead,
+because the leaf cannot be told at their site: the
+`ub:dcl.attr.noreturn.eventually.returns` check is made in the function,
+which cannot tell how it was called (`.direct` or `.indirect`), and the
+`ub:except.handle.handler.ctor.dtor` check is lexical, so it cannot tell
+whether the member was initialized (`.ended`, `.initialized`,
+`.reference`).  A configuration naming the parent group, or a group above
+it, selects them; one naming only a leaf does not.
+
+**A null pointer** (`ub:expr.unary.dereference.nullptr`).  Indirection
+through a null pointer is undefined whether or not its result is accessed.
+The check is `.access` where an object is read or written through the
+pointer -- a load or store, a member read or written, a class copied from
+or to it -- and `.indirection` where no object is accessed: a reference
+bound to `*p`, `&*p`, `&p->m`, a member function called, a discarded
+expression, the object expression of a static member, and a trivial copy
+of an empty class, which reads and writes nothing.  A conversion to a
+virtual base reads the base's offset through the object, so it is
+`.access` whatever its result is used for.  Each null dereference is
+reported once: a member subobject is not checked again where it is used,
+and a glvalue that is already a reference (a reference variable,
+parameter or member, a call returning a reference) is not checked again
+when it is read, rebound or converted -- the null dereference was reported
+where the reference was bound.  For `p[i]` the pointer `p` is checked,
+whatever the element is used for, and so it is for an indirection through
+pointer arithmetic, constant or not, `*(p + i)`, and through a chain of
+it, `*(p + 1 + 2)`, `(p + 1)[i]`.  A call to a virtual function that is
+not qualified, through a pointer to a virtual member function too (also on
+a member subobject, `(p->m.*pmf)()`), and a `dynamic_cast` to a reference
+type read the vtable pointer through the object: `.access`, whether or not
+the call is devirtualized (through a `final` class or overrider, on a
+member subobject); any other member function call (non-virtual or
+qualified) is `.indirection`.  Nothing is checked through `this`
+inside the member function -- a read or write (`this->m`, `(*this).m`,
+`this->*pm`, `this[i].m`, a copy of `*this`), a reference bound to
+`*this` or a member, a member's address, a member function called, also
+in a lambda capturing `this`: a call through a null pointer is reported
+once, where the member function is called.  Configuring `.access` alone
+checks only the accessing forms.  With `-fsanitize=null` too, the
+contract's check replaces the sanitizer's check of the same pointer, also
+for a call through a pointer to member function, whose check waits for the
+pointer's value; the sanitizer's is made only where the contract's
+resolves to `assume` or `ignore`.  The sanitizer's check of `this` in the
+called member function is not replaced: at `-O0`, where the optimizer does
+not remove it, a call through a null pointer to a member function that is
+not inlined is reported again there.
+
+**Past the end of an array** (`ub:expr.add.out.of.bounds.known.subscript`,
+`ub:expr.unary.dereference.invalid.known`).  For a subscript `a[i]` of an
+array of `N` elements, an index outside `[0, N]` is `.known.subscript`.
+The index `N` is `.known.subscript` too where an element is read or
+written; where none is -- `&a[N]`, a reference bound to `a[N]`, a trivial
+copy of an empty class from or to `a[N]` -- it is the indirection through
+the past-the-end pointer, `ub:expr.unary.dereference.invalid.known`.
+
+(fsanitize-semantic)=
+
+#### Routing sanitizer checks to the contract-violation handler
+
+:::{option} -fsanitize-semantic=<check>:<semantic>[,...]
+
+Route the sanitizer check `<check>` to the contract-violation handler with
+the evaluation semantic `<semantic>`, instead of reporting it through the
+sanitizer runtime.  The argument is a comma-separated list of
+`<check>:<semantic>` pairs, and the option may be given more than once; a
+later pair for the same check wins.  `<check>` is any name accepted by
+`-fsanitize`, including the groups `undefined` and `all`.  The
+option does not enable a check; `-fsanitize` does.  Requires
+`-fcontracts-p3100`; without it the option has no effect and a warning is
+issued.
+:::
+
+A check's report is routed if it is `address`, `pointer-compare`,
+`pointer-subtract`, `thread`, `memory`, or a check of the undefined
+behavior sanitizer other than the `nullability-*` checks and
+`unsigned-shift-base`: every member of `undefined`, and `vptr`,
+`float-divide-by-zero`, `unsigned-integer-overflow`, the
+`implicit-conversion` checks, `local-bounds` and `objc-cast`.  A routed
+check reports from inside the sanitizer runtime, where a throwing handler
+cannot propagate, so it takes only `assume`, `quick_enforce`,
+`noexcept_enforce` and `noexcept_observe`, the last two with
+`-fcontracts-p4298`.  Any other check takes `assume` and `enforce`,
+`observe` if it can recover (`-fsanitize-recover`) and
+`quick_enforce` if it can trap (`-fsanitize-trap`).  No check takes
+`ignore`.  `assume` removes the check.  A semantic that a named check does
+not take is an error, except that a member of `undefined` or `all` that
+does not take it is left alone; if no routed member takes it, that is an
+error too.
+
+A routed check given no semantic takes one from the other sanitizer
+options: `quick_enforce` under `-fsanitize-trap`;
+`noexcept_observe` under `-fsanitize-recover`, which is an error
+without `-fcontracts-p4298` (the checks of the undefined behavior
+sanitizer recover by default); and otherwise `noexcept_enforce` with
+`-fcontracts-p4298` and `quick_enforce` without it.
+
+The `local-bounds`, `address`, `memory` and `thread` checks are inserted by
+LLVM passes after the optimizers have run.  When one of them is routed to
+a semantic that calls the handler and continues (`noexcept_observe`), the
+program goes on to perform the access that was diagnosed, and at `-O1`
+and above the code after the check is not guaranteed to see the handler's
+side effects: a value the handler stored may not be read again.  The
+checks Clang emits itself -- the implicit contract assertions above and the
+other checks of the undefined behavior sanitizer -- do not have this
+limitation.
+
+:::{option} -fsanitize-noncontract-callbacks
+
+Report every sanitizer check through the sanitizer's own runtime, as
+without `-fcontracts-p3100`, even under `-fcontracts-p3100`.
+`-fsanitize-semantic` is still validated, and `assume` still
+removes a check.
+:::
+
 (objc)=
 
 ## Objective-C Language Features
