@@ -105,6 +105,13 @@ class RegionCodeGenTy;
 class TargetCodeGenInfo;
 struct OMPTaskDataTy;
 struct CGCoroData;
+struct CurrentContractInfo;
+struct CGContractData;
+struct CGContractDataDeleter {
+  static CGContractData *Create();
+
+  void operator()(CGContractData *) const;
+};
 
 // clang-format off
 /// The kind of evaluation to perform on values of a particular
@@ -431,9 +438,42 @@ public:
   /// This is invalid if sret is not in use.
   Address ReturnValuePointer = Address::invalid();
 
+  /// A flag recording whether the returned object has been initialized, so
+  /// that an exception escaping the function afterwards destroys it -- see
+  /// [except.ctor]/2.  Null when the return type needs no destruction, or
+  /// when exceptions are off.  The analogue of GCC's current_retval_sentinel.
+  llvm::Value *ReturnValueLiveFlag = nullptr;
+
+  /// Records that the returned object now exists, arming ReturnValueLiveFlag.
+  void setReturnValueLive() {
+    if (ReturnValueLiveFlag)
+      Builder.CreateStore(
+          Builder.getTrue(),
+          Address(ReturnValueLiveFlag, Builder.getInt1Ty(), CharUnits::One()));
+  }
+
   /// If a return statement is being visited, this holds the return statment's
   /// result expression.
   const Expr *RetExpr = nullptr;
+
+  /// If a contract attribute is being visited, this holds the contract
+  std::unique_ptr<CGContractData, CGContractDataDeleter> ContractData{
+      CGContractDataDeleter::Create()};
+
+  CurrentContractInfo *CurContract();
+
+  /// The function being emitted holds a contract evaluation whose semantic
+  /// another translation unit's copy of it may choose differently (see
+  /// noteContractEvaluation).
+  bool CurFnHoldsUnsettledContract = false;
+  /// Note an evaluation of \p S in the function being emitted.
+  void noteContractEvaluation(const ContractStmt &S);
+
+  /// P3098: true once GenerateCode has pushed a prologue cleanup that calls
+  /// EmitPostContracts ahead of a postcondition capture's destructor
+  /// cleanup. When set, EmitFunctionEpilog's own EmitPostContracts calls are
+  /// skipped -- the cleanup already evaluated every postcondition.
+  bool PostContractsHandledByPrologueCleanup = false;
 
   /// Return true if a label was seen in the current scope.
   bool hasLabelBeenSeenInCurrentScope() const {
@@ -2702,6 +2742,29 @@ public:
   /// Emit a test that checks if the return value \p RV is nonnull.
   void EmitReturnValueCheck(llvm::Value *RV);
 
+  /// Set by EmitPostContracts when it bound a postcondition's result name to
+  /// the return slot, meaning a predicate may have rewritten that slot and
+  /// whatever the caller is about to return needs re-reading from it.
+  bool ContractResultBoundToReturnSlot = false;
+
+  /// Emit the postconditions.  Returns the value the function should return:
+  /// a postcondition's result binding names the return slot, so a predicate
+  /// may have written to it and RV can be stale on return.
+  llvm::Value *EmitPostContracts(llvm::Value *RV);
+
+  /// Whether the constructor or destructor variant being generated delegates
+  /// to another variant instead of running the user-written body, so that its
+  /// contracts are evaluated there and must not be evaluated here as well.
+  bool structorVariantDelegates() const;
+
+  /// As EmitPostContracts, but with a cleanup that destroys the returned
+  /// object if a violation handler throws out of the checks.  By then the
+  /// object has been initialized ([stmt.return]/5 sequences postcondition
+  /// evaluation after it), but the prologue cleanup that would otherwise
+  /// cover it has already been popped -- the epilogue runs after
+  /// PopCleanupBlocks(PrologueCleanupDepth).
+  llvm::Value *EmitPostContractsWithRetvalCleanup(llvm::Value *RV);
+
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
 
@@ -3791,6 +3854,16 @@ public:
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
   void ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
 
+  /// A variant of ExitCXXTryStmt for a synthetic try whose (single) catch-all
+  /// handler has no AST representation: instead of emitting the handler body
+  /// with EmitStmt, it is produced by \p EmitCatchBody as direct IR.  \p S must
+  /// have exactly one catch-all handler.  The personality-specific dispatch and
+  /// funclet setup are shared with ExitCXXTryStmt so this stays portable across
+  /// EH models.  Used by contract codegen, whose exception-raised catch(...)
+  /// reports a violation via a runtime call that no Stmt lowers to.
+  void ExitCXXTryStmtWithCatchIR(const CXXTryStmt &S,
+                                 llvm::function_ref<void()> EmitCatchBody);
+
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitSEHTryStmt(const SEHTryStmt &S);
   void EmitSEHLeaveStmt(const SEHLeaveStmt &S);
@@ -4685,6 +4758,480 @@ public:
   LValue EmitPointerToDataMemberBinaryExpr(const BinaryOperator *E);
   LValue EmitObjCSelectorLValue(const ObjCSelectorExpr *E);
   void EmitDeclRefExprDbgValue(const DeclRefExpr *E, const APValue &Init);
+
+  /// Violation blocks shared by the function's contract checks: the trap every
+  /// quick_enforce check ends in, and -- only when exceptions are disabled, so
+  /// that an enforced violation always terminates and no cleanups or
+  /// continuation matter -- the enforce path for a contract kind.
+  llvm::BasicBlock *GetSharedContractViolationTrapBlock(bool Create = true);
+  llvm::BasicBlock *GetSharedContractViolationEnforceBlock(ContractKind Kind,
+                                                           bool Create = true);
+
+  void EmitContractStmt(const ContractStmt &S);
+
+  /// Emit a virtual contract wrapper function body (P3097).
+  /// Emits interface pre, vtable dispatch, interface post.
+  /// P3097: emit the preconditions of MD, the static type of a virtual call,
+  /// and initialize its postcondition captures, in lexical order.  Shared by
+  /// the virtual-call wrapper and EmitCallWithCallSiteContracts.
+  void EmitInterfacePreconditionsAndCaptures(const CXXMethodDecl *MD);
+
+  /// P3097: emit a virtual call to MD, a C-variadic member function, with
+  /// MD's contracts checked at the call site (DECISIONS.md K12): a wrapper
+  /// cannot pass the variadic arguments on.  ARGS are the evaluated call
+  /// arguments; MD's parameters are bound to them for the checks, and
+  /// CONTRACTTHIS is the object pointer the contracts see.
+  RValue EmitCallWithCallSiteContracts(const CXXMethodDecl *MD,
+                                       const CGFunctionInfo &FnInfo,
+                                       const CGCallee &Callee,
+                                       ReturnValueSlot Slot, CallArgList &Args,
+                                       llvm::Value *ContractThis,
+                                       const CallExpr *CE,
+                                       llvm::CallBase **CallOrInvoke);
+
+  /// P3097 (DECISIONS.md K8): a virtually dispatched call of DTOR, the
+  /// static type's destructor, evaluates DTOR's contracts around the call
+  /// that EMITCALL emits, as for any virtual call; THIS is the object.
+  void EmitVirtualDtorCallWithContracts(const CXXDestructorDecl *Dtor,
+                                        llvm::Value *This,
+                                        llvm::function_ref<void()> EmitCall);
+
+  /// Emit a virtual member call of MD with call-site contract checks; see
+  /// EmitCallWithCallSiteContracts.
+  RValue EmitCXXMemberCallWithCallSiteContracts(
+      const CXXMethodDecl *MD, const CGCallee &Callee, ReturnValueSlot Slot,
+      llvm::Value *This, llvm::Value *ContractThis, const CallExpr *CE,
+      llvm::CallBase **CallOrInvoke);
+
+  void EmitVirtualContractWrapperBody(llvm::Function *Fn,
+                                      const CXXMethodDecl *MD);
+
+  /// P3098: emit a postcondition's capture-construction DeclStmt, converting
+  /// a construction exception into a post_capture violation instead of
+  /// letting it propagate. Wraps the DeclStmt in a try/catch(...) only when
+  /// the captures can actually throw; otherwise emits it directly with no
+  /// overhead. \p Sem is CS's already-resolved runtime semantic (the caller
+  /// has already excluded Ignore/Assume).
+  void EmitPostconditionCaptureInit(const ContractStmt *CS,
+                                    ContractEvaluationSemantic Sem,
+                                    llvm::Value *DynSel = nullptr);
+
+  /// Emit the captures of postcondition CS at the capture point, whose
+  /// semantic is resolved in DC; for a dynamically selected one, call the
+  /// selector here and record the choice.  Returns whether any capture code
+  /// was emitted.
+  bool EmitPostconditionCaptures(const ContractStmt *CS, const DeclContext *DC);
+
+  /// Call the P3595 selector of S and map its value to the effective
+  /// semantic, as an i32 (0 for an invalid selection).
+  llvm::Value *EmitDynamicEffectiveSelection(const ContractStmt &S);
+
+  /// P3098: if \p CS's capture construction was wrapped in a try/catch (see
+  /// EmitPostconditionCaptureInit) and can fail, return the i1 value that is
+  /// true once an 'observe'-semantic capture-init exception has been caught
+  /// for it (its predicate must then be skipped). Returns nullptr if \p CS's
+  /// captures were never wrapped (they can't throw, or the capture failed
+  /// under 'enforce'/'quick_enforce', which already terminated).
+  llvm::Value *LoadPostconditionCaptureFailed(const ContractStmt *CS);
+
+private:
+  void EmitContractStmtAsFullStmt(const ContractStmt &S);
+
+  // Emit the per-semantic check body for a single, already-resolved evaluation
+  // semantic (ignore/assume -> nothing, observe/enforce -> violation handler,
+  // quick_enforce -> trap).  Shared by the non-dynamic path (called once with
+  // the compile-time semantic) and the P3595 dynamic dispatch (called once per
+  // switch arm with that arm's effective semantic).  When the current insertion
+  // point is inside a dynamic dispatch arm, ContinueBlock is branched to after
+  // a non-terminating (observe/ignore) body so the arms rejoin; it is null on
+  // the non-dynamic path.
+  void emitCheckForSemantic(const ContractStmt &S,
+                            ContractEvaluationSemantic Semantic,
+                            llvm::BasicBlock *ContinueBlock);
+
+public:
+  /// Emit a call to a __cxa_contract_violation_* entry point.
+  /// The entry point name encodes kind, semantic, and detection mode.
+  void EmitCxaContractViolationCall(ContractKind Kind,
+                                    ContractEvaluationSemantic Semantic,
+                                    ContractDetectionMode Mode,
+                                    llvm::Value *DataBlockPtr, bool IsNoExcept,
+                                    bool IsPostCapture);
+
+  /// P3100: emit the implicit contract-assertion reaction for a value-returning
+  /// function that can fall off its end ({stmt.return.flow.off}).  Returns true
+  /// if a non-"assume" reaction was emitted (caller must skip its own
+  /// missing-return handling); false for "assume" (keep today's UB behaviour).
+  bool EmitImplicitFlowOffReaction(const FunctionDecl *FD);
+
+  /// P3100: guard a scalar integer operation that is UB when IsViolation holds,
+  /// for the core-language UB named by GroupName (e.g.
+  /// ub:expr.mul.div.by.zero.int.div, ub:expr.shift.neg.and.width.shl).
+  /// Resolves the semantic; for "assume" just calls EmitOp, otherwise emits
+  /// `IsViolation ? <reaction> : EmitOp()` so the UB operation is skipped on
+  /// the violation path (ignore/observe produce a defined zero;
+  /// enforce/quick_enforce do not return).  COMMENT is the contract-violation
+  /// comment.
+  llvm::Value *
+  EmitImplicitIntOpGuard(QualType Ty, llvm::Value *IsViolation,
+                         SourceLocation Loc, StringRef GroupName,
+                         StringRef Comment,
+                         llvm::function_ref<llvm::Value *()> EmitOp);
+
+  /// P3100: guard a null-pointer dereference
+  /// (ub:expr.unary.dereference.nullptr) at a
+  /// load/store of `*Ptr`, located at Loc.  Unlike EmitImplicitIntOpGuard this
+  /// is a *void* reaction: `*p` is an lvalue with no defined substitute, so the
+  /// guard is a null test placed before the real access rather than a
+  /// replacement.  Resolves the semantic; for assume/ignore returns false and
+  /// emits nothing (caller performs the raw access).  Otherwise emits
+  /// `if (Ptr == null) <reaction>` and leaves the insertion point at the
+  /// non-null continuation, returning true: quick_enforce traps;
+  /// enforce/noexcept_enforce call the noreturn handler;
+  /// observe/noexcept_observe call the handler and fall through to the real
+  /// dereference (report then proceed).
+  /// ACCESS selects the leaf reported: .access for a load or store,
+  /// .indirection for an indirection that accesses nothing (a reference
+  /// binding, a member call, the address of a member).  `this` is never
+  /// checked (DECISIONS.md E106 (a)): returns false for it.  A check
+  /// P3100DeferNull defers is recorded there instead (returns true).
+  bool EmitImplicitNullDerefGuard(llvm::Value *Ptr, SourceLocation Loc,
+                                  bool Access);
+  /// P3100: make the -fsanitize=null check D carries (D.SanPtr, if any),
+  /// alone, where a P3100 null check moved after the pointer to member
+  /// function is evaluated is not made (DECISIONS.md E111 (a)).
+  void EmitP3100MovedSanitizerNullCheck(const P3100DeferredNullCheck &D);
+
+  /// P3100: guard the glvalue E of function type, at address Ptr, that is
+  /// about to be called or bound to a reference, when E performs an
+  /// indirection (isP3100IndirectionGLValue): `*fp`, also through a cast to
+  /// a reference, a conditional or a comma expression.
+  /// ub:expr.unary.dereference.nullptr's .indirection leaf, as for a
+  /// reference bound to `*p` for an object.  Nothing for any other glvalue,
+  /// or a function named directly.
+  void EmitImplicitFunctionIndirectionGuard(const Expr *E, llvm::Value *Ptr);
+
+  /// P3100: guard Ptr, the pointer of an indirection whose result is not
+  /// accessed, at Loc: ub:expr.unary.dereference.nullptr's .indirection
+  /// leaf.  Nothing for the address of a local or a global.
+  void EmitImplicitIndirectionGuard(llvm::Value *Ptr, SourceLocation Loc);
+
+  /// P3100: whether the address of the glvalue E is the value of a pointer
+  /// that E is an indirection through: `*p`, through parentheses, a cast to
+  /// a reference (no-op or reinterpreting), and a conditional (either
+  /// operand) or comma expression yielding one.  `*this`, `*&x`, and the
+  /// indirection through an array or a function decayed to a pointer are
+  /// not.  Loc is set to the indirection's location.
+  static bool isP3100IndirectionGLValue(const Expr *E, SourceLocation &Loc);
+
+  /// P3100: whether the pointer expression E is known not to be null from
+  /// its form: `this`, the address of an object, an array or a function
+  /// decayed to a pointer.
+  static bool isP3100NonNullPointerOperand(const Expr *E);
+
+  /// Emit the glvalue E, whose result is not accessed: the operand of `&`
+  /// or of std::addressof, or a discarded expression.  P3100: the
+  /// indirection E performs through a pointer that may be null is checked
+  /// under ub:expr.unary.dereference.nullptr's .indirection leaf -- `&*p`,
+  /// `*p;`, `&p[i]` (which checks p, as an accessed p[i] does), a
+  /// conversion of `*p` to a base class (which checks p before converting).
+  LValue EmitUnaccessedLValue(const Expr *E,
+                              KnownNonNull_t IsKnownNonNull = NotKnownNonNull);
+
+  /// P3100: emit the glvalue E, the operand of a dynamic_cast to a reference
+  /// type, whose vtable pointer is read: the indirection E performs through
+  /// a pointer that may be null is checked under the .access leaf
+  /// (DECISIONS.md E102 (a)) -- `*p`, `p[i]` (which checks p), `p->m`, a
+  /// conversion of `*p` to a base class.
+  LValue EmitP3100VTableReadLValue(const Expr *E);
+
+  /// Emit the object expression Base of a member access whose object is not
+  /// otherwise used (a static member, an enumerator, a pseudo-destructor),
+  /// which is evaluated ([expr.ref]).  P3100: for `p->...`, the indirection
+  /// through p is checked at Loc under .indirection.
+  void EmitIgnoredMemberBase(const Expr *Base, bool IsArrow,
+                             SourceLocation Loc);
+
+  /// P3100: guard a possibly-misaligned data access (Ptr, required alignment
+  /// Align) with an implicit ub:basic.align.object.alignment.store contract
+  /// assertion (every access-site check is that leaf; a creation performing no
+  /// store, .nostore, is checked at a placement new, by
+  /// EmitImplicitPlacementNewGuards). Like the null guard, a misaligned
+  /// access is an lvalue with no defined substitute: assume/ignore emit nothing
+  /// (caller performs the raw
+  /// access); otherwise emits `if ((Ptr & (Align-1)) != 0) <reaction>` and
+  /// continues at the aligned (and, for observe, post-handler) path, returning
+  /// true.
+  bool EmitImplicitMisalignedGuard(llvm::Value *Ptr, llvm::Align Align,
+                                   SourceLocation Loc);
+  /// P3100: a use of a member of a base class (a member access, a member
+  /// call, a reference binding) whose object expression is a conversion to
+  /// the base class.  The conversion checks its operand for null before it
+  /// converts -- a virtual base's offset is loaded through the operand, and a
+  /// base at a nonzero offset is not at a null address -- as the use would
+  /// check the operand unconverted, and sets Checked, so the use does not
+  /// check the converted object for null again.  Set by the use around the
+  /// emission of its object expression; consumed by the conversion it names
+  /// (the derived-to-base cases of EmitPointerWithAlignment and
+  /// EmitCastLValue).
+  struct P3100BaseConversionUse {
+    const CastExpr *Cast = nullptr;
+    TypeCheckKind TCK = TCK_MemberAccess;
+    SourceLocation Loc;
+    /// For TCK_MemberAccess: a load or store follows (P3100MemberAccessed).
+    /// For TCK_MemberCall: the call is virtual (P3100VTableRead).
+    bool Accessed = false;
+    /// The use would not check the operand for null itself (a member
+    /// subobject, a declared object).
+    bool SkipNull = false;
+    /// The use accesses nothing (EmitUnaccessedLValue): the operand gets the
+    /// .indirection guard alone, and no sanitizer check.
+    bool GuardOnly = false;
+    bool Checked = false;
+    /// The member access's deferred null check (P3100DeferNull), unless
+    /// the conversion is to a virtual base, which reads through the operand
+    /// first.
+    P3100DeferredNullCheck *DeferNull = nullptr;
+  };
+  P3100BaseConversionUse *P3100BaseConversion = nullptr;
+  /// P3100: the conversion to a base class that E is (ignoring parentheses
+  /// and qualification conversions), if its operand may be null: a glvalue
+  /// conversion, or an unchecked conversion of a pointer, of an object other
+  /// than *this.
+  const CastExpr *getP3100BaseConversion(const Expr *E);
+  /// P3100: whether E is a conversion to a virtual base class, which loads
+  /// the base's offset through its operand: every use of its result accesses
+  /// the operand, the .access leaf.
+  static bool isP3100VirtualBaseConversion(const Expr *E);
+  /// P3100: if Use names CE, consume it and check Ptr, CE's operand, for null
+  /// as Use asks (see P3100BaseConversionUse).  Returns the use consumed, or
+  /// null.
+  P3100BaseConversionUse *takeP3100BaseConversion(const CastExpr *CE);
+  void EmitP3100BaseConversionCheck(P3100BaseConversionUse &Use,
+                                    llvm::Value *Ptr, QualType Ty);
+
+  /// P3100: emit the reaction for an implicit guard that has already branched
+  /// to ViolBB on its violating condition and continues at ContBB.  Traps
+  /// (quick_enforce) or reports through the CAK_IMPLICIT entry point (enforce
+  /// terminates the block; observe reports and branches to ContBB).  Msg is the
+  /// violation comment; FD the enclosing function.  Leaves the insertion point
+  /// at ContBB.
+  void emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
+                                 llvm::BasicBlock *ViolBB,
+                                 llvm::BasicBlock *ContBB, SourceLocation Loc,
+                                 StringRef Msg, const FunctionDecl *FD);
+
+  /// P3100: if \p Ty is a non-fixed-underlying-type C++ enum that the enum
+  /// sanitizer does not ignore, set [\p Min, \p End) to its [dcl.enum] value
+  /// range and return true; otherwise return false.  Shared by the
+  /// invalid-value load guard and the enum-cast guard (the latter lives in
+  /// ScalarExprEmitter, so this must be accessible outside CodeGenFunction).
+  /// Distinct from getRangeForType, which also covers bool, is gated on
+  /// StrictEnums, and does not apply the sanitizer-ignore filter.
+  bool getStrictEnumRange(QualType Ty, llvm::APInt &Min, llvm::APInt &End);
+
+  /// P3100: emit the reaction for control flowing off the end of a coroutine
+  /// with no usable return_void ({stmt.return.coroutine.flow.off}) at Loc.  No
+  /// return value is substituted (the return object already exists); the
+  /// continuing semantics fall through to the final suspend.  A no-op for
+  /// assume/ignore.
+  void EmitImplicitCoroutineFlowOffReaction(SourceLocation Loc);
+
+  /// P3100: emit the effect of a [[assume]] attribute (AA) as a configurable
+  /// implicit contract assertion.  The predicate's side-effect-freedom decides
+  /// both the group id and the allowed set: a side-effect-free predicate can be
+  /// evaluated, so it reports the qualified group ub:dcl.attr.assume.false.pure
+  /// and every semantic is available; otherwise only assume/ignore apply, and
+  /// it reports ub:dcl.attr.assume.false.nonpure.side.effects when the
+  /// predicate has a side effect of its own (an assignment, an increment or
+  /// decrement, a volatile access) and ub:dcl.attr.assume.false.nonpure.opaque
+  /// when it might have one only through a call.  assume -> the
+  /// status-quo llvm.assume; ignore -> nothing; a checking semantic ->
+  /// EmitCXXAssumeCheck.
+  void EmitCXXAssumeAttr(const CXXAssumeAttr *AA);
+
+  /// P3100: emit `if (!Cond) <reaction>` for a configured [[assume]] resolving
+  /// to a checking semantic Sem, then, for the enforcing family (where Cond
+  /// then provably holds), keep the optimizer assume hint.  Cond is the assumed
+  /// predicate, known side-effect-free so it is safe to evaluate here.
+  void EmitCXXAssumeCheck(const Expr *Cond, ContractEvaluationSemantic Sem,
+                          SourceLocation Loc, const FunctionDecl *FD);
+
+  /// P3100: whether an implicit contract assertion of GROUP applies at LOC
+  /// (its semantic there is not assume).  Where a sanitizer checks the same
+  /// operation, the contract takes precedence when it applies.
+  bool implicitContractApplies(StringRef Group, SourceLocation Loc);
+
+  /// P3100: which signed arithmetic operation EmitImplicitSignedOverflowOp
+  /// guards (unary minus and inc/dec are expressed as Add/Sub of a constant).
+  enum class ImplicitOverflowOp { Add, Sub, Mul };
+
+  /// P3100: emit a signed +, - or * that may overflow, reporting GroupName, a
+  /// leaf of ub:expr.expr.eval.signed.integer (.add, .sub, .mul, .negate),
+  /// choosing codegen per the resolved semantic.  assume -> the nsw form (the
+  /// optimizer keeps assuming no overflow); ignore -> the plain (no-nsw)
+  /// form, i.e. defined 2's-complement wrapping (-fwrapv-equivalent, still
+  /// optimizable but differently from assume); any checking semantic -> the
+  /// s{add,sub,mul}.with.overflow intrinsic, branching on the overflow bit to
+  /// the reaction (quick_enforce traps; enforce/noexcept_enforce call the
+  /// noreturn handler; observe/noexcept_observe call the handler and continue)
+  /// and yielding the wrapped result.  COMMENT is the contract-violation
+  /// comment.  LHS/RHS are the (already promoted) operands.
+  llvm::Value *EmitImplicitSignedOverflowOp(QualType Ty, SourceLocation Loc,
+                                            StringRef GroupName,
+                                            StringRef Comment,
+                                            ImplicitOverflowOp Op,
+                                            llvm::Value *LHS, llvm::Value *RHS);
+
+  /// P3100: guard an lvalue-to-rvalue load of a bool/enum
+  /// (ub:conv.lval.valid.representation) whose stored value may be outside the
+  /// type's valid range.  LOADED is the raw storage-typed loaded value (i8 for
+  /// bool, before EmitFromMemory truncates it), Ty its source type.  Resolves
+  /// the semantic; returns LOADED unchanged for assume (or when no check
+  /// applies / the sanitizer handles it), in which case the caller may attach
+  /// range metadata.  Otherwise substitutes a defined valid value (0 -- false
+  /// for bool, an in-range value for enum) for an out-of-range load and returns
+  /// it: ignore just substitutes; quick_enforce traps; enforce/noexcept_enforce
+  /// call the noreturn handler; observe/noexcept_observe call the handler and
+  /// continue with the substituted value.  Keyed off LOADED's LLVM type (not
+  /// ConvertType(Ty), which would be i1 for bool and mismatch the storage
+  /// value).
+  llvm::Value *EmitImplicitInvalidValueGuard(llvm::Value *Loaded, QualType Ty,
+                                             SourceLocation Loc);
+
+  /// P3100: guard an index into an array with a statically-known bound, for
+  /// the implicit assertion GROUP (ub:expr.add.out.of.bounds.known.subscript
+  /// for a subscript, .arithmetic for pointer arithmetic,
+  /// ub:expr.unary.dereference.invalid.known for an indirection).  Idx is the
+  /// (integer) index, IdxSigned whether its source type is signed, Bound the
+  /// array size (a non-negative constant), AllowEnd whether the index Bound
+  /// itself is valid (a one-past address) or not (an element).  Resolves the
+  /// semantic; returns Idx unchanged for assume.  Otherwise redirects an
+  /// out-of-range index to the defined valid index 0 (returned via a select)
+  /// and, for a checking semantic, branches to the reaction: quick_enforce
+  /// traps; enforce/noexcept_enforce call the noreturn handler;
+  /// observe/noexcept_observe call the handler and continue with index 0.
+  /// COMMENT is the contract-violation comment.
+  llvm::Value *EmitImplicitArrayBoundsGuard(llvm::Value *Idx, bool IdxSigned,
+                                            llvm::Value *Bound, bool AllowEnd,
+                                            StringRef Group, StringRef Comment,
+                                            SourceLocation Loc);
+
+  /// P3100: the semantic of the implicit assertion GROUP at LOC in the current
+  /// function; assume when -fcontracts-p3100 is off.
+  ContractEvaluationSemantic resolveImplicitSemantic(StringRef Group,
+                                                     SourceLocation Loc);
+
+  /// P3100: the shared tail of a guard that substitutes a defined value:
+  /// returns `IsViolation ? Substitute : Value`, and for a checking semantic
+  /// SEM (not assume or ignore) branches on IsViolation to the reaction
+  /// (quick_enforce traps; enforce/noexcept_enforce call the noreturn handler;
+  /// observe/noexcept_observe call the handler and continue).  COMMENT is the
+  /// contract-violation comment.
+  llvm::Value *EmitImplicitSubstitutingGuard(ContractEvaluationSemantic Sem,
+                                             llvm::Value *IsViolation,
+                                             llvm::Value *Value,
+                                             llvm::Value *Substitute,
+                                             SourceLocation Loc,
+                                             StringRef Comment);
+
+  /// P3100: the bound of the array of statically-known size that the pointer
+  /// operand E of a subscript or of pointer arithmetic decays from, or null
+  /// (a pointer, a VLA, a trailing array that may be a flexible array member).
+  llvm::ConstantInt *getP3100KnownArrayBound(const Expr *E);
+
+  /// P3100: the reaction to an implicit assertion GROUP that is violated
+  /// wherever it is reached (a lexically found operation), at Loc, with
+  /// COMMENT.  Nothing defined could replace the operation, so assume and
+  /// ignore emit nothing and observe continues into it; quick_enforce traps
+  /// and enforce calls the noreturn handler.
+  void EmitImplicitUnconditionalCheck(StringRef Group, StringRef Comment,
+                                      SourceLocation Loc);
+
+  /// P3100: at a normal exit of a [[noreturn]] function, after its locals are
+  /// destroyed and its postconditions evaluated, the reaction to
+  /// ub:dcl.attr.noreturn.eventually.returns.  The caller assumes the call
+  /// does not return, so observe calls the handler and then aborts.
+  void EmitImplicitNoreturnCheck();
+
+  /// P3100: whether OBJECT, the object expression of a member access or call
+  /// (a pointer when IsArrow), is the current function's *this written
+  /// directly.
+  static bool isP3100ThisObject(const Expr *Object, bool IsArrow);
+
+  /// P3100: a member of the object Object (a pointer when IsArrow) referred to
+  /// at Loc: checked for ub:except.handle.handler.ctor.dtor when Object is
+  /// *this and the reference is in a constructor or destructor
+  /// function-try-block handler.
+  void EmitImplicitHandlerMemberCheck(const Expr *Object, bool IsArrow,
+                                      SourceLocation Loc);
+
+  /// P3100: the operations on *this that ub:class.base.init.mem.fun checks.
+  enum class P3100ThisOp { Call, VirtualCall, Typeid, DynamicCast };
+
+  /// P3100: operation Op applied to Object (a pointer when IsArrow) at Loc:
+  /// checked for ub:class.base.init.mem.fun when Object is *this and the
+  /// operation is in a base-class or delegating mem-initializer, a
+  /// constructor precondition or a destructor postcondition.
+  void EmitImplicitThisOperationCheck(const Expr *Object, bool IsArrow,
+                                      P3100ThisOp Op, SourceLocation Loc);
+
+  /// P3100: the check of a dynamic_cast, whatever its cast kind, for
+  /// ub:class.base.init.mem.fun.polymorphic.dynamic.cast.
+  void EmitImplicitDynamicCastThisCheck(const CXXDynamicCastExpr *DCE);
+
+  /// P3100: guard the member pointer MemPtr, of type MPT, applied with .* or
+  /// ->* at Loc, for ub:expr.mptr.oper.member.func.null (.function for a
+  /// pointer to member function, .data otherwise).  A constant member pointer
+  /// is not checked; observe continues with the pointer unchanged.
+  void EmitImplicitNullMemberPointerGuard(llvm::Value *MemPtr,
+                                          const MemberPointerType *MPT,
+                                          SourceLocation Loc);
+
+  /// P3100: guard Ptr, the pointer argument of the non-allocating placement
+  /// new E creating objects of type AllocType, for
+  /// ub:expr.new.non.allocating.null and ub:basic.align.object.alignment
+  /// (.nostore when the new-expression stores nothing, .store otherwise).
+  /// Returns the sanitizer checks the guards emitted take the place of.
+  SanitizerSet EmitImplicitPlacementNewGuards(const CXXNewExpr *E,
+                                              llvm::Value *Ptr,
+                                              QualType AllocType);
+
+  /// P3100: around the emission of the scalar assignment E, records where
+  /// the value stored is loaded from -- a glvalue read through conversions of
+  /// the value read -- and check() compares the two address ranges before
+  /// the store, for ub:expr.assign.overlap.  A bit-field, two different
+  /// variables and a semantic of assume or ignore are not checked.
+  class P3100AssignOverlapScope {
+    CodeGenFunction &CGF;
+    const BinaryOperator *E;
+    ContractEvaluationSemantic Sem;
+    const Expr *SavedSrc;
+    Address SavedAddr;
+
+  public:
+    P3100AssignOverlapScope(CodeGenFunction &CGF, const BinaryOperator *E);
+    ~P3100AssignOverlapScope();
+    /// Check the destination Dest against the source, before the store.
+    void check(LValue Dest);
+  };
+
+  /// P3100: E without parentheses and no-op casts of a glvalue.
+  static const Expr *stripP3100OverlapGlvalue(const Expr *E);
+
+  /// P3100: what P3100KnownArith records for the pointer operand E of
+  /// arithmetic or a subscript, if E is known-bound pointer arithmetic whose
+  /// result is Ptr in this emission; null otherwise.
+  const P3100KnownArithInfo *getP3100KnownArith(const Expr *E,
+                                                llvm::Value *Ptr);
+
+  /// P3100: the position within its array of known bound Bound of the
+  /// element Idx designates relative to a pointer at position Pos: Pos + Idx,
+  /// in Pos's type, or Bound + 1 when an unsigned Idx (IdxSigned false) is
+  /// greater than Bound, so that it does not wrap back into range.
+  llvm::Value *EmitP3100NestedPosition(llvm::Value *Pos, llvm::Value *Idx,
+                                       bool IdxSigned,
+                                       llvm::ConstantInt *Bound);
 
   //===--------------------------------------------------------------------===//
   //                         Scalar Expression Emission
