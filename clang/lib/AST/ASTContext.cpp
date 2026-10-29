@@ -68,6 +68,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/XRayLists.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/APFixedPoint.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
@@ -10327,6 +10328,80 @@ CreateSystemZBuiltinVaListDecl(const ASTContext *Context) {
   return Context->buildImplicitTypedef(VaListTagArrayType, "__builtin_va_list");
 }
 
+/// The fields of __builtin_contract_violation_info_t, in order: the
+/// __cxa_contract_data_block wire format of the __cxa_contract_violation ABI.
+/// File, function, line and column are laid out as source_location::__impl
+/// and __cxa_source_location are, and the descriptor's source_location field
+/// points at them.
+enum ViolationInfoField : unsigned {
+  VIF_Descriptor, // const void *: the descriptor table
+  VIF_Next,       // const void *: the next block, null
+  VIF_File,       // const char *
+  VIF_Function,   // const char *
+  VIF_Line,       // unsigned
+  VIF_Column,     // unsigned
+  VIF_Comment,    // const char *
+  VIF_Message,    // const char *, null for no message
+  VIF_Count
+};
+
+static RecordDecl *
+CreateBuiltinContractViolationRecordDecl(const ASTContext *Context) {
+  RecordDecl *ViolationInfoT =
+      Context->buildImplicitRecord("__builtin_contract_violation_info_t");
+  ViolationInfoT->startDefinition();
+
+  QualType ConstStrLiteralTy =
+      Context->getPointerType(Context->getConstType(Context->CharTy));
+  QualType ConstVoidPtrTy =
+      Context->getPointerType(Context->getConstType(Context->VoidTy));
+  using Pt = std::pair<QualType, const char *>;
+  // Indexed by ViolationInfoField.
+  std::array<std::pair<QualType, const char *>, VIF_Count> FieldInfo = {
+      Pt{ConstVoidPtrTy, "__descriptor_"},
+      Pt{ConstVoidPtrTy, "__next_"},
+      Pt{ConstStrLiteralTy, "__file_"},
+      Pt{ConstStrLiteralTy, "__function_"},
+      Pt{Context->UnsignedIntTy, "__line_"},
+      Pt{Context->UnsignedIntTy, "__column_"},
+      Pt{ConstStrLiteralTy, "__comment_"},
+      Pt{ConstStrLiteralTy, "__message_"}};
+  const auto NumFields = FieldInfo.size();
+
+  // Create fields
+  for (unsigned i = 0; i < NumFields; ++i) {
+    FieldDecl *Field = FieldDecl::Create(
+        const_cast<ASTContext &>(*Context), ViolationInfoT, SourceLocation(),
+        SourceLocation(), &Context->Idents.get(FieldInfo[i].second),
+        FieldInfo[i].first,
+        /*TInfo=*/nullptr,
+        /*BitWidth=*/nullptr,
+        /*Mutable=*/false, ICIS_NoInit);
+    Field->setAccess(AS_public);
+    ViolationInfoT->addDecl(Field);
+  }
+  ViolationInfoT->completeDefinition();
+
+  return ViolationInfoT;
+}
+
+UnnamedGlobalConstantDecl *
+ASTContext::BuildViolationObject(const ContractStmt *CS,
+                                 const FunctionDecl *CurDecl) {
+  assert(CS);
+  // P3099: message() is null when no diagnostic message was supplied, so "no
+  // message" is distinguishable from an explicit empty message ("").
+  std::string MsgStorage;
+  std::optional<StringRef> Message;
+  bool HasMessage = CS->hasMessage() || CS->hasTransformedMessage();
+  if (HasMessage) {
+    MsgStorage = CS->getUserMessage(*this);
+    Message = MsgStorage;
+  }
+  return BuildViolationObject(CS->getBeginLoc(), CS->getComment(*this), Message,
+                              CurDecl);
+}
+
 static TypedefDecl *CreateHexagonBuiltinVaListDecl(const ASTContext *Context) {
   // typedef struct __va_list_tag {
   RecordDecl *VaListTagDecl;
@@ -10450,6 +10525,16 @@ TypedefDecl *ASTContext::getBuiltinVaListDecl() const {
   }
 
   return BuiltinVaListDecl;
+}
+
+RecordDecl *ASTContext::getBuiltinContractViolationRecordDecl() const {
+  if (!BuiltinContractViolationRecordDecl) {
+    BuiltinContractViolationRecordDecl =
+        CreateBuiltinContractViolationRecordDecl(this);
+    assert(BuiltinContractViolationRecordDecl->isImplicit());
+  }
+
+  return BuiltinContractViolationRecordDecl;
 }
 
 Decl *ASTContext::getVaListTagDecl() const {

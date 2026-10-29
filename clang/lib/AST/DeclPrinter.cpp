@@ -79,6 +79,11 @@ namespace {
     void VisitDecompositionDecl(DecompositionDecl *D);
     void VisitLabelDecl(LabelDecl *D);
     void VisitParmVarDecl(ParmVarDecl *D);
+    void VisitResultNameDecl(ResultNameDecl *RND);
+    void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
+    void VisitContractSpecifierDecl(ContractSpecifierDecl *D);
+    void printContractSpecifierSeq(const ContractSpecifierDecl *D,
+                                   const PrintingPolicy &P);
     void VisitFileScopeAsmDecl(FileScopeAsmDecl *D);
     void VisitTopLevelStmtDecl(TopLevelStmtDecl *D);
     void VisitImportDecl(ImportDecl *D);
@@ -679,6 +684,7 @@ static void printExplicitSpecifier(ExplicitSpecifier ES, llvm::raw_ostream &Out,
 }
 
 void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
+  bool PrintContracts = false;
   if (!D->getDescribedFunctionTemplate() &&
       !D->isFunctionTemplateSpecialization()) {
     prettyPrintPragmas(D);
@@ -851,13 +857,27 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
       TrailingRequiresClause.ConstraintExpr->printPretty(
           Out, nullptr, SubPolicy, Indentation, "\n", &Context);
     }
+
+    PrintContracts = true;
   } else {
     Ty.print(Out, Policy, Proto);
   }
 
+  // The virt-specifiers (override, final) are among these.
   if (std::optional<std::string> Attrs =
           prettyPrintAttributes(D, AttrPosAsWritten::Right))
     Out << ' ' << *Attrs;
+
+  // A function-contract-specifier-seq is written bare after the declarator,
+  // any trailing requires-clause and the virt-specifiers --
+  // `void f() override pre(x) post(r : r > 0)` ([dcl.fct], [class.mem],
+  // [dcl.contract.func]) -- so print the specifiers separated by a space and
+  // with no enclosing brackets.
+  if (PrintContracts)
+    if (const ContractSpecifierDecl *Contracts = D->getContracts()) {
+      Out << ' ';
+      printContractSpecifierSeq(Contracts, SubPolicy);
+    }
 
   if (D->isPureVirtual())
     Out << " = 0";
@@ -2042,6 +2062,48 @@ void DeclPrinter::VisitNonTypeTemplateParmDecl(
     Out << " = ";
     NTTP->getDefaultArgument().getArgument().print(Policy, Out,
                                                    /*IncludeType=*/false);
+  }
+}
+void DeclPrinter::VisitResultNameDecl(ResultNameDecl *RND) {
+  StringRef Name = "";
+  if (IdentifierInfo *II = RND->getIdentifier()) {
+    Name =
+        Policy.CleanUglifiedParameters ? II->deuglifiedName() : II->getName();
+  }
+  printDeclType(RND->getType(), Name, false);
+}
+
+// As written in a postcondition's capture list: a capture of a parameter as
+// just its name (it carries a synthesized copy-initialization from that
+// parameter, and printing that too would produce `[n = n]`), and any other as
+// an init-capture.
+void DeclPrinter::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
+  if (D->isParameterCapture()) {
+    Out << D->getName();
+    if (D->isPackExpansion())
+      Out << "...";
+    return;
+  }
+  if (D->isPackExpansion())
+    Out << "...";
+  Out << D->getName();
+  if (Expr *Init = D->getInit()) {
+    Out << " = ";
+    Init->printPretty(Out, nullptr, Policy, Indentation, "\n", &Context);
+  }
+}
+
+// A function-contract-specifier-seq, its specifiers separated by a space.
+void DeclPrinter::VisitContractSpecifierDecl(ContractSpecifierDecl *D) {
+  printContractSpecifierSeq(D, Policy);
+}
+
+void DeclPrinter::printContractSpecifierSeq(const ContractSpecifierDecl *D,
+                                            const PrintingPolicy &P) {
+  llvm::ListSeparator Sep(" ");
+  for (const ContractStmt *Contract : D->contracts()) {
+    Out << Sep;
+    Contract->printPretty(Out, nullptr, P, Indentation, "\n", &Context);
   }
 }
 

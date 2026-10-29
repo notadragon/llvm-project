@@ -968,6 +968,25 @@ void JSONNodeDumper::VisitVarDecl(const VarDecl *VD) {
                   createPointerRepresentation(Instance));
 }
 
+void JSONNodeDumper::VisitPostconditionCaptureDecl(
+    const PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  attributeOnlyIfTrue("isParameterCapture", D->isParameterCapture());
+  attributeOnlyIfTrue("isPackExpansion", D->isPackExpansion());
+}
+
+void JSONNodeDumper::VisitResultNameDecl(const ResultNameDecl *D) {
+  VisitNamedDecl(D);
+  JOS.attribute("type", createQualType(D->getType()));
+}
+
+void JSONNodeDumper::VisitContractSpecifierDecl(
+    const ContractSpecifierDecl *D) {
+  JOS.attribute("numPreconditions", llvm::range_size(D->preconditions()));
+  JOS.attribute("numPostconditions", llvm::range_size(D->postconditions()));
+  attributeOnlyIfTrue("hasCaptures", D->hasCaptures());
+}
+
 void JSONNodeDumper::VisitFieldDecl(const FieldDecl *FD) {
   VisitNamedDecl(FD);
   JOS.attribute("type", createQualType(FD->getType()));
@@ -1733,6 +1752,14 @@ void JSONNodeDumper::VisitIfStmt(const IfStmt *IS) {
   attributeOnlyIfTrue("isConstexpr", IS->isConstexpr());
   attributeOnlyIfTrue("isConsteval", IS->isConsteval());
   attributeOnlyIfTrue("constevalIsNegated", IS->isNegatedConsteval());
+}
+
+void JSONNodeDumper::VisitContractStmt(const ContractStmt *S) {
+  JOS.attribute("contractKind", S->getContractKindString());
+  JOS.attribute("semantic", contractSemanticName(S->getSemantic(Ctx)));
+  attributeOnlyIfTrue("hasResultName", S->hasResultName());
+  attributeOnlyIfTrue("hasLabel", S->hasLabel());
+  attributeOnlyIfTrue("isInvalid", S->isInvalid());
 }
 
 void JSONNodeDumper::VisitSwitchStmt(const SwitchStmt *SS) {

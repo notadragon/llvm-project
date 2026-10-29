@@ -22,7 +22,10 @@
 namespace clang {
 
 class VarDecl;
+class FunctionDecl;
 class CXXExpansionStmtDecl;
+class ResultNameDecl;
+class UnnamedGlobalConstantDecl;
 
 /// CXXCatchStmt - This represents a C++ catch block.
 ///
@@ -1102,6 +1105,664 @@ public:
     return T->getStmtClass() == CXXExpansionStmtInstantiationClass;
   }
 };
+class SemaContractHelper;
+
+/// A contract assertion: a precondition or postcondition of a function, held
+/// by the function's ContractSpecifierDecl, a contract_assert statement, or
+/// an implicit assertion the compiler inserted.  Its parts -- the predicate,
+/// and optionally a result name, a message, a label, captures and a
+/// requires-clause -- are trailing objects, present as the Has* bits say.
+class ContractStmt final
+    : public Stmt,
+      private llvm::TrailingObjects<ContractStmt, Stmt *, const Attr *> {
+
+  friend class ASTStmtReader;
+  friend TrailingObjects;
+  friend class SemaContractHelper;
+
+public:
+  // The raw selector values a P3595 dynamic table covers: every semantic.
+  static constexpr unsigned NumDynRawSemantics = LastContractEvaluationSemantic;
+
+private:
+
+  // A Note on attributes:
+  //
+  // Where an attribute-specifier-seq may appear depends on the contract kind,
+  // and the two kinds do not agree.
+  //
+  // A precondition-specifier and a postcondition-specifier admit exactly one
+  // position, after the keyword ([dcl.contract.func]):
+  //
+  //   pre [[#2]] ( ... )
+  //
+  // An assertion-statement is a statement ([stmt.contract.assert]), and a
+  // statement admits a leading attribute-specifier-seq, so contract_assert
+  // admits both:
+  //
+  //   [[#1]] contract_assert [[#2]] ( ... )
+  //
+  // Unlike most statements, contracts will have meaningful attributes. For
+  // example, one which overrides the message in diagnostics.
+  //
+  // Because these attributes apply directly to the contract and its semantics
+  // we store them directly in the contract statement. This is different from
+  // other statements, which use AttributedStmt to wrap the statement.
+  // However, the wrapping behavior makes it non-trivial for a contract to
+  // access its attributes.
+  //
+  // NOTE: We should consider only storing attributes of the form [[#2]] here.
+  // That is the only form pre and post have, and it is the form that
+  // pertains to the contract rather than to the statement carrying it.
+
+  unsigned numTrailingObjects(OverloadToken<Stmt *>) const {
+    return ContractStmtBits.HasResultName + 1 +
+           ContractStmtBits.HasMessage + ContractStmtBits.HasLabel +
+           ContractStmtBits.HasCaptures +
+           ContractStmtBits.HasRequiresClause;
+  }
+
+  Stmt **getStmtPtr() { return getTrailingObjects<Stmt *>(); }
+
+  unsigned numTrailingObjects(OverloadToken<const Attr *>) const {
+    return ContractStmtBits.NumAttrs;
+  }
+
+  const Attr **getAttrPtr() { return getTrailingObjects<const Attr *>(); }
+
+  SourceLocation KeywordLoc;
+  SourceLocation RParenLoc;
+
+  StringRef TransformedComment;
+  StringRef TransformedMessage;
+
+  // Bitmask of semantics allowed by the label's allowed_semantics facet.
+  // Bit N set means ContractEvaluationSemantic(N) is allowed.  The default
+  // (when no label restricts) is AllContractSemanticsMaskWithExtensions.  A
+  // member rather than a ContractStmtBits field, so it has a bit for every
+  // semantic value (NumContractAllowedMaskBits).
+  uint16_t AllowedMask = AllContractSemanticsMaskWithExtensions;
+  static_assert(NumContractAllowedMaskBits == 16,
+                "AllowedMask holds NumContractAllowedMaskBits bits");
+
+  // Lazily-resolved evaluation semantics.  0 = not yet resolved;
+  // otherwise a ContractEvaluationSemantic enum value (cached).
+  mutable uint8_t CachedRuntimeSemantic = 0;
+  mutable uint8_t CachedCESemantic = 0;
+  mutable uint8_t CachedCallerSemantic = 0;
+  // D4405: the semantic of the analysis evaluation, resolved with the
+  // callee-side runtime semantic (0 = not yet), and the one the label's
+  // analysis_semantic facet gives it (step 3), which is the label's and so,
+  // like AllowedMask, serialized.
+  mutable uint8_t CachedAnalysisSemantic = 0;
+  // D4405: what the caller-side resolution moves into the analysis
+  // evaluation at a call (0 = not yet), resolved with CachedCallerSemantic.
+  mutable uint8_t CachedCallerAnalysis = 0;
+  uint8_t LabelAnalysis =
+      static_cast<uint8_t>(ContractEvaluationSemantic::Ignore);
+
+  // P3595 dynamic (link-/run-time) evaluation-semantic selection.
+  //
+  // When a labeled contract's runtime resolution matches a config entry with an
+  // "output.dynamic" descriptor, Sema (applyLabelFacets) precomputes a per-
+  // return-value transform table here so codegen can build the dispatch switch
+  // without any Sema machinery of its own.  DynName empty means "not dynamic";
+  // codegen reads these via the accessors below.
+  //
+  // DynName points at ASTContext-allocated storage (via
+  // ASTContext::backupStr), like TransformedComment/TransformedMessage above.
+  // It holds the selector function's name (possibly a qualified C++ name, or a
+  // verbatim C symbol).
+  StringRef DynName;
+  ContractDynamicLinkage DynLinkage = ContractDynamicLinkage::CXX;
+  bool DynProvideWeak = false;
+  bool DynIsDynamic = false; // true once a dynamic descriptor was resolved
+  // The matched configuration entry's own semantic, before the allowed set
+  // and the label are applied: what the selector's weak default returns.
+  ContractEvaluationSemantic DynConfigured =
+      static_cast<ContractEvaluationSemantic>(0);
+
+  // Whether this assertion is invalid: its predicate or its result name
+  // could not be built, or nothing of it could (an invalid placeholder,
+  // Sema::BuildInvalidContractStmt).  The specifier sequence holding it is
+  // invalid exactly when one of its assertions is.
+  bool Invalid = false;
+  // T(R) for each raw selector value R in Ignore..Diagnose (1..9),
+  // stored at index R-1.  Each entry is a ContractEvaluationSemantic value or
+  // the sentinel 0 when R's transform is disallowed (codegen maps 0 to a
+  // runtime enforced violation).  An R the contract does not allow is first
+  // adjusted to the allowed set, so it is not by itself disallowed.
+  uint8_t DynTable[NumDynRawSemantics] = {};
+
+  // P3400: the functions through which the runtime calls the label's local
+  // violation handler and query facets, synthesized by Sema when it detects
+  // the facet (null when the label has none).  CodeGen has no Sema, so the
+  // call -- overload resolution, default arguments, result conversion -- is
+  // built there and only emitted here.
+  FunctionDecl *LocalHandlerFn = nullptr;
+  FunctionDecl *QueryFn = nullptr;
+
+  ArrayRef<Stmt *> getSubStmts() const {
+    return llvm::ArrayRef(getTrailingObjects<Stmt *>(),
+                          numTrailingObjects(OverloadToken<Stmt *>{}));
+  }
+
+  MutableArrayRef<Stmt *> getSubStmts() {
+    return llvm::MutableArrayRef(getTrailingObjects<Stmt *>(),
+                                 numTrailingObjects(OverloadToken<Stmt *>{}));
+  }
+
+  // The sub-statements are stored in source order, so that they are the
+  // assertion's children in that order: each optional one has a slot only
+  // when its bit says it is present.
+  enum class SubStmtKind {
+    Label,
+    RequiresClause,
+    Captures,
+    ResultName,
+    Cond,
+    Message
+  };
+
+  unsigned getSubStmtIndex(SubStmtKind K) const {
+    unsigned I = 0;
+    if (K == SubStmtKind::Label)
+      return I;
+    I += ContractStmtBits.HasLabel;
+    if (K == SubStmtKind::RequiresClause)
+      return I;
+    I += ContractStmtBits.HasRequiresClause;
+    if (K == SubStmtKind::Captures)
+      return I;
+    I += ContractStmtBits.HasCaptures;
+    if (K == SubStmtKind::ResultName)
+      return I;
+    I += ContractStmtBits.HasResultName;
+    if (K == SubStmtKind::Cond)
+      return I;
+    return I + 1;
+  }
+
+  Stmt *&getSubStmt(SubStmtKind K) { return getSubStmts()[getSubStmtIndex(K)]; }
+
+  void setResultName(DeclStmt *D) {
+    assert(hasResultName() && "no result name decl");
+    getSubStmt(SubStmtKind::ResultName) = D;
+  }
+
+  void setCondition(Expr *E) {
+    assert(E && "no condition");
+    getSubStmt(SubStmtKind::Cond) = E;
+  }
+
+  void setMessage(Expr *E) {
+    assert(ContractStmtBits.HasMessage && "no message slot");
+    getSubStmt(SubStmtKind::Message) = E;
+  }
+
+  void setLabel(Expr *E) {
+    assert(ContractStmtBits.HasLabel && "no label slot");
+    getSubStmt(SubStmtKind::Label) = E;
+  }
+
+  void setCaptures(DeclStmt *D) {
+    assert(ContractStmtBits.HasCaptures && "no captures slot");
+    getSubStmt(SubStmtKind::Captures) = D;
+  }
+
+  void setRequiresClause(Expr *E) {
+    assert(ContractStmtBits.HasRequiresClause && "no requires clause slot");
+    getSubStmt(SubStmtKind::RequiresClause) = E;
+  }
+
+  void copyAttrs(ArrayRef<const Attr *> Attrs) {
+    assert(Attrs.size() == ContractStmtBits.NumAttrs &&
+           "wrong number of attributes");
+    std::copy(Attrs.begin(), Attrs.end(), getAttrPtr());
+  }
+
+  // NOTE: every Has* bit that numTrailingObjects() consults must be set
+  // before the first trailing-object access, because the offset of the
+  // const Attr * array is a function of the Stmt * count.  In particular
+  // HasRequiresClause must be correct before copyAttrs() runs, or the
+  // attributes land one slot short of where every later read looks for them.
+  ContractStmt(ContractKind CK, SourceLocation KeywordLoc, Expr *Condition,
+               DeclStmt *RN, Expr *Message = nullptr, Expr *Label = nullptr,
+               DeclStmt *Captures = nullptr, ArrayRef<const Attr *> Attrs = {},
+               bool HasRequiresClause = false)
+      : Stmt(ContractStmtClass), KeywordLoc(KeywordLoc) {
+    ContractStmtBits.ContractKind = static_cast<unsigned>(CK);
+    ContractStmtBits.HasResultName = RN != nullptr;
+    ContractStmtBits.HasMessage = Message != nullptr;
+    ContractStmtBits.HasLabel = Label != nullptr;
+    ContractStmtBits.HasCaptures = Captures != nullptr;
+    ContractStmtBits.HasRequiresClause = HasRequiresClause;
+    ContractStmtBits.HasLocalHandler = false;
+    ContractStmtBits.HasQuery = false;
+    ContractStmtBits.PredicateCanThrow = true;
+    ContractStmtBits.NumAttrs = Attrs.size();
+    assert(ContractStmtBits.NumAttrs == Attrs.size() &&
+           "too many attributes for the NumAttrs bit-field");
+    if (RN)
+      setResultName(RN);
+    setCondition(Condition);
+    if (Message)
+      setMessage(Message);
+    if (Label)
+      setLabel(Label);
+    if (Captures)
+      setCaptures(Captures);
+    if (!Attrs.empty())
+      copyAttrs(Attrs);
+  }
+
+  ContractStmt(EmptyShell Empty, ContractKind Kind, bool HasResultName,
+               bool HasMessage, bool HasLabel, bool HasCaptures,
+               bool HasRequiresClause = false, unsigned NumAttrs = 0)
+      : Stmt(ContractStmtClass, Empty) {
+    ContractStmtBits.ContractKind = static_cast<unsigned>(Kind);
+    ContractStmtBits.HasResultName = HasResultName;
+    ContractStmtBits.HasMessage = HasMessage;
+    ContractStmtBits.HasLabel = HasLabel;
+    ContractStmtBits.HasCaptures = HasCaptures;
+    ContractStmtBits.HasRequiresClause = HasRequiresClause;
+    ContractStmtBits.HasLocalHandler = false;
+    ContractStmtBits.HasQuery = false;
+    ContractStmtBits.PredicateCanThrow = true;
+    ContractStmtBits.NumAttrs = NumAttrs;
+    assert(ContractStmtBits.NumAttrs == NumAttrs &&
+           "too many attributes for the NumAttrs bit-field");
+    if (NumAttrs != 0)
+      std::fill_n(getAttrPtr(), NumAttrs, nullptr);
+  }
+
+public:
+  static ContractStmt *
+  Create(const ASTContext &C, ContractKind Kind, SourceLocation KeywordLoc,
+         Expr *Condition, DeclStmt *ResultNameDecl, Expr *Message = nullptr,
+         Expr *Label = nullptr, DeclStmt *Captures = nullptr,
+         ArrayRef<const Attr *> Attrs = {}, Expr *RequiresClause = nullptr);
+
+  static ContractStmt *CreateEmpty(const ASTContext &C, ContractKind Kind,
+                                   bool HasResultName, bool HasMessage,
+                                   bool HasLabel, bool HasCaptures,
+                                   bool HasRequiresClause, unsigned NumAttrs);
+
+  bool hasResultName() const { return ContractStmtBits.HasResultName; }
+
+  DeclStmt *getResultNameDeclStmt() const {
+    return hasResultName()
+               ? static_cast<DeclStmt *>(
+                     getSubStmts()[getSubStmtIndex(SubStmtKind::ResultName)])
+               : nullptr;
+  }
+
+  ResultNameDecl *getResultName() const;
+
+  Expr *getCond() { return static_cast<Expr *>(getSubStmt(SubStmtKind::Cond)); }
+  const Expr *getCond() const {
+    return const_cast<ContractStmt *>(this)->getCond();
+  }
+
+  bool hasMessage() const { return ContractStmtBits.HasMessage; }
+
+  Expr *getMessageExpr() {
+    if (!hasMessage())
+      return nullptr;
+    return static_cast<Expr *>(getSubStmt(SubStmtKind::Message));
+  }
+  const Expr *getMessageExpr() const {
+    return const_cast<ContractStmt *>(this)->getMessageExpr();
+  }
+
+  bool hasLabel() const { return ContractStmtBits.HasLabel; }
+
+  Expr *getLabelExpr() {
+    if (!hasLabel())
+      return nullptr;
+    return static_cast<Expr *>(getSubStmt(SubStmtKind::Label));
+  }
+  const Expr *getLabelExpr() const {
+    return const_cast<ContractStmt *>(this)->getLabelExpr();
+  }
+
+  bool hasCaptures() const { return ContractStmtBits.HasCaptures; }
+
+  DeclStmt *getCapturesDeclStmt() {
+    if (!hasCaptures())
+      return nullptr;
+    return static_cast<DeclStmt *>(getSubStmt(SubStmtKind::Captures));
+  }
+  const DeclStmt *getCapturesDeclStmt() const {
+    return const_cast<ContractStmt *>(this)->getCapturesDeclStmt();
+  }
+
+  bool hasRequiresClause() const {
+    return ContractStmtBits.HasRequiresClause;
+  }
+
+  Expr *getRequiresClause() {
+    if (!hasRequiresClause())
+      return nullptr;
+    return static_cast<Expr *>(getSubStmt(SubStmtKind::RequiresClause));
+  }
+  const Expr *getRequiresClause() const {
+    return const_cast<ContractStmt *>(this)->getRequiresClause();
+  }
+
+  /// The semantics the label allows (bit N for semantic N): the
+  /// flag-independent restriction, which may include the assume bit, the
+  /// P4298 noexcept_enforce/noexcept_observe bits and the P4405
+  /// prove/diagnose bits.  The -fcontracts-allow-assume / -fcontracts-p4298
+  /// / -fcontracts-p4405 gates are applied at query time.
+  unsigned getAllowedMask() const { return AllowedMask; }
+  void setAllowedMask(unsigned Mask) {
+    AllowedMask =
+        static_cast<uint16_t>(Mask & AllContractSemanticsMaskWithExtensions);
+  }
+
+  /// The runtime callee-side semantic, once resolved: by the label's
+  /// compute_semantic facet (Sema) or lazily (ensureRuntimeSemantic).
+  bool hasTransformedSemantic() const { return CachedRuntimeSemantic != 0; }
+  ContractEvaluationSemantic getTransformedSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedRuntimeSemantic);
+  }
+  void setTransformedSemantic(ContractEvaluationSemantic S) {
+    CachedRuntimeSemantic = static_cast<uint8_t>(S);
+  }
+
+  /// D4405: the semantic of the analysis evaluation, once resolved (with the
+  /// runtime callee-side semantic: ensureAnalysisSemantic).
+  bool hasAnalysisSemantic() const { return CachedAnalysisSemantic != 0; }
+  ContractEvaluationSemantic getAnalysisSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedAnalysisSemantic);
+  }
+  void setAnalysisSemantic(ContractEvaluationSemantic S) {
+    CachedAnalysisSemantic = static_cast<uint8_t>(S);
+  }
+
+  /// D4405: what the label's analysis_semantic facet gives the analysis
+  /// evaluation; ignore when it has none.
+  ContractEvaluationSemantic getLabelAnalysisSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(LabelAnalysis);
+  }
+  void setLabelAnalysisSemantic(ContractEvaluationSemantic S) {
+    LabelAnalysis = static_cast<uint8_t>(S);
+  }
+
+  /// The callee-side semantic in constant evaluation, once resolved (see
+  /// ensureCESemantic).
+  bool hasCESemantic() const { return CachedCESemantic != 0; }
+  ContractEvaluationSemantic getCESemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedCESemantic);
+  }
+  void setCESemantic(ContractEvaluationSemantic S) {
+    CachedCESemantic = static_cast<uint8_t>(S);
+  }
+
+  /// Whether the label has the P3400 local_violation_label facet.
+  bool hasLocalHandler() const { return ContractStmtBits.HasLocalHandler; }
+  void setHasLocalHandler(bool V = true) {
+    ContractStmtBits.HasLocalHandler = V;
+  }
+
+  /// Whether the label has the P3400 queryable_label facet.
+  bool hasQuery() const { return ContractStmtBits.HasQuery; }
+  void setHasQuery(bool V = true) { ContractStmtBits.HasQuery = V; }
+
+  /// Whether evaluating the predicate can throw (Sema::canThrow, computed
+  /// when the contract is built; conservatively true until then).
+  bool predicateCanThrow() const { return ContractStmtBits.PredicateCanThrow; }
+  void setPredicateCanThrow(bool V = true) {
+    ContractStmtBits.PredicateCanThrow = V;
+  }
+
+  /// The synthesized trampolines for those facets (see LocalHandlerFn).
+  FunctionDecl *getLocalHandlerFn() const { return LocalHandlerFn; }
+  void setLocalHandlerFn(FunctionDecl *FD) { LocalHandlerFn = FD; }
+  FunctionDecl *getQueryFn() const { return QueryFn; }
+  void setQueryFn(FunctionDecl *FD) { QueryFn = FD; }
+
+  /// The comment and message the label's compute_comment and compute_message
+  /// facets produced.  Set but empty is a result (a facet that redacts): test
+  /// for having been set, not for being non-empty.
+  bool hasTransformedComment() const {
+    return TransformedComment.data() != nullptr;
+  }
+  void setTransformedComment(StringRef S) { TransformedComment = S; }
+  StringRef getTransformedComment() const { return TransformedComment; }
+
+  bool hasTransformedMessage() const {
+    return TransformedMessage.data() != nullptr;
+  }
+  void setTransformedMessage(StringRef S) { TransformedMessage = S; }
+  StringRef getTransformedMessage() const { return TransformedMessage; }
+
+  /// The caller-side semantic, once resolved (see ensureCallerSemantic).
+  bool hasCallerSemantic() const { return CachedCallerSemantic != 0; }
+  ContractEvaluationSemantic getCallerSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedCallerSemantic);
+  }
+  void setCallerSemantic(ContractEvaluationSemantic S) {
+    CachedCallerSemantic = static_cast<uint8_t>(S);
+  }
+
+  /// D4405: what the caller-side resolution moved into the analysis
+  /// evaluation at a call (ignore, diagnose or prove), once resolved (see
+  /// ensureCallerAnalysisSemantic).
+  bool hasCallerAnalysisSemantic() const { return CachedCallerAnalysis != 0; }
+  ContractEvaluationSemantic getCallerAnalysisSemantic() const {
+    return static_cast<ContractEvaluationSemantic>(CachedCallerAnalysis);
+  }
+  void setCallerAnalysisSemantic(ContractEvaluationSemantic S) {
+    CachedCallerAnalysis = static_cast<uint8_t>(S);
+  }
+
+  /// P3595 dynamic (link-/run-time) evaluation-semantic selection.
+  ///
+  /// True when this contract's runtime semantic is chosen dynamically by
+  /// calling a named selector function (see the "output.dynamic" config
+  /// descriptor).  Populated by Sema (applyLabelFacets); codegen consults it to
+  /// decide whether to emit the dispatch switch instead of a single-semantic
+  /// check body.
+  bool isDynamic() const { return DynIsDynamic; }
+
+  /// Whether this assertion is invalid (see Invalid).
+  bool isInvalid() const { return Invalid; }
+  void setInvalid() { Invalid = true; }
+
+  /// The selector function's name, as getDynLinkage() says to read it: a
+  /// qualified C++ name or a verbatim C symbol.  Empty unless isDynamic().
+  StringRef getDynName() const { return DynName; }
+
+  ContractDynamicLinkage getDynLinkage() const { return DynLinkage; }
+
+  /// How a declaration the translation unit makes relates to a "C++"-linkage
+  /// dynamic selector of the same qualified name: it has another symbol
+  /// (None), it is the selector (Selector), or it has the selector's symbol
+  /// but not its type, `std::contracts::evaluation_semantic ()` (Mistyped).
+  enum class DynamicSelectorMatch { None, Selector, Mistyped };
+
+  /// Look up the "C++"-linkage selector name NAME as a qualified name from
+  /// the global namespace and classify each declaration it finds, calling
+  /// FN on each one that is not DynamicSelectorMatch::None.
+  static void lookupDynamicSelector(
+      ASTContext &Ctx, StringRef Name,
+      llvm::function_ref<void(const NamedDecl *, DynamicSelectorMatch)> Fn);
+
+  /// Whether the compiler should emit a weak definition of the selector that
+  /// returns the configured semantic (design "provideweak").
+  bool getDynProvideWeak() const { return DynProvideWeak; }
+
+  /// The semantic the configuration entry that selected this contract's
+  /// dynamic selector specifies, before it is adjusted to the allowed set or
+  /// passed through the label's compute_semantic: what the selector's weak
+  /// default returns (D3595R1).  The dispatch applies both to whatever the
+  /// selector returns, so the weak default is evaluated with the
+  /// compile-time semantic.  Invalid (0) when the entry gives no semantic,
+  /// in which case there is no weak default.
+  ContractEvaluationSemantic getDynConfiguredSemantic() const {
+    return DynConfigured;
+  }
+
+  /// T(rawSem) for rawSem in Ignore..Diagnose (1..9): the effective
+  /// evaluation semantic to dispatch to when the selector returns rawSem, or
+  /// the sentinel (ContractEvaluationSemantic)0 when its transform is
+  /// disallowed (codegen turns 0 into a runtime enforced violation).  rawSem
+  /// outside 1..9 also yields the sentinel.  Never prove or diagnose: a
+  /// dynamically selected contract is never diagnosed at compile time, so
+  /// they are recorded as ignore.
+  ContractEvaluationSemantic getDynTransform(unsigned rawSem) const {
+    if (rawSem < 1 || rawSem > NumDynRawSemantics)
+      return static_cast<ContractEvaluationSemantic>(0);
+    return static_cast<ContractEvaluationSemantic>(DynTable[rawSem - 1]);
+  }
+
+  /// Record the full dynamic descriptor, the configured semantic the weak
+  /// default returns, and the precomputed transform table.  Called
+  /// by Sema once the runtime resolution reports a dynamic match.  Table
+  /// entries are ContractEvaluationSemantic values or 0 for the sentinel,
+  /// indexed by rawSem-1 for rawSem in 1..NumDynRawSemantics.
+  void setDynamicInfo(StringRef Name, ContractDynamicLinkage Linkage,
+                      bool ProvideWeak, ContractEvaluationSemantic Configured,
+                      const uint8_t Table[NumDynRawSemantics]) {
+    DynName = Name;
+    DynLinkage = Linkage;
+    DynProvideWeak = ProvideWeak;
+    DynConfigured = Configured;
+    DynIsDynamic = true;
+    for (unsigned I = 0; I < NumDynRawSemantics; ++I)
+      DynTable[I] = Table[I];
+  }
+
+  /// The keyword spelling of a contract kind: pre, post, contract_assert, or
+  /// implicit for a check the compiler inserted.
+  static StringRef ContractKindAsString(ContractKind Kind);
+
+  /// Return the source text of the predicate expression.
+  std::string getSourceText(const ASTContext &Ctx) const;
+
+  /// Return the predicate source text (for contract_violation::comment()).
+  std::string getComment(const ASTContext &Ctx) const;
+
+  /// Return the user-provided diagnostic message text, or empty string
+  /// if none. Checks syntactic message first, then ContractMessageAttr.
+  std::string getUserMessage(const ASTContext &Ctx) const;
+
+  /// Return the message for the violation info struct.
+  /// Returns user message if present, otherwise the source text.
+  std::string getMessage(const ASTContext &Ctx) const;
+
+  /// Return the kind of the contract: pre, post, contract_assert, or implicit.
+  ContractKind getContractKind() const {
+    return static_cast<ContractKind>(ContractStmtBits.ContractKind);
+  }
+
+  StringRef getContractKindString() const {
+    return ContractStmt::ContractKindAsString(getContractKind());
+  }
+
+  /// Calculate the evaluation semantic for a specific contract.
+  ///
+  /// This takes into account the default evaluation semantic for all contracts,
+  /// as well as any attributes on the specific contract itself.
+  ContractEvaluationSemantic getSemantic(const ASTContext &Ctx) const;
+
+  /// Lazily resolve and cache the runtime callee-side semantic: D4405, never
+  /// prove or diagnose, which apply to the analysis evaluation only.
+  ContractEvaluationSemantic
+  ensureRuntimeSemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
+
+  /// D4405: lazily resolve and cache the semantic of the analysis evaluation
+  /// (ignore, diagnose or prove), with the runtime callee-side semantic.
+  ContractEvaluationSemantic
+  ensureAnalysisSemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
+
+  /// Lazily resolve and cache the constexpr callee-side semantic.
+  ContractEvaluationSemantic ensureCESemantic(const ASTContext &Ctx,
+                                              const DeclContext *FnCtx) const;
+
+  /// Lazily resolve and cache the caller-side semantic.
+  ContractEvaluationSemantic
+  ensureCallerSemantic(const ASTContext &Ctx, const DeclContext *FnCtx) const;
+
+  /// D4405: lazily resolve and cache what the caller-side resolution moves
+  /// into the analysis evaluation at a call (ignore, diagnose or prove).
+  ContractEvaluationSemantic
+  ensureCallerAnalysisSemantic(const ASTContext &Ctx,
+                               const DeclContext *FnCtx) const;
+
+  /// The groups a P3595 configuration query for this contract names: \p Groups
+  /// when there are any (a label's group_names), else the
+  /// [[clang::contract_group]] attribute's group, copied into \p Storage.
+  ArrayRef<std::string>
+  getConfigGroups(ArrayRef<std::string> Groups,
+                  SmallVectorImpl<std::string> &Storage) const;
+
+  /// The P3595 configuration query for this contract in function context
+  /// \p FnCtx: its kind and keyword location, \p Groups (which must outlive
+  /// the query), \p AllowedMask and the label's analysis semantic.  (A
+  /// caller-side check may always be ignored: contractRuntimeAllowedMask.)
+  ContractQuery buildConfigQuery(const ASTContext &Ctx,
+                                 const DeclContext *FnCtx, unsigned AllowedMask,
+                                 ArrayRef<std::string> Groups,
+                                 bool CallerSide = false,
+                                 bool InConstantEvaluation = false) const;
+
+private:
+  /// Resolve the semantic for one side of this contract -- callee or caller,
+  /// at run time or in constant evaluation -- unless \p Cache holds it, and
+  /// cache it there.
+  ContractEvaluationSemantic
+  resolveCachedSemantic(const ASTContext &Ctx, const DeclContext *FnCtx,
+                        bool CallerSide, bool InConstantEvaluation,
+                        uint8_t &Cache) const;
+
+public:
+
+  ArrayRef<const Attr *> getAttrs() const {
+    return llvm::ArrayRef(getTrailingObjects<const Attr *>(),
+                          ContractStmtBits.NumAttrs);
+  }
+  // Access attributes of a particular type.
+  template <class T> const T *getAttr() const;
+
+  SourceLocation getKeywordLoc() const { return KeywordLoc; }
+  SourceLocation getBeginLoc() const LLVM_READONLY { return KeywordLoc; }
+  SourceLocation getExpressionLoc() const LLVM_READONLY {
+    return getCond()->getBeginLoc();
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    // The closing parenthesis, when the parser recorded it; otherwise the
+    // last sub-statement ends the range, which stops short of it.
+    if (RParenLoc.isValid())
+      return RParenLoc;
+    return getSubStmts().back()->getEndLoc();
+  }
+
+  /// The closing parenthesis of the predicate (or of the message).
+  SourceLocation getRParenLoc() const { return RParenLoc; }
+  void setRParenLoc(SourceLocation L) { RParenLoc = L; }
+
+  /// The parts of the assertion, in source order: the label, the
+  /// requires-clause, the captures, the result name, the predicate and the
+  /// message, each that is present.
+  child_range children() { return getSubStmts(); }
+  const_child_range children() const { return getSubStmts(); }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == ContractStmtClass;
+  }
+};
+
+template <class T> const T *ContractStmt::getAttr() const {
+  for (auto *A : getAttrs()) {
+    if (const T *TA = dyn_cast<T>(A)) {
+      return TA;
+    }
+  }
+  return nullptr;
+}
 
 }  // end namespace clang
 

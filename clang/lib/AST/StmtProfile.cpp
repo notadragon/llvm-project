@@ -135,6 +135,27 @@ namespace {
           return;
         }
 
+        if (const auto *RND = dyn_cast<ResultNameDecl>(D)) {
+          // Pointer equality cannot be used on result names either, since the
+          // result name on different declarations should be considered
+          // equivalent.
+          // FIXME: We may need to compare more than just the type and
+          // identifier.
+          VisitType(RND->getType());
+          ID.AddInteger(RND->getFunctionScopeDepth());
+          return;
+        }
+
+        if (const auto *Cap = dyn_cast<PostconditionCaptureDecl>(D)) {
+          // Likewise a P3098 postcondition capture: each declaration has its
+          // own, and the capture lists are compared position by position
+          // (by name) by CheckEquivalentContractSequence, so identify a
+          // capture by its type and name.
+          VisitType(Cap->getType());
+          ID.AddPointer(Cap->getIdentifier());
+          return;
+        }
+
         if (const TemplateTypeParmDecl *TTP =
                 dyn_cast<TemplateTypeParmDecl>(D)) {
           ID.AddInteger(TTP->getDepth());
@@ -2534,6 +2555,13 @@ void StmtProfiler::VisitDependentCoawaitExpr(const DependentCoawaitExpr *S) {
 
 void StmtProfiler::VisitCoyieldExpr(const CoyieldExpr *S) {
   VisitExpr(S);
+}
+
+void StmtProfiler::VisitContractStmt(const ContractStmt *S) {
+  VisitStmt(S);
+  ID.AddInteger(static_cast<unsigned>(S->getContractKind()));
+  ID.AddBoolean(S->hasMessage());
+  ID.AddBoolean(S->hasLabel());
 }
 
 void StmtProfiler::VisitOpaqueValueExpr(const OpaqueValueExpr *E) {

@@ -546,6 +546,9 @@ namespace clang {
     ExpectedDecl VisitVarDecl(VarDecl *D);
     ExpectedDecl VisitImplicitParamDecl(ImplicitParamDecl *D);
     ExpectedDecl VisitParmVarDecl(ParmVarDecl *D);
+    ExpectedDecl VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
+    ExpectedDecl VisitResultNameDecl(ResultNameDecl *D);
+    ExpectedDecl VisitContractSpecifierDecl(ContractSpecifierDecl *D);
     ExpectedDecl VisitObjCMethodDecl(ObjCMethodDecl *D);
     ExpectedDecl VisitObjCTypeParamDecl(ObjCTypeParamDecl *D);
     ExpectedDecl VisitObjCCategoryDecl(ObjCCategoryDecl *D);
@@ -615,6 +618,7 @@ namespace clang {
     ExpectedStmt VisitCXXCatchStmt(CXXCatchStmt *S);
     ExpectedStmt VisitCXXTryStmt(CXXTryStmt *S);
     ExpectedStmt VisitCXXForRangeStmt(CXXForRangeStmt *S);
+    ExpectedStmt VisitContractStmt(ContractStmt *S);
     ExpectedStmt VisitCXXExpansionStmtPattern(CXXExpansionStmtPattern *S);
     ExpectedStmt
     VisitCXXExpansionStmtInstantiation(CXXExpansionStmtInstantiation *S);
@@ -1263,9 +1267,11 @@ Expected<LambdaCapture> ASTNodeImporter::import(const LambdaCapture &From) {
     if (Error Err = importInto(EllipsisLoc, From.getEllipsisLoc()))
       return std::move(Err);
 
-  return LambdaCapture(
-      *LocationOrErr, From.isImplicit(), From.getCaptureKind(), Var,
-      EllipsisLoc);
+  LambdaCapture To(*LocationOrErr, From.isImplicit(), From.getCaptureKind(),
+                   Var, EllipsisLoc);
+  if (From.isCapturedAcrossContract())
+    To.setCapturedAcrossContract(true);
+  return To;
 }
 
 template <typename T>
@@ -3979,6 +3985,9 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
   AssociatedConstraint TrailingRequiresClause = D->getTrailingRequiresClause();
   TrailingRequiresClause.ConstraintExpr =
       importChecked(Err, TrailingRequiresClause.ConstraintExpr);
+  // Imported below, once the parameters the contracts name exist.
+  ContractSpecifierDecl *Contracts = nullptr;
+
   if (Err)
     return std::move(Err);
 
@@ -4010,7 +4019,7 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
             ToFunction, D, Importer.getToContext(), cast<CXXRecordDecl>(DC),
             ToInnerLocStart, NameInfo, T, TInfo, ESpec, D->UsesFPIntrin(),
             D->isInlineSpecified(), D->isImplicit(), D->getConstexprKind(),
-            ToInheritedConstructor, TrailingRequiresClause))
+            ToInheritedConstructor, TrailingRequiresClause, Contracts))
       return ToFunction;
   } else if (CXXDestructorDecl *FromDtor = dyn_cast<CXXDestructorDecl>(D)) {
 
@@ -4025,7 +4034,7 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
             ToFunction, D, Importer.getToContext(), cast<CXXRecordDecl>(DC),
             ToInnerLocStart, NameInfo, T, TInfo, D->UsesFPIntrin(),
             D->isInlineSpecified(), D->isImplicit(), D->getConstexprKind(),
-            TrailingRequiresClause))
+            TrailingRequiresClause, Contracts))
       return ToFunction;
 
     CXXDestructorDecl *ToDtor = cast<CXXDestructorDecl>(ToFunction);
@@ -4041,14 +4050,15 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
             ToFunction, D, Importer.getToContext(), cast<CXXRecordDecl>(DC),
             ToInnerLocStart, NameInfo, T, TInfo, D->UsesFPIntrin(),
             D->isInlineSpecified(), ESpec, D->getConstexprKind(),
-            SourceLocation(), TrailingRequiresClause))
+            SourceLocation(), TrailingRequiresClause, Contracts))
       return ToFunction;
   } else if (auto *Method = dyn_cast<CXXMethodDecl>(D)) {
     if (GetImportedOrCreateDecl<CXXMethodDecl>(
             ToFunction, D, Importer.getToContext(), cast<CXXRecordDecl>(DC),
             ToInnerLocStart, NameInfo, T, TInfo, Method->getStorageClass(),
             Method->UsesFPIntrin(), Method->isInlineSpecified(),
-            D->getConstexprKind(), SourceLocation(), TrailingRequiresClause))
+            D->getConstexprKind(), SourceLocation(), TrailingRequiresClause,
+            Contracts))
       return ToFunction;
   } else if (auto *Guide = dyn_cast<CXXDeductionGuideDecl>(D)) {
     ExplicitSpecifier ESpec =
@@ -4070,7 +4080,7 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
             ToFunction, D, Importer.getToContext(), DC, ToInnerLocStart,
             NameInfo, T, TInfo, D->getStorageClass(), D->UsesFPIntrin(),
             D->isInlineSpecified(), D->hasWrittenPrototype(),
-            D->getConstexprKind(), TrailingRequiresClause))
+            D->getConstexprKind(), TrailingRequiresClause, Contracts))
       return ToFunction;
   }
 
@@ -4136,6 +4146,14 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
       LT->update(Param, Importer.getToContext().getTranslationUnitDecl());
   }
   ToFunction->setParams(Parameters);
+
+  if (ContractSpecifierDecl *FromContracts = D->getContracts()) {
+    if (Expected<ContractSpecifierDecl *> ToContractsOrErr =
+            import(FromContracts))
+      ToFunction->setContracts(*ToContractsOrErr);
+    else
+      return ToContractsOrErr.takeError();
+  }
 
   // We need to complete creation of FunctionProtoTypeLoc manually with setting
   // params it refers to.
@@ -4912,6 +4930,90 @@ ExpectedDecl ASTNodeImporter::VisitParmVarDecl(ParmVarDecl *D) {
   }
 
   return ToParm;
+}
+
+ExpectedDecl
+ASTNodeImporter::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
+  DeclContext *DC, *LexicalDC;
+  DeclarationName Name;
+  SourceLocation Loc;
+  NamedDecl *ToD;
+  if (Error Err = ImportDeclParts(D, DC, LexicalDC, Name, ToD, Loc))
+    return std::move(Err);
+  if (ToD)
+    return ToD;
+
+  Error Err = Error::success();
+  auto ToInnerLocStart = importChecked(Err, D->getInnerLocStart());
+  auto ToType = importChecked(Err, D->getType());
+  auto ToTypeSourceInfo = importChecked(Err, D->getTypeSourceInfo());
+  if (Err)
+    return std::move(Err);
+
+  PostconditionCaptureDecl *ToCapture;
+  if (GetImportedOrCreateDecl(ToCapture, D, Importer.getToContext(), DC,
+                              ToInnerLocStart, Loc,
+                              Name.getAsIdentifierInfo(), ToType,
+                              ToTypeSourceInfo, D->getStorageClass()))
+    return ToCapture;
+  ToCapture->setLexicalDeclContext(LexicalDC);
+  ToCapture->setIsParameterCapture(D->isParameterCapture());
+  ToCapture->setIsPackExpansion(D->isPackExpansion());
+  if (Expr *FromInit = D->getInit()) {
+    if (ExpectedExpr ToInitOrErr = import(FromInit))
+      ToCapture->setInit(*ToInitOrErr);
+    else
+      return ToInitOrErr.takeError();
+  }
+  return ToCapture;
+}
+
+ExpectedDecl ASTNodeImporter::VisitResultNameDecl(ResultNameDecl *D) {
+  DeclContext *DC, *LexicalDC;
+  DeclarationName Name;
+  SourceLocation Loc;
+  NamedDecl *ToD;
+  if (Error Err = ImportDeclParts(D, DC, LexicalDC, Name, ToD, Loc))
+    return std::move(Err);
+  if (ToD)
+    return ToD;
+
+  ExpectedType ToTypeOrErr = import(D->getType());
+  if (!ToTypeOrErr)
+    return ToTypeOrErr.takeError();
+
+  ResultNameDecl *ToResultName;
+  if (GetImportedOrCreateDecl(ToResultName, D, Importer.getToContext(), DC, Loc,
+                              Name.getAsIdentifierInfo(), *ToTypeOrErr,
+                              D->hasInventedPlaceholderType(),
+                              D->getFunctionScopeDepth()))
+    return ToResultName;
+  ToResultName->setLexicalDeclContext(LexicalDC);
+  return ToResultName;
+}
+
+ExpectedDecl
+ASTNodeImporter::VisitContractSpecifierDecl(ContractSpecifierDecl *D) {
+  auto DCOrErr = Importer.ImportContext(D->getDeclContext());
+  if (!DCOrErr)
+    return DCOrErr.takeError();
+  ExpectedSLoc LocOrErr = import(D->getLocation());
+  if (!LocOrErr)
+    return LocOrErr.takeError();
+
+  SmallVector<ContractStmt *, 4> ToContracts;
+  for (ContractStmt *FromCS : D->contracts()) {
+    Expected<ContractStmt *> ToCSOrErr = import(FromCS);
+    if (!ToCSOrErr)
+      return ToCSOrErr.takeError();
+    ToContracts.push_back(*ToCSOrErr);
+  }
+
+  ContractSpecifierDecl *ToCSD;
+  if (GetImportedOrCreateDecl(ToCSD, D, Importer.getToContext(), *DCOrErr,
+                              *LocOrErr, ToContracts))
+    return ToCSD;
+  return ToCSD;
 }
 
 ExpectedDecl ASTNodeImporter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
@@ -7469,6 +7571,71 @@ ExpectedStmt ASTNodeImporter::VisitCXXForRangeStmt(CXXForRangeStmt *S) {
   return new (Importer.getToContext()) CXXForRangeStmt(
       ToInit, ToRangeStmt, ToBeginStmt, ToEndStmt, ToCond, ToInc, ToLoopVarStmt,
       ToBody, ToForLoc, ToCoawaitLoc, ToColonLoc, ToRParenLoc);
+}
+
+ExpectedStmt ASTNodeImporter::VisitContractStmt(ContractStmt *S) {
+  Error Err = Error::success();
+  auto ToKeywordLoc = importChecked(Err, S->getKeywordLoc());
+  auto ToRParenLoc = importChecked(Err, S->getRParenLoc());
+  auto ToCond = importChecked(Err, S->getCond());
+  auto ToResultName = importChecked(Err, S->getResultNameDeclStmt());
+  auto ToMessage = importChecked(Err, S->getMessageExpr());
+  auto ToLabel = importChecked(Err, S->getLabelExpr());
+  auto ToCaptures = importChecked(Err, S->getCapturesDeclStmt());
+  auto ToRequiresClause = importChecked(Err, S->getRequiresClause());
+  auto ToLocalHandlerFn = importChecked(Err, S->getLocalHandlerFn());
+  auto ToQueryFn = importChecked(Err, S->getQueryFn());
+  if (Err)
+    return std::move(Err);
+
+  SmallVector<const Attr *, 2> ToAttrs;
+  for (const Attr *FromAttr : S->getAttrs()) {
+    Expected<Attr *> ToAttrOrErr = Importer.Import(FromAttr);
+    if (!ToAttrOrErr)
+      return ToAttrOrErr.takeError();
+    ToAttrs.push_back(*ToAttrOrErr);
+  }
+
+  ASTContext &ToCtx = Importer.getToContext();
+  ContractStmt *ToCS = ContractStmt::Create(
+      ToCtx, S->getContractKind(), ToKeywordLoc, ToCond, ToResultName,
+      ToMessage, ToLabel, ToCaptures, ToAttrs, ToRequiresClause);
+
+  // What Sema computed for the assertion -- its semantics, the label facets'
+  // results, P3595 dynamic selection -- cannot be recomputed without Sema.
+  ToCS->setRParenLoc(ToRParenLoc);
+  ToCS->setAllowedMask(S->getAllowedMask());
+  ToCS->setLabelAnalysisSemantic(S->getLabelAnalysisSemantic());
+  if (S->hasAnalysisSemantic())
+    ToCS->setAnalysisSemantic(S->getAnalysisSemantic());
+  if (S->hasTransformedSemantic())
+    ToCS->setTransformedSemantic(S->getTransformedSemantic());
+  if (S->hasCESemantic())
+    ToCS->setCESemantic(S->getCESemantic());
+  if (S->hasCallerSemantic())
+    ToCS->setCallerSemantic(S->getCallerSemantic());
+  if (S->hasCallerAnalysisSemantic())
+    ToCS->setCallerAnalysisSemantic(S->getCallerAnalysisSemantic());
+  ToCS->setHasLocalHandler(S->hasLocalHandler());
+  ToCS->setLocalHandlerFn(ToLocalHandlerFn);
+  ToCS->setHasQuery(S->hasQuery());
+  ToCS->setPredicateCanThrow(S->predicateCanThrow());
+  ToCS->setQueryFn(ToQueryFn);
+  if (S->isInvalid())
+    ToCS->setInvalid();
+  if (S->hasTransformedComment())
+    ToCS->setTransformedComment(ToCtx.backupStr(S->getTransformedComment()));
+  if (S->hasTransformedMessage())
+    ToCS->setTransformedMessage(ToCtx.backupStr(S->getTransformedMessage()));
+  if (S->isDynamic()) {
+    uint8_t Table[ContractStmt::NumDynRawSemantics];
+    for (unsigned R = 1; R <= ContractStmt::NumDynRawSemantics; ++R)
+      Table[R - 1] = static_cast<uint8_t>(S->getDynTransform(R));
+    ToCS->setDynamicInfo(ToCtx.backupStr(S->getDynName()),
+                         S->getDynLinkage(), S->getDynProvideWeak(),
+                         S->getDynConfiguredSemantic(), Table);
+  }
+  return ToCS;
 }
 
 ExpectedStmt

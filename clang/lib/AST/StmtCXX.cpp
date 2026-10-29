@@ -14,6 +14,11 @@
 #include "clang/AST/ExprCXX.h"
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/DeclCXX.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Lex/Lexer.h"
+#include "llvm/ADT/StringExtras.h"
 
 using namespace clang;
 
@@ -287,4 +292,227 @@ SourceLocation CXXExpansionStmtInstantiation::getBeginLoc() const {
 
 SourceLocation CXXExpansionStmtInstantiation::getEndLoc() const {
   return Parent->getExpansionPattern()->getEndLoc();
+}
+
+ContractStmt *ContractStmt::Create(const ASTContext &C, ContractKind Kind,
+                                   SourceLocation KeywordLoc, Expr *Condition,
+                                   DeclStmt *ResultNameDecl, Expr *Message,
+                                   Expr *Label, DeclStmt *Captures,
+                                   ArrayRef<const Attr *> Attrs,
+                                   Expr *RequiresClause) {
+  assert((ResultNameDecl == nullptr || Kind == ContractKind::Post) &&
+         "Only a postcondition can have a result name declaration");
+  void *Mem =
+      C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                     1 + (ResultNameDecl != nullptr) + (Message != nullptr) +
+                         (Label != nullptr) + (Captures != nullptr) +
+                         (RequiresClause != nullptr),
+                     Attrs.size()),
+                 alignof(ContractStmt));
+  auto *CS = new (Mem)
+      ContractStmt(Kind, KeywordLoc, Condition, ResultNameDecl, Message, Label,
+                   Captures, Attrs, RequiresClause != nullptr);
+  if (RequiresClause)
+    CS->setRequiresClause(RequiresClause);
+  return CS;
+}
+
+ContractStmt *ContractStmt::CreateEmpty(const ASTContext &C, ContractKind Kind,
+                                        bool HasResultName, bool HasMessage,
+                                        bool HasLabel, bool HasCaptures,
+                                        bool HasRequiresClause,
+                                        unsigned NumAttrs) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Stmt *, const Attr *>(
+                             1 + HasResultName + HasMessage + HasLabel +
+                                 HasCaptures + HasRequiresClause,
+                             NumAttrs),
+                         alignof(ContractStmt));
+  return new (Mem)
+      ContractStmt(EmptyShell(), Kind, HasResultName, HasMessage, HasLabel,
+                   HasCaptures, HasRequiresClause, NumAttrs);
+}
+
+ResultNameDecl *ContractStmt::getResultName() const {
+  if (!hasResultName())
+    return nullptr;
+  DeclStmt *D = getResultNameDeclStmt();
+  assert(D);
+  return cast<ResultNameDecl>(D->getSingleDecl());
+}
+
+std::string ContractStmt::getComment(const ASTContext &Ctx) const {
+  if (hasTransformedComment())
+    return TransformedComment.str();
+  return getSourceText(Ctx);
+}
+
+std::string ContractStmt::getUserMessage(const ASTContext &Ctx) const {
+  if (hasTransformedMessage())
+    return TransformedMessage.str();
+  if (hasMessage()) {
+    if (auto *SL = dyn_cast<StringLiteral>(getMessageExpr()))
+      return SL->getString().str();
+  }
+  return {};
+}
+
+std::string ContractStmt::getMessage(const clang::ASTContext &Ctx) const {
+  std::string Msg = getUserMessage(Ctx);
+  if (!Msg.empty())
+    return Msg;
+  return getSourceText(Ctx);
+}
+
+std::string ContractStmt::getSourceText(const ASTContext &Ctx) const {
+  auto &SM = Ctx.getSourceManager();
+  auto Begin = hasResultName() ? getResultName()->getBeginLoc()
+                               : getCond()->getBeginLoc();
+  auto End = getCond()->getEndLoc();
+  CharSourceRange ExprRange = Lexer::getAsCharRange(
+      SM.getExpansionRange(SourceRange(Begin, End)), SM, Ctx.getLangOpts());
+  std::string AssertStr =
+      Lexer::getSourceText(ExprRange, SM, Ctx.getLangOpts()).str();
+  return AssertStr;
+}
+
+StringRef ContractStmt::ContractKindAsString(ContractKind K) {
+  switch (K) {
+  case ContractKind::Assert:
+    return "contract_assert";
+  case ContractKind::Pre:
+    return "pre";
+  case ContractKind::Post:
+    return "post";
+  case ContractKind::Implicit:
+    return "implicit";
+  }
+  llvm_unreachable("Unknown contract kind");
+}
+
+ContractEvaluationSemantic
+ContractStmt::getSemantic(const ASTContext &Ctx) const {
+  if (hasTransformedSemantic())
+    return getTransformedSemantic();
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = false;
+  Q.AllowedMask = applyAssumeGate(getAllowedMask(), Ctx);
+  Q.LabelAnalysis = getLabelAnalysisSemantic();
+  ContractEvaluationSemantic Sem =
+      Ctx.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  // No valid semantic: the allowed set is empty.  Only a label's
+  // allowed_semantics narrows it that far, and Sema diagnoses that
+  // (applyLabelFacets); after the error, behave as ignore.
+  return Sem == InvalidContractEvaluationSemantic
+             ? ContractEvaluationSemantic::Ignore
+             : Sem;
+}
+
+ArrayRef<std::string>
+ContractStmt::getConfigGroups(ArrayRef<std::string> Groups,
+                              SmallVectorImpl<std::string> &Storage) const {
+  if (!Groups.empty())
+    return Groups;
+  Storage.clear();
+  return Storage;
+}
+
+ContractQuery ContractStmt::buildConfigQuery(const ASTContext &Ctx,
+                                             const DeclContext *FnCtx,
+                                             unsigned AllowedMask,
+                                             ArrayRef<std::string> Groups,
+                                             bool CallerSide,
+                                             bool InConstantEvaluation) const {
+  ContractQuery Q;
+  Q.Kind = getContractKind();
+  Q.CallerSide = CallerSide;
+  Q.InConstantEvaluation = InConstantEvaluation;
+  Q.AllowedMask = AllowedMask;
+  Q.LabelAnalysis = getLabelAnalysisSemantic();
+  Q.Groups = Groups;
+  Q.FnContext = FnCtx;
+  Q.Loc = getKeywordLoc();
+  Q.SM = &Ctx.getSourceManager();
+  return Q;
+}
+
+ContractEvaluationSemantic ContractStmt::resolveCachedSemantic(
+    const ASTContext &Ctx, const DeclContext *FnCtx, bool CallerSide,
+    bool InConstantEvaluation, uint8_t &Cache) const {
+  if (Cache != 0)
+    return static_cast<ContractEvaluationSemantic>(Cache);
+
+  llvm::SmallVector<std::string, 1> GroupsStorage;
+  ContractQuery Q = buildConfigQuery(
+      Ctx, FnCtx, applyAssumeGate(getAllowedMask(), Ctx),
+      getConfigGroups({}, GroupsStorage), CallerSide, InConstantEvaluation);
+  ContractResolution Res = Ctx.getLangOpts().ContractOpts.resolveContract(Q);
+  auto Sem = Res.Semantic;
+  // As in getSemantic: no valid semantic has been diagnosed in Sema.
+  if (Sem == InvalidContractEvaluationSemantic)
+    Sem = ContractEvaluationSemantic::Ignore;
+  Cache = static_cast<uint8_t>(Sem);
+  // D4405: the resolution also gives the analysis evaluation's (callee side)
+  // or what moves into it (caller side).
+  auto Analysis = static_cast<uint8_t>(
+      Res.Analysis == InvalidContractEvaluationSemantic
+          ? ContractEvaluationSemantic::Ignore
+          : Res.Analysis);
+  if (!InConstantEvaluation && !CallerSide && !hasAnalysisSemantic())
+    CachedAnalysisSemantic = Analysis;
+  if (!InConstantEvaluation && CallerSide && !hasCallerAnalysisSemantic())
+    CachedCallerAnalysis = Analysis;
+  return Sem;
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureRuntimeSemantic(const ASTContext &Ctx,
+                                    const DeclContext *FnCtx) const {
+  return resolveCachedSemantic(Ctx, FnCtx, /*CallerSide=*/false,
+                               /*InConstantEvaluation=*/false,
+                               CachedRuntimeSemantic);
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureAnalysisSemantic(const ASTContext &Ctx,
+                                     const DeclContext *FnCtx) const {
+  if (!hasAnalysisSemantic())
+    resolveCachedSemantic(Ctx, FnCtx, /*CallerSide=*/false,
+                          /*InConstantEvaluation=*/false,
+                          CachedRuntimeSemantic);
+  // A runtime semantic set without one (setTransformedSemantic alone) had no
+  // analysis evaluation to resolve.
+  if (!hasAnalysisSemantic())
+    return ContractEvaluationSemantic::Ignore;
+  return static_cast<ContractEvaluationSemantic>(CachedAnalysisSemantic);
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureCallerAnalysisSemantic(const ASTContext &Ctx,
+                                           const DeclContext *FnCtx) const {
+  if (!hasCallerAnalysisSemantic())
+    resolveCachedSemantic(Ctx, FnCtx, /*CallerSide=*/true,
+                          /*InConstantEvaluation=*/false,
+                          CachedCallerSemantic);
+  // A caller-side semantic set without one (setCallerSemantic alone) had
+  // nothing to move.
+  if (!hasCallerAnalysisSemantic())
+    return ContractEvaluationSemantic::Ignore;
+  return static_cast<ContractEvaluationSemantic>(CachedCallerAnalysis);
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureCESemantic(const ASTContext &Ctx,
+                               const DeclContext *FnCtx) const {
+  return resolveCachedSemantic(Ctx, FnCtx, /*CallerSide=*/false,
+                               /*InConstantEvaluation=*/true,
+                               CachedCESemantic);
+}
+
+ContractEvaluationSemantic
+ContractStmt::ensureCallerSemantic(const ASTContext &Ctx,
+                                   const DeclContext *FnCtx) const {
+  return resolveCachedSemantic(Ctx, FnCtx, /*CallerSide=*/true,
+                               /*InConstantEvaluation=*/false,
+                               CachedCallerSemantic);
 }
