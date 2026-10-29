@@ -2325,6 +2325,15 @@ CheckConstexprFunctionStmt(Sema &SemaRef, const FunctionDecl *Dcl, Stmt *S,
     return true;
   }
 
+  case Stmt::ContractStmtClass: {
+    // A contract_assert is a statement a C++11 constexpr function body could
+    // not contain, like the if-statement below.
+    if (!Cxx1yLoc.isValid())
+      Cxx1yLoc = S->getBeginLoc();
+
+    return true;
+  }
+
   case Stmt::IfStmtClass: {
     // C++1y allows if-statements.
     if (!Cxx1yLoc.isValid())
@@ -11131,6 +11140,20 @@ void Sema::ActOnFinishDelayedCXXMethodDeclaration(Scope *S, Decl *MethodD) {
   // Check the default arguments, which we may have added.
   if (!Method->isInvalidDecl())
     CheckCXXDefaultArguments(Method);
+
+  // A friend may redeclare a function declared before it -- at namespace
+  // scope, or a member of another class -- and its contracts, parsed only now,
+  // were not there to compare when the declarations were merged (CLANG-639).
+  if (!Method->isInvalidDecl() && Method->getFriendObjectKind())
+    if (FunctionDecl *Prev = Method->getPreviousDecl();
+        Prev && CheckEquivalentContractSequence(Prev, Method)) {
+      Method->setInvalidDecl();
+      return;
+    }
+
+  if (!Method->isInvalidDecl())
+    ActOnContractsOnFinishFunctionDecl(Method,
+                                       Method->isThisDeclarationADefinition());
 }
 
 // Emit the given diagnostic for each non-address-space qualifier.
@@ -12739,10 +12762,48 @@ void Sema::PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir) {
   DeclContext *Ctx = S->getEntity();
   if (Ctx && !Ctx->isFunctionOrMethod())
     Ctx->addDecl(UDir);
+  else if (UDir->isContractControl())
+    S->PushContractControlUsingDirective(UDir);
   else
     // Otherwise, it is at block scope. The using-directives will affect lookup
     // only to the end of the scope.
     S->PushUsingDirective(UDir);
+}
+
+Decl *Sema::ActOnContractControlUsingDirective(
+    Scope *S, SourceLocation UsingLoc, SourceLocation NamespcLoc,
+    CXXScopeSpec &SS, SourceLocation IdentLoc, IdentifierInfo *NamespcName) {
+  assert(!SS.isInvalid() && "Invalid CXXScopeSpec.");
+  assert(NamespcName && "Invalid NamespcName.");
+
+  S = S->getDeclParent();
+
+  LookupResult R(*this, NamespcName, IdentLoc, LookupNamespaceName);
+  LookupParsedName(R, S, &SS, /*ObjectType=*/QualType());
+  if (R.isAmbiguous())
+    return nullptr;
+
+  if (R.empty()) {
+    Diag(IdentLoc, diag::err_expected_namespace_name) << SS.getRange();
+    return nullptr;
+  }
+
+  NamedDecl *Named = R.getRepresentativeDecl();
+  NamespaceDecl *NS = R.getAsSingle<NamespaceDecl>();
+  assert(NS && "expected namespace decl");
+
+  DiagnoseUseOfDecl(Named, IdentLoc);
+
+  DeclContext *CommonAncestor = NS;
+  while (CommonAncestor && !CommonAncestor->Encloses(CurContext))
+    CommonAncestor = CommonAncestor->getParent();
+
+  UsingDirectiveDecl *UDir = UsingDirectiveDecl::Create(
+      Context, CurContext, UsingLoc, NamespcLoc,
+      SS.getWithLocInContext(Context), IdentLoc, Named, CommonAncestor);
+  UDir->setContractControl(true);
+  PushUsingDirective(S, UDir);
+  return UDir;
 }
 
 Decl *Sema::ActOnUsingDeclaration(Scope *S, AccessSpecifier AS,
@@ -18940,6 +19001,13 @@ void Sema::SetDeclDeleted(Decl *Dcl, SourceLocation DelLoc,
   // Deleted function does not have a body.
   Fn->setWillHaveBody(false);
 
+  // The replaceable contract-violation handler shall not be deleted (treated
+  // as one of the [dcl.fct.def.replace] requirements).
+  if (getLangOpts().Contracts && Fn->getDeclName().isIdentifier() &&
+      Fn->getName() == "handle_contract_violation" &&
+      Fn->getDeclContext()->getRedeclContext()->isTranslationUnit())
+    Diag(DelLoc, diag::err_contract_violation_handler_invalid) << 8;
+
   if (const FunctionDecl *Prev = Fn->getPreviousDecl()) {
     // Don't consider the implicit declaration we generate for explicit
     // specializations. FIXME: Do not generate these implicit declarations.
@@ -18978,6 +19046,10 @@ void Sema::SetDeclDeleted(Decl *Dcl, SourceLocation DelLoc,
   //  A deleted function is implicitly inline.
   Fn->setImplicitlyInline();
   Fn->setDeletedAsWritten(true, Message);
+
+  // Contracts parsed with the declarator are already attached; late-parsed
+  // ones are checked when they are attached (CheckFunctionContracts).
+  DiagnoseContractOnDeletedOrDefaulted(Fn);
 }
 
 void Sema::SetDeclDefaulted(Decl *Dcl, SourceLocation DefaultLoc) {

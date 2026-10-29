@@ -3347,6 +3347,207 @@ public:
   //
   //
 
+  /// \name C++ Contracts
+  /// Implementations are in SemaContract.cpp
+  ///@{
+
+public:
+  StmtResult ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
+                                 Expr *Cond, ResultNameDecl *ResultNameDecl,
+                                 ParsedAttributes &Attrs,
+                                 Expr *MessageExpr = nullptr,
+                                 Expr *LabelExpr = nullptr,
+                                 DeclStmt *Captures = nullptr,
+                                 Expr *RequiresClause = nullptr);
+
+  Decl *ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
+                                  IdentifierInfo *Id, Expr *Init,
+                                  bool IsPackExpansion);
+  /// The type of a postcondition init-capture (P3098) initialized by \p
+  /// Init, deduced as `auto' would be.
+  QualType deducePostconditionCaptureType(const Expr *Init);
+  void ActOnFinishPostconditionCaptures(Scope *S, ArrayRef<Decl *> Captures);
+
+  ResultNameDecl *ActOnResultNameDeclarator(ContractKind CK, Scope *S,
+                                            QualType T, SourceLocation IDLoc,
+                                            IdentifierInfo *II,
+                                            unsigned FunctionScopeDepth);
+
+  ExprResult ActOnContractAssertCondition(Expr *Cond);
+
+  StmtResult BuildContractStmt(ContractKind CK, SourceLocation KeywordLoc,
+                               Expr *Cond, DeclStmt *ResultName, Expr *Message,
+                               Expr *Label, DeclStmt *Captures,
+                               ArrayRef<const Attr *> Attrs,
+                               Expr *RequiresClause = nullptr);
+
+  /// Populate a ContractStmt's label-facet and P3595 dynamic-selection state.
+  /// Shared by the primary-parse and template-instantiation paths (both via
+  /// BuildContractStmt); must only be called in a non-dependent context, where
+  /// the label type and any config resolution are concrete.
+  void populateContractSemanticState(ContractStmt *CS);
+
+  // Check two function declarations for equivalent contract sequences.
+  // Return true if a diagnostic was issued, false otherwise.
+  bool CheckEquivalentContractSequence(FunctionDecl *OrigDecl,
+                                       FunctionDecl *NewDecl);
+
+  /// [dcl.contract.func]: diagnose a parameter of NewDecl, a redeclaration of
+  /// OldDecl, that is not const although a postcondition of the function
+  /// odr-uses it -- which applies to every declaration, including one that
+  /// does not repeat the postcondition.
+  void CheckPostconditionParamsOnRedecl(FunctionDecl *OldDecl,
+                                        FunctionDecl *NewDecl);
+
+  void CheckLambdaCapturesForContracts(LambdaExpr *LE);
+
+  /// Perform semantic analysis for a contract specifier on the specified
+  /// function. For function templates, these checks should be performed with
+  /// the instantiation of the body, and not the declaration.
+  /// Diagnose a function-contract-specifier on a deleted function, or on
+  /// one defaulted on its first declaration ([dcl.contract.func]).
+  void DiagnoseContractOnDeletedOrDefaulted(FunctionDecl *FD);
+  void CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
+                              bool IsInstantiation);
+
+  /// [dcl.fct.def.coroutine]: an odr-use of a non-reference parameter in a
+  /// postcondition assertion of a coroutine is ill-formed.  Called once the
+  /// body has been parsed, which is when a function is known to be one.
+  void diagnoseCoroutinePostconditionParams(FunctionDecl *FD);
+
+  ContractSpecifierDecl *
+  ActOnFinishContractSpecifierSequence(ArrayRef<ContractStmt *> ContractStmts,
+                                       SourceLocation Loc);
+
+  /// For BuildImplicitMemberExpr: an unqualified reference to a non-static
+  /// member \p R names, in a constructor's precondition or postcondition
+  /// capture or a destructor's postcondition, where no object is within its
+  /// lifetime ([over.call.func]/3.1).  Returns what BuildImplicitMemberExpr
+  /// returns -- the reference built as from a static member function, or an
+  /// error -- or nothing when the rule does not apply.
+  std::optional<ExprResult> BuildImplicitMemberExprInContract(
+      const CXXScopeSpec &SS, SourceLocation TemplateKWLoc, LookupResult &R,
+      const TemplateArgumentListInfo *TemplateArgs);
+
+  /// Whether name lookup goes through the using-directive \p UD here: it is
+  /// visible, and it is not a contract_control directive (P3400) outside an
+  /// assertion-control expression, which is the only place one nominates its
+  /// namespace, for qualified lookup as for unqualified.
+  bool isUsingDirectiveInEffect(const UsingDirectiveDecl *UD);
+
+  /// Diagnose \p FD if it is a replacement of the contract-violation handler,
+  /// ::handle_contract_violation, that the language does not allow
+  /// ([basic.contract.handler]).
+  void CheckContractViolationHandler(FunctionDecl *FD);
+
+  /// Give \p FD the contracts \p Transform makes of \p Contracts, which
+  /// belong to the specifier at \p Loc: each one transformed, an invalid
+  /// placeholder for one that cannot be, and nothing for one an unsatisfied
+  /// P4283 requires-clause discards.  With every contract discarded, \p FD
+  /// has none.  Returns the new specifier, or null.
+  ContractSpecifierDecl *SetTransformedContracts(
+      FunctionDecl *FD, ArrayRef<ContractStmt *> Contracts, SourceLocation Loc,
+      llvm::function_ref<StmtResult(ContractStmt *)> Transform);
+
+  /// Build the invalid placeholder that stands in a contract specifier
+  /// sequence for a contract of kind \p CK, at \p KeywordLoc, that could not
+  /// be built at all, so that the sequence is invalid because it holds an
+  /// invalid contract.
+  ContractStmt *BuildInvalidContractStmt(ContractKind CK,
+                                         SourceLocation KeywordLoc);
+
+  /// Build one element of the expansion of the postcondition capture pack
+  /// \p Pattern: a capture of type \p Type, copy-initialized from \p Init
+  /// when it has one, as a single capture is instantiated.  Null after a
+  /// diagnostic.
+  PostconditionCaptureDecl *
+  BuildExpandedPostconditionCapture(PostconditionCaptureDecl *Pattern,
+                                    QualType Type, ExprResult Init);
+
+  void ActOnContractsOnFinishFunctionDecl(FunctionDecl *FD, bool IsDefinition);
+
+  /// Whether the function being declared has contracts the parser will attach
+  /// once it is declared, so that the declaration-time contract checks wait
+  /// for ActOnLateParsedFunctionContracts.
+  bool FunctionContractsPending = false;
+
+  /// Check the contracts the parser attached to FD, a C++ function declared
+  /// before they were parsed, against its earlier declarations.
+  void ActOnLateParsedFunctionContracts(FunctionDecl *FD, bool IsDefinition);
+  void ActOnContractsOnFinishFunctionBody(FunctionDecl *FD);
+
+  /// P3595: at the end of the translation unit, warn on each declaration it
+  /// makes that has the qualified name of a "C++"-linkage dynamic selector
+  /// in the contract configuration but not the selector's type,
+  /// `std::contracts::evaluation_semantic ()`.
+  void DiagnoseMistypedDynamicContractSelectors();
+
+  /// Rebuild the contract specifier against another declaration of the function
+  /// (using the new functions parameters)
+  ContractSpecifierDecl *
+  RebuildContractSpecifierForDecl(FunctionDecl *FirstDecl,
+                                  FunctionDecl *Definition);
+
+  ///
+  DeclResult
+  RebuildContractsWithPlaceholderReturnType(FunctionDecl *Definition);
+
+  /// True while \p Instantiation is still carrying a *pattern's* contract
+  /// specifier as a placeholder, rather than one substituted for it.
+  ///
+  /// The placeholder is installed by VisitCXXMethodDecl from whichever
+  /// declaration of the pattern the class-template instantiation walked --
+  /// the in-class one -- while \p Pattern here is the declaration the
+  /// contracts are being substituted from, which for an out-of-line-defined
+  /// member is the definition, carrying its own re-pointed specifier.  So the
+  /// two are different specifiers on the same redeclaration chain, and the
+  /// question has to be asked of the whole chain rather than of \p Pattern
+  /// alone.  A substituted specifier is freshly built and belongs to no
+  /// chain, so this stays a reliable "not yet done" test.
+  static bool holdsPatternContractSpecifier(const FunctionDecl *Instantiation,
+                                            const FunctionDecl *Pattern);
+
+  void InstantiateContractSpecifier(
+      SourceLocation PointOfInstantiation, FunctionDecl *Instantiation,
+      const FunctionDecl *Pattern,
+      const MultiLevelTemplateArgumentList &TemplateArgs);
+
+  /// [dcl.contract.func]/9: "The function contract assertions of a function
+  /// are considered to be needed ([temp.inst]) when the function is odr-used
+  /// ([basic.def.odr]) or the function is defined."  Instantiating them only
+  /// with the definition therefore misses a declaration-only template that is
+  /// called: its predicate stays dependent and is never checked at all.
+  ///
+  /// So when a function is odr-used, instantiate just its contract specifier
+  /// (not its body) if it is still carrying the dependent pattern copy.
+  /// Idempotent.
+  ///
+  /// A virtual function needs this for a second reason: under P3097 its
+  /// interface contracts are checked by a contract wrapper around the vtable
+  /// dispatch, so they must exist as a non-dependent specifier even when the
+  /// function's own definition is never instantiated (e.g. an inline virtual
+  /// member of a class template only ever called polymorphically).
+  void
+  InstantiateFunctionContractsOnUse(SourceLocation PointOfInstantiation,
+                                    FunctionDecl *Function);
+
+  /// Functions whose contracts are being instantiated right now.
+  ///
+  /// Contract instantiation re-enters itself: substituting a predicate
+  /// odr-uses the functions it calls, and those may have contracts of their
+  /// own.  Two predicates that call each other therefore form a genuine cycle,
+  /// which this breaks -- the inner request returns without doing anything,
+  /// and the outer one it is already inside finishes the job.
+  llvm::SmallPtrSet<const FunctionDecl *, 4> ContractInstantiationsInProgress;
+
+  ///@}
+
+  //
+  //
+  // -------------------------------------------------------------------------
+  //
+  //
+
   /// \name C++ Scope Specifiers
   /// Implementations are in SemaCXXScopeSpec.cpp
   ///@{

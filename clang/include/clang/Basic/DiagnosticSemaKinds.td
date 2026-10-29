@@ -8183,6 +8183,9 @@ def err_typecheck_assign_const_method
 def note_typecheck_assign_const_method
     : Note<"member function %q0 is declared const here">;
 
+def err_typecheck_assign_constified : Error<
+    "cannot assign to %select{variable %1|non-static data member}0 because it is considered 'const' inside of a contract">;
+
 def warn_unsigned_always_true_comparison : Warning<
   "result of comparison of %select{%3|unsigned expression}0 %2 "
   "%select{unsigned expression|%3}0 is always %4">,
@@ -11669,7 +11672,7 @@ def warn_duplicate_attribute : Warning<
 def err_duplicate_attribute
     : Error<"attribute %0 is already applied with different arguments">;
 def err_disallowed_duplicate_attribute : Error<
-  "attribute %0 cannot appear more than once on a declaration">;
+  "attribute %0 cannot appear more than once on a %select{declaration|contract assertion}1">;
 
 def warn_sync_fetch_and_nand_semantics_change : Warning<
   "the semantics of this intrinsic changed with GCC "
@@ -13170,6 +13173,97 @@ def warn_coroutine_type_aware_allocator_ignored : Warning <
   "type aware %0 will not be used for coroutine allocation">,
   InGroup<CoroTypeAwareAllocationFunction>;
 } // end of coroutines issue category
+
+def select_contract_kind : TextSubstitution<
+  "%select{pre|post|contract_assert}0">;
+
+let CategoryName = "Contract Issue" in {
+def err_contract_on_deleted_or_defaulted : Error<
+  "%select{deleted function %1|function %1 defaulted on its first "
+  "declaration}0 cannot have a function-contract-specifier">;
+def err_contract_violation_handler_invalid : Error<
+  "%select{"
+  "'::handle_contract_violation' must not be declared 'inline'|"
+  "'::handle_contract_violation' must have C++ language linkage|"
+  "'::handle_contract_violation' must be attached to the global module|"
+  "'::handle_contract_violation' must return 'void'|"
+  "'::handle_contract_violation' must have a single parameter of type "
+  "'const std::contracts::contract_violation&'|"
+  "parameter of '::handle_contract_violation' must be an lvalue reference to "
+  "'const std::contracts::contract_violation'|"
+  "parameter of '::handle_contract_violation' must be a reference to "
+  "'const std::contracts::contract_violation'|"
+  "parameter of '::handle_contract_violation' must be of type "
+  "'const std::contracts::contract_violation&'|"
+  "'::handle_contract_violation' must not be deleted}0">;
+
+def err_contract_result_name_shadows_param : Error<
+  "declaration of result name %0 shadows parameter">;
+def err_contract_result_name_void_return : Error<
+  "result name %0 cannot appear in a postcondition for a function with a "
+  "void return type">;
+def err_contract_result_name_not_allowed : Error<
+  "result name %0 not allowed outside of a postcondition">;
+
+def err_constexpr_contract_failure : Error<
+  "contract failed during execution of constexpr function%select{|: %1}0">;
+def warn_constexpr_contract_failure : Warning<
+    "contract failed during execution of constexpr function%select{|: %1}0">,
+    InGroup<ContractViolation>;
+
+def err_contract_constant_initialization_failed : Error<
+    "initialization of constant-initialized variable failed">;
+def note_initialization_changed_contract_semantic : Note<
+    "initializer is constant when evaluated with 'ignore' contract evaluation semantic">;
+
+// Redeclaration of contract attributes
+def err_function_different_contract_seq : Error<
+  "%select{function|method}0 %select{redeclaration|out-of-line definition}0 differs in contract specifier sequence">;
+def note_contract_spec_seq_arity_mismatch : Note<
+  "previously declared %select{with additional|with fewer|without}0 contracts here%select{ (%1 vs %2)| (%1 vs %2)|}0">;
+
+def note_mismatched_contract : Note<
+  "in contract specified here">;
+def note_previous_contracts : Note<
+  "contract previously specified %select{"
+  "as '%sub{select_contract_kind}1'"
+  "|%select{without|with}2 result name"
+  "|with a non-equivalent condition"
+  "|with different captures"
+  "|with a non-equivalent requires clause"
+  "|with a different diagnostic message"
+  "|with a different assertion-control label}0">;
+
+def err_contract_postcondition_parameter_type_invalid : Error<
+    "parameter %0 referenced in contract postcondition %select{cannot have an array type|cannot have a function type|must be declared const}1">;
+def note_contract_postcondition_parameter_use : Note<
+    "odr-used in a postcondition here">;
+def err_contract_coroutine_postcondition_param : Error<
+    "parameter %0 is odr-used in a postcondition of a coroutine">;
+def note_contract_coroutine_postcondition_param : Note<
+    "a coroutine copies its parameters at the beginning of the replacement "
+    "body, so a postcondition cannot name one; consider a reference "
+    "parameter">;
+
+def err_contract_result_name_deduced_non_definition : Error<
+  "result name %0 cannot appear in a postcondition for a function "
+  "declaration with a deduced return type unless it is a definition">;
+def note_contract_function_return_type : Note<
+    "function return type declared here">;
+
+def note_contract_context : Note<
+  "within contract context introduced here">;
+def note_cxx_this_const_in_contract_introduced_here : Note<
+  "'this' is 'const' within contract introduced here">;
+def err_keyword_not_allowed_in_contract : Error<
+    "'%0' cannot be used inside a contract">;
+
+
+def err_contract_member_access_without_object : Error<
+  "cannot access non-static member %0 in the "
+  "%select{precondition of a constructor|postcondition of a destructor|"
+  "postcondition capture initializer of a constructor}1 "
+  "because no object is within its lifetime there">;
 
 let CategoryName = "Documentation Issue" in {
 def warn_not_a_doxygen_trailing_member_comment : Warning<
