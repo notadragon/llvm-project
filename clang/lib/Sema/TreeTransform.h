@@ -9460,6 +9460,17 @@ StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
 
   // A satisfied requires-clause is kept as substituted, or as `true` where an
   // operand the check never needed (one after a settled || or &&) cannot be.
+  Expr *RequiresClause = nullptr;
+  if (S->hasRequiresClause()) {
+    Sema::SFINAETrap Trap(SemaRef);
+    ExprResult RCRes = getDerived().TransformExpr(S->getRequiresClause());
+    if (RCRes.isInvalid() || !RCRes.get() || Trap.hasErrorOccurred())
+      RequiresClause = new (SemaRef.Context) CXXBoolLiteralExpr(
+          true, SemaRef.Context.BoolTy, S->getRequiresClause()->getBeginLoc());
+    else
+      RequiresClause = RCRes.get();
+  }
+
   StmtResult Result = getDerived().RebuildContractStmt(
       S->getContractKind(), S->getKeywordLoc(), Cond,
       cast_or_null<DeclStmt>(NewResultName.get()), Message, Label, Captures,

@@ -1,0 +1,4 @@
+[
+  {"match": {"namespace": "obs", "caller": false}, "output": {"semantic": "observe"}},
+  {"match": {"namespace": "enf", "caller": false}, "output": {"semantic": "enforce"}}
+]
