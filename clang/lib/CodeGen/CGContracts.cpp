@@ -640,6 +640,99 @@ void CodeGenFunction::DiagnoseCallerSideProvingContracts(const FunctionDecl *FD,
   ContractCallObject = SavedObject;
 }
 
+const Expr *CodeGenModule::getContractImplicitCallSite(const void *Key,
+                                                       SourceLocation Loc) {
+  const Expr *&Site = ContractImplicitCallSites[Key];
+  if (!Site)
+    Site = new (getContext())
+        OpaqueValueExpr(Loc, getContext().VoidTy, VK_PRValue);
+  return Site;
+}
+
+void CodeGenFunction::noteContractDestroySite(Address Addr, const Expr *Site) {
+  if (getLangOpts().ContractsP4405 && Addr.isValid())
+    ContractDestroySites[Addr.getBasePointer()] = Site;
+}
+
+void CodeGenFunction::noteContractDestroySite(Address Addr,
+                                              const VarDecl *Var) {
+  if (!getLangOpts().ContractsP4405)
+    return;
+  const auto *RD = Var->getType()->getAsCXXRecordDecl();
+  const CXXDestructorDecl *DD = RD ? RD->getDestructor() : nullptr;
+  if (!DD || llvm::none_of(DD->redecls(), [](const FunctionDecl *R) {
+        return R->hasContracts();
+      }))
+    return;
+  noteContractDestroySite(
+      Addr, CGM.getContractImplicitCallSite(Var, Var->getLocation()));
+}
+
+void CodeGenFunction::DiagnoseImplicitDtorProvingContracts(
+    const CXXDestructorDecl *DD, Address This, const Expr *Site) {
+  if (!getLangOpts().ContractsP4405 || !DD)
+    return;
+  bool HasContracts = false;
+  for (const FunctionDecl *R : DD->redecls())
+    HasContracts |= R->hasContracts();
+  // A destructor variant calling another runs one destructor, not a second.
+  if (!HasContracts || (CurGD.getDecl() &&
+                        CurGD.getDecl()->getCanonicalDecl() ==
+                            DD->getCanonicalDecl()))
+    return;
+  if (!Site) {
+    auto It = ContractDestroySites.find(This.getBasePointer());
+    if (It != ContractDestroySites.end())
+      Site = It->second;
+  }
+  if (!Site)
+    Site = getContractFallbackDestroySite();
+  DiagnoseCallerSideProvingContracts(DD, Site, This.emitRawPointer(*this));
+}
+
+const Expr *CodeGenFunction::getContractFallbackDestroySite() {
+  // A member or a base destroyed by the function being emitted, an array
+  // element, an object whose destruction no expression shows: diagnosed at
+  // the end of that function.
+  SourceLocation Loc =
+      CurCodeDecl ? CurCodeDecl->getLocation() : SourceLocation();
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl))
+    if (const Stmt *Body = FD->getBody())
+      Loc = Body->getEndLoc();
+  return CGM.getContractImplicitCallSite(CurCodeDecl, Loc);
+}
+
+void CodeGenFunction::DiagnosePartialAggregateDtorProvingContracts(
+    QualType Ty, Address Addr) {
+  if (!getLangOpts().ContractsP4405 || !HaveInsertPoint() ||
+      Ty.isDestructedType() != QualType::DK_cxx_destructor)
+    return;
+  const auto *RD = getContext().getBaseElementType(Ty)->getAsCXXRecordDecl();
+  if (!RD)
+    return;
+  // Where the cleanup itself would place it, so that the evaluation is the
+  // same one when the cleanup is emitted too: an array is destroyed element
+  // by element, at addresses no expression shows.
+  DiagnoseImplicitDtorProvingContracts(
+      RD->getDestructor(), Addr,
+      getContext().getAsArrayType(Ty) ? getContractFallbackDestroySite()
+                                      : nullptr);
+}
+
+bool CodeGenFunction::isContractAnalyzedHere(const ContractStmt &S) const {
+  if (InContractInterfaceEvaluation)
+    return false;
+  switch (S.getContractKind()) {
+  case ContractKind::Pre:
+    return !getLangOpts().CPlusPlus;
+  case ContractKind::Post:
+  case ContractKind::Assert:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Build a synthetic try/catch whose sole handler is a catch-all with an empty
 // body.  The empty bodies are placeholders: this node is only used to drive the
 // EH-scope machinery (EnterCXXTryStmt / ExitCXXTryStmtWithCatchIR).  The
@@ -1949,6 +2042,13 @@ void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
       Builder.CreateBr(ContinueBlock);
     return;
   }
+
+  // D4405: a runtime evaluation is never prove or diagnose, which apply to
+  // the analysis evaluation only (EmitContractStmtAsFullStmt and
+  // DiagnoseCallerSideProvingContracts); a dynamic selection's table records
+  // them as ignore.
+  assert(!isProvingContractSemantic(Semantic) &&
+         "a runtime evaluation with prove or diagnose");
 
   const auto Style = [&]() {
     switch (Semantic) {

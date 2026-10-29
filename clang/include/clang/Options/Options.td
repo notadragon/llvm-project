@@ -1840,6 +1840,18 @@ def fcontract_evaluation_semantic_EQ : Joined<["-"], "fcontract-evaluation-seman
   NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce", "Assume", "NoexceptEnforce", "NoexceptObserve", "Prove", "Diagnose"]>,
   MarshallingInfoEnum<LangOpts<"ContractOpts.DefaultSemantic">, "Enforce">;
 
+// D4405: the semantic of the analysis evaluation of every contract assertion,
+// an entry {"match": {"analysis": true}, "output": {"semantic": S}} after the
+// configuration sources (ContractOptions::initConfig).
+def fcontract_analysis_semantic_EQ : Joined<["-"], "fcontract-analysis-semantic=">,
+  HelpText<"Select the semantic of the analysis evaluation of every contract "
+           "assertion. The default value is 'ignore'.">,
+  Values<"ignore,diagnose,prove">,
+  Visibility<[ClangOption, CC1Option]>,
+  NormalizedValuesScope<"LangOptions::ContractEvaluationSemantic">,
+  NormalizedValues<["Ignore", "Diagnose", "Prove"]>,
+  MarshallingInfoEnum<LangOpts<"ContractOpts.AnalysisSemantic">, "Ignore">;
+
 def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Set the evaluation semantic for contracts in a specific group. "

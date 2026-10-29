@@ -1,0 +1,10 @@
+[
+  {"match": {"analysis": "yes"}, "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "caller": true}, "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "caller": false}, "output": {"semantic": "prove"}},
+  {"match": {"analysis": true}, "output": {"semantic": "prove", "dynamic": {"name": "sel"}}},
+  {"match": {"analysis": true}, "output": {"semantic": "enforce"}},
+  {"match": {"analysis": true}, "output": {"semantic": "assume"}},
+  {"match": {"analysis": false, "caller": true}, "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true, "kind": "pre"}, "output": {"semantic": "ignore"}}
+]

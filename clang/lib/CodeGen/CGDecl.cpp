@@ -2228,6 +2228,8 @@ void CodeGenFunction::emitAutoVarTypeCleanup(
 
   const VarDecl *var = emission.Variable;
   QualType type = var->getType();
+  // D4405: its destructor call is diagnosed at the variable.
+  noteContractDestroySite(addr, var);
 
   CleanupKind cleanupKind = NormalAndEHCleanup;
   CodeGenFunction::Destroyer *destroyer = nullptr;

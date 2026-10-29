@@ -1,0 +1,4 @@
+[
+  {"match": {"analysis": true}, "output": {"semantic": "prove"}},
+  {"output": {"semantic": "enforce"}}
+]

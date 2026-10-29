@@ -13188,6 +13188,21 @@ def err_contract_no_valid_semantic : Error<
 def err_contract_compute_semantic_disallowed : Error<
   "compute_semantic result is not in the allowed evaluation semantics of "
   "assertion-control label of type %0">;
+def err_contract_analysis_semantic_invalid : Error<
+  "analysis_semantic result of assertion-control label of type %0 is not "
+  "'ignore', 'diagnose' or 'prove'">, NoSFINAE;
+def note_contract_precondition_here : Note<"precondition here">;
+def err_contract_address_unproven : Error<
+  "%select{contract assertion cannot be proven|contract predicate is always "
+  "false}0 for a call through the address of %1">;
+def warn_contract_address_unproven : Warning<
+  "%select{contract assertion cannot be proven|contract predicate is always "
+  "false}0 for a call through the address of %1">,
+  InGroup<ContractUnproven>;
+def note_contract_static_destructor_address : Note<
+  "%select{|a temporary lifetime-extended by }2%0, of %select{static|thread}1 "
+  "storage duration, is destroyed by a call through the address of its "
+  "destructor">;
 def err_contract_violation_handler_invalid : Error<
   "%select{"
   "'::handle_contract_violation' must not be declared 'inline'|"

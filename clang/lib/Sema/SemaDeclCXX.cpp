@@ -387,6 +387,12 @@ Sema::ActOnParamDefaultArgument(Decl *param, SourceLocation EqualLoc,
 
   DefaultArg = Result.getAs<Expr>();
 
+  // D4405: a default argument that takes the address of a function is
+  // diagnosed where it is written, where its semantic constraints are
+  // checked ([dcl.fct.default]); a template's, as it is instantiated.
+  if (!getCurScope() || getTemplateDepth(getCurScope()) == 0)
+    CheckContractAddressTaken(DefaultArg);
+
   // Check that the default argument is well-formed
   CheckDefaultArgumentVisitor DefaultArgChecker(*this, DefaultArg);
   if (DefaultArgChecker.Visit(DefaultArg))
@@ -16673,6 +16679,8 @@ void Sema::FinalizeVarWithDestructor(VarDecl *VD, CXXRecordDecl *ClassDecl) {
 
   if (!VD->hasGlobalStorage() || !VD->needsDestruction(Context))
     return;
+
+  CheckContractStaticDestructor(VD, Destructor); // D4405
 
   // Emit warning for non-trivial dtor in global scope (a real global,
   // class-static, function-static).

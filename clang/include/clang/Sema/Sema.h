@@ -9153,6 +9153,22 @@ public:
     return ActOnFinishFullExpr(
         Expr, Expr ? Expr->getExprLoc() : SourceLocation(), DiscardedValue);
   }
+
+  /// D4405 (SemaContract.cpp): diagnose each function whose address the
+  /// full-expression \p FullExpr takes and which has a precondition that
+  /// calls through the address need proven (its labels allow no runtime
+  /// semantic) and that folding does not prove.
+  void CheckContractAddressTaken(Expr *FullExpr);
+  /// The expressions CheckContractAddressTaken diagnosed, each once.
+  llvm::SmallPtrSet<const Expr *, 4> ContractAddressTakenDiagnosed;
+  /// D4405 (SemaContract.cpp): the definition of \p VD, an object of static
+  /// or thread storage duration destroyed by \p Dtor, takes its address.
+  void CheckContractStaticDestructor(const VarDecl *VD,
+                                     const CXXDestructorDecl *Dtor);
+  /// D4405 (SemaContract.cpp): the same for \p MTE, a temporary just
+  /// lifetime-extended, if that gives it static or thread storage duration.
+  void CheckContractStaticTemporary(const MaterializeTemporaryExpr *MTE);
+
   ExprResult ActOnFinishFullExpr(Expr *Expr, SourceLocation CC,
                                  bool DiscardedValue, bool IsConstexpr = false,
                                  bool IsTemplateArgument = false);

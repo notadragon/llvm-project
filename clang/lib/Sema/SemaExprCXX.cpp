@@ -7931,6 +7931,7 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
     return ExprError();
 
   CheckCompletedExpr(FullExpr.get(), CC, IsConstexpr);
+  CheckContractAddressTaken(FullExpr.get()); // D4405
 
   // At the end of this full expression (which could be a deeply nested
   // lambda), if there is a potential capture within the nested lambda,

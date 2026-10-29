@@ -1,0 +1,4 @@
+[
+  {"match": {"group": "required", "analysis": true},
+   "output": {"semantic": "prove"}}
+]

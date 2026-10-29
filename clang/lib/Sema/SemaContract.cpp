@@ -914,6 +914,55 @@ static std::optional<int64_t> callLabelMethod(Sema &S, Expr *LabelExpr,
   return Eval.Val.getInt().getExtValue();
 }
 
+/// D4405 ("P3400R5 Analysis Evaluation Configuration"): the semantic the
+/// label's analysis_semantic facet gives the analysis evaluation, or ignore
+/// when the label has none: label.analysis_semantic(), called on the const
+/// label with no argument, converted implicitly to
+/// std::contracts::evaluation_semantic (analysis_semantic_label).  A member
+/// that is inaccessible, cannot be called that way or whose result does not
+/// convert is no facet.  The facet must be a constant expression whose value
+/// is ignore, diagnose or prove; otherwise the program is ill-formed,
+/// diagnosed at \p Loc, and ignore is returned.
+static ContractEvaluationSemantic
+labelAnalysisSemantic(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                      const CXXRecordDecl *RD, SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+  StringRef MethodName = getLabelFacetName(LabelFacet::AnalysisSemantic);
+  // As in callLabelMethod: the trap covers only the construction of the call.
+  Sema::SFINAETrap Trap(S, /*WithAccessChecking=*/true);
+  LookupResult R = makeFacetLookup(S, LabelFacet::AnalysisSemantic, Loc);
+  if (!lookupFacetMember(S, RD, LabelTy, R))
+    return CES::Ignore;
+  ExprResult MemberRef = buildFacetMemberRef(S, LabelExpr, LabelTy, R, Loc);
+  if (MemberRef.isInvalid())
+    return CES::Ignore;
+  QualType ES = getStdContractsTagType(S, "evaluation_semantic", Loc);
+  if (ES.isNull() || !ES->isEnumeralType())
+    return CES::Ignore;
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc, {},
+                                    Loc, /*ExecConfig=*/nullptr);
+  if (Call.isInvalid())
+    return CES::Ignore;
+  // The concept's { t.analysis_semantic() } -> convertible_to<...>.
+  ExprResult Conv =
+      S.PerformImplicitConversion(Call.get(), ES, AssignmentAction::Converting);
+  if (Conv.isInvalid() || Trap.hasErrorOccurred())
+    return CES::Ignore;
+
+  Expr::EvalResult Eval;
+  if (!evaluateFacetConstant(S, Conv.get(), Eval, MethodName, LabelTy, Loc) ||
+      !Eval.Val.isInt())
+    return CES::Ignore;
+  int64_t V = Eval.Val.getInt().getExtValue();
+  if (V == static_cast<int64_t>(CES::Ignore) ||
+      V == static_cast<int64_t>(CES::Diagnose) ||
+      V == static_cast<int64_t>(CES::Prove))
+    return static_cast<CES>(V);
+  S.Diag(Loc, diag::err_contract_analysis_semantic_invalid)
+      << LabelTy.getUnqualifiedType();
+  return CES::Ignore;
+}
+
 /// Call label.method_name(const char* arg), convert the result to const char*
 /// as the concept does, constant-evaluate it and read the string it points to
 /// (from any base, offset included).  std::nullopt when the facet is absent or
@@ -4320,3 +4369,244 @@ ExprResult Sema::BuildContractControlObject(SourceLocation Loc, Expr *E) {
 // D4405: taking the address of a function whose preconditions must be proven
 //===----------------------------------------------------------------------===//
 
+/// D4405: what folding \p Pred, a precondition's predicate, with nothing
+/// known of the arguments gives -- the fold strategy's answer for a query
+/// with no call (CodeGen/ContractProveFold.cpp), and nothing when that
+/// strategy is off (-fno-contracts-prove-fold).
+enum class AddressTakenProof { Proven, Unproven, AlwaysFalse };
+static AddressTakenProof proveForAddressTaken(Sema &S, const Expr *Pred) {
+  if (!S.getLangOpts().ContractsProveFold || Pred->isValueDependent())
+    return AddressTakenProof::Unproven;
+  bool Value;
+  Expr::EvalStatus Status;
+  if (!Pred->EvaluateAsBooleanConditionInCall(Value, Status, S.Context) ||
+      Status.HasUndefinedBehavior)
+    return AddressTakenProof::Unproven;
+  // As in the fold strategy: a predicate that may have side effects of its
+  // own is not proven by its value.
+  if (Status.HasSideEffects && Pred->HasSideEffects(S.Context))
+    return AddressTakenProof::Unproven;
+  return Value ? AddressTakenProof::Proven : AddressTakenProof::AlwaysFalse;
+}
+
+/// D4405 ("Taking the Address of a Function"): \p FD's address is taken at
+/// \p Loc.  A call through the result cannot identify \p FD, so it has no
+/// analysis evaluation, and a precondition of \p FD can be proven for it
+/// only if it is tautological.  How hard to try, and when to report one that
+/// is not, is the implementation's: this one diagnoses only where it is
+/// known that calls through the address need a proof -- a precondition
+/// whose labels allow no runtime semantic (always_prove, always_diagnose),
+/// so that its analysis evaluation is prove or diagnose in every
+/// translation unit and nothing checks it at run time.  Unless folding with
+/// nothing known of the arguments proves it, that is an error for prove and
+/// a -Wcontract-unproven warning for diagnose, saying the precondition
+/// cannot be proven (or is always false) for a call through the address;
+/// the first unproven prove precondition is reported, else the first
+/// diagnose one, with a note at it.  Taking the address is not itself
+/// ill-formed.  When only the configuration selects prove or diagnose,
+/// nothing is diagnosed: this translation unit's configuration does not
+/// determine what calls through the address are.
+/// \p Static is the object of static or thread storage duration whose
+/// definition takes the address of its destructor \p FD, if that is the use;
+/// \p Temporary, that it is the variable a temporary destroyed by \p FD is
+/// lifetime-extended by.
+static void diagnoseContractAddressTaken(Sema &S, const FunctionDecl *FD,
+                                         SourceLocation Loc, SourceRange Range,
+                                         const VarDecl *Static,
+                                         bool Temporary = false) {
+  const FunctionDecl *WithContracts = nullptr;
+  for (const FunctionDecl *R : FD->redecls())
+    if (R->hasContracts()) {
+      WithContracts = R;
+      break;
+    }
+  if (!WithContracts)
+    return;
+  const LangOptions &LO = S.getLangOpts();
+  unsigned Gate = gatedContractSemanticsMask(
+      LO.ContractOpts.AllowAssume, LO.ContractsP4298, LO.ContractsP4405);
+  const ContractStmt *Unproven = nullptr;
+  bool UnprovenProve = false, UnprovenFalse = false;
+  for (const ContractStmt *CS : WithContracts->getContracts()->contracts()) {
+    if (CS->getContractKind() != ContractKind::Pre || CS->isInvalid() ||
+        CS->getCond()->isValueDependent())
+      continue;
+    ContractEvaluationSemantic A = CS->ensureAnalysisSemantic(
+        S.Context, WithContracts->getDeclContext());
+    if (!isProvingContractSemantic(A))
+      continue;
+    // Only a precondition whose labels allow no runtime semantic.
+    if (CS->getAllowedMask() & Gate & ~ProvingContractSemanticsMask)
+      continue;
+    bool IsProve = A == ContractEvaluationSemantic::Prove;
+    if (Unproven && (UnprovenProve || !IsProve))
+      continue;
+    AddressTakenProof P = proveForAddressTaken(S, CS->getCond());
+    if (P == AddressTakenProof::Proven)
+      continue;
+    Unproven = CS;
+    UnprovenProve = IsProve;
+    UnprovenFalse = P == AddressTakenProof::AlwaysFalse;
+  }
+  if (!Unproven)
+    return;
+  S.Diag(Loc, UnprovenProve ? diag::err_contract_address_unproven
+                            : diag::warn_contract_address_unproven)
+      << UnprovenFalse << FD << Range;
+  // The notes follow the diagnostic, so they are dropped with a silenced
+  // warning.
+  if (Static)
+    S.Diag(Loc, diag::note_contract_static_destructor_address)
+        << Static << (Static->getTLSKind() != VarDecl::TLS_None)
+        << Temporary;
+  S.Diag(Unproven->getKeywordLoc(), diag::note_contract_precondition_here)
+      << Unproven->getCond()->getSourceRange();
+}
+
+/// \p Use, an expression taking the address of \p FD, each once.
+static void diagnoseContractAddressTaken(Sema &S, const FunctionDecl *FD,
+                                         const Expr *Use) {
+  if (S.ContractAddressTakenDiagnosed.insert(Use).second)
+    diagnoseContractAddressTaken(S, FD, Use->getExprLoc(),
+                                 Use->getSourceRange(), /*Static=*/nullptr);
+}
+
+void Sema::CheckContractStaticDestructor(const VarDecl *VD,
+                                         const CXXDestructorDecl *Dtor) {
+  // D4405R0 section 2.1 (notadragon_wg21 DECISIONS.md E146 (a)): the runtime
+  // destroys an object of static or thread storage duration by a call
+  // through its destructor's address, so the definition is treated as
+  // taking that address.  A template is checked as it is instantiated.
+  if (getLangOpts().ContractsP4405 && !VD->isTemplated())
+    diagnoseContractAddressTaken(*this, Dtor, VD->getLocation(),
+                                 VD->getSourceRange(), VD);
+}
+
+void Sema::CheckContractStaticTemporary(const MaterializeTemporaryExpr *MTE) {
+  // D4405R0 section 2.1 (notadragon_wg21 DECISIONS.md E147 (a)): a temporary
+  // whose lifetime is extended to static or thread storage duration is
+  // destroyed as an object defined with it is, through its destructor's
+  // address (which CodeGen registers, unless the variable is never
+  // destroyed).  A template is checked as it is instantiated.
+  if (!getLangOpts().ContractsP4405 ||
+      (MTE->getStorageDuration() != SD_Static &&
+       MTE->getStorageDuration() != SD_Thread))
+    return;
+  const auto *VD = dyn_cast_if_present<VarDecl>(MTE->getExtendingDecl());
+  if (!VD || VD->isTemplated() || VD->isNoDestroy(Context) ||
+      MTE->getType()->isDependentType())
+    return;
+  const CXXRecordDecl *RD =
+      MTE->getType()->getBaseElementTypeUnsafe()->getAsCXXRecordDecl();
+  if (!RD || RD->hasTrivialDestructor())
+    return;
+  // A destructor with contract assertions is user-declared, so declared.
+  const CXXDestructorDecl *Dtor = RD->getDestructor();
+  if (Dtor && ContractAddressTakenDiagnosed.insert(MTE).second)
+    diagnoseContractAddressTaken(*this, Dtor, MTE->getExprLoc(),
+                                 MTE->getSourceRange(), VD,
+                                 /*Temporary=*/true);
+}
+
+/// The function call operator a lambda's conversion function \p Conv converts
+/// the closure to a pointer to (the specialization a generic lambda's
+/// converts to), if it is one.
+static const FunctionDecl *
+lambdaConversionCallOperator(const CXXConversionDecl *Conv) {
+  if (!isLambdaConversionOperator(const_cast<CXXConversionDecl *>(Conv)))
+    return nullptr;
+  const CXXRecordDecl *Lambda = Conv->getParent();
+  if (!Conv->isTemplateInstantiation() || !Lambda->isGenericLambda())
+    return Lambda->getLambdaCallOperator();
+  const TemplateArgumentList *Args = Conv->getTemplateSpecializationArgs();
+  FunctionTemplateDecl *CallOpTemplate =
+      Lambda->getLambdaCallOperator()->getDescribedFunctionTemplate();
+  if (!Args || !CallOpTemplate)
+    return nullptr;
+  llvm::FoldingSetInsertToken InsertToken;
+  return CallOpTemplate->findSpecialization(Args->asArray(), InsertToken);
+}
+
+void Sema::CheckContractAddressTaken(Expr *FullExpr) {
+  // A template is checked as it is instantiated; an unevaluated operand
+  // takes no address.  C has no address-of rule (notadragon_wg21
+  // DECISIONS.md E143 (a)).
+  if (!FullExpr || !getLangOpts().ContractsP4405 || !getLangOpts().CPlusPlus ||
+      CurContext->isDependentContext() || isUnevaluatedContext())
+    return;
+  // A lambda's conversion function returns the address its conversion takes
+  // (DefineImplicitLambdaToFunctionPointerConversion).
+  if (auto *Conv = dyn_cast<CXXConversionDecl>(CurContext);
+      Conv && isLambdaConversionOperator(Conv))
+    return;
+  // Every function named other than as the function a call calls is one
+  // whose address is taken: the unary &, a function-to-pointer conversion, a
+  // pointer to member function, a reference bound to it.  A virtual call is
+  // a call of the function it names.  Converting a closure to a pointer to
+  // function takes the address of its call operator.  The full-expressions
+  // within a lambda's body, a statement expression or a block were checked
+  // on their own, and a default argument where it is written
+  // (ActOnParamDefaultArgument) or instantiated.
+  SmallVector<const Stmt *, 32> Work{FullExpr};
+  auto PushCallee = [&](const Expr *Callee) {
+    const Expr *E = Callee->IgnoreParens();
+    if (const auto *ICE = dyn_cast<ImplicitCastExpr>(E))
+      if (ICE->getCastKind() == CK_FunctionToPointerDecay ||
+          ICE->getCastKind() == CK_BuiltinFnToFnPtr)
+        E = ICE->getSubExpr()->IgnoreParens();
+    if (isa<DeclRefExpr>(E))
+      return;
+    if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+      Work.push_back(ME->getBase());
+      return;
+    }
+    Work.push_back(Callee);
+  };
+  while (!Work.empty()) {
+    const Stmt *St = Work.pop_back_val();
+    const auto *E = dyn_cast_or_null<Expr>(St);
+    if (!St || (E && E->isInstantiationDependent()))
+      continue;
+    if (isa<UnaryExprOrTypeTraitExpr, CXXNoexceptExpr, RequiresExpr,
+            StmtExpr, BlockExpr, CXXDefaultArgExpr, CXXDefaultInitExpr>(St))
+      continue;
+    if (const auto *TE = dyn_cast<CXXTypeidExpr>(St);
+        TE && !TE->isPotentiallyEvaluated())
+      continue;
+    if (const auto *LE = dyn_cast<LambdaExpr>(St)) {
+      for (const Expr *Init : LE->capture_inits())
+        Work.push_back(Init);
+      continue;
+    }
+    if (const auto *GS = dyn_cast<GenericSelectionExpr>(St)) {
+      for (const Expr *A : GS->getAssocExprs())
+        Work.push_back(A);
+      continue;
+    }
+    if (const auto *OVE = dyn_cast<OpaqueValueExpr>(St)) {
+      Work.push_back(OVE->getSourceExpr());
+      continue;
+    }
+    if (const auto *CE = dyn_cast<CallExpr>(St)) {
+      if (const auto *MCE = dyn_cast<CXXMemberCallExpr>(CE))
+        if (const auto *Conv =
+                dyn_cast_or_null<CXXConversionDecl>(MCE->getMethodDecl()))
+          if (const FunctionDecl *CallOp = lambdaConversionCallOperator(Conv))
+            diagnoseContractAddressTaken(*this, CallOp, CE);
+      PushCallee(CE->getCallee());
+      for (const Expr *Arg : CE->arguments())
+        Work.push_back(Arg);
+      continue;
+    }
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(St)) {
+      if (const auto *FD = dyn_cast<FunctionDecl>(DRE->getDecl()))
+        diagnoseContractAddressTaken(*this, FD, DRE);
+      continue;
+    }
+    if (const auto *ME = dyn_cast<MemberExpr>(St))
+      if (const auto *FD = dyn_cast<FunctionDecl>(ME->getMemberDecl()))
+        diagnoseContractAddressTaken(*this, FD, ME);
+    for (const Stmt *Child : St->children())
+      Work.push_back(Child);
+  }
+}

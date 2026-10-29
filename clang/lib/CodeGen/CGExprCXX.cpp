@@ -1295,6 +1295,7 @@ void CodeGenFunction::EmitNewArrayInitializer(
       NumElements = Builder.CreateSub(
           NumElements,
           llvm::ConstantInt::get(NumElements->getType(), InitListElements));
+    DiagnoseCallerSideProvingContracts(Ctor, CCE); // P4405, as for a call
     EmitCXXAggrConstructorCall(Ctor, NumElements, CurPtr, CCE,
                                /*NewPointerIsChecked*/ true,
                                CCE->requiresZeroInitialization());
@@ -2083,6 +2084,8 @@ static bool EmitObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
                 TryDevirtualizeDtorCall(DE, Dtor, CGF.CGM.getLangOpts())) {
           Dtor = DevirtualizedDtor;
         } else {
+          // D4405: the analysis evaluations of the destructor named.
+          CGF.DiagnoseImplicitDtorProvingContracts(Dtor, Ptr, DE);
           CGF.EmitVirtualDtorCallWithContracts(
               Dtor, Ptr.emitRawPointer(CGF), [&] {
                 CGF.CGM.getCXXABI().emitVirtualObjectDelete(CGF, DE, Ptr,
@@ -2100,6 +2103,7 @@ static bool EmitObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
   CGF.EHStack.pushCleanup<CallObjectDelete>(
       NormalAndEHCleanup, Ptr.emitRawPointer(CGF), OperatorDelete, ElementType);
 
+  CGF.noteContractDestroySite(Ptr, DE); // D4405
   if (Dtor)
     CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete,
                               /*ForVirtualBase=*/false,
