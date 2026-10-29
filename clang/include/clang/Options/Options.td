@@ -1926,6 +1926,12 @@ defm contracts_p4298 : BoolFOption<"contracts-p4298",
           "Enable P4298 noexcept_enforce and noexcept_observe evaluation semantics">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p4301 : BoolFOption<"contracts-p4301",
+  LangOpts<"ContractsP4301">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4301 contract_violation::report() ASan/UBSan diagnostic accessor">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p4405 : BoolFOption<"contracts-p4405",
   LangOpts<"ContractsP4405">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
