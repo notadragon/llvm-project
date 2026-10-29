@@ -180,6 +180,9 @@ extern const ContractProofStrategy ContractProveFoldStrategy;
 /// -fcontracts-prove-shadow (ContractProveShadow.cpp).
 extern const ContractProofStrategy ContractProveShadowStrategy;
 
+/// -fcontracts-prove-override (ContractProveOverride.cpp).
+extern const ContractProofStrategy ContractProveOverrideStrategy;
+
 } // namespace CodeGen
 } // namespace clang
 

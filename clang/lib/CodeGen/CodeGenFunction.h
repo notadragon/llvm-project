@@ -534,6 +534,22 @@ public:
   void emitContractShadowPremise(unsigned Id, const ContractStmt &S,
                                  const Expr *CallSite,
                                  const FunctionDecl *Callee);
+  /// D4405 (ContractProveOverride.cpp): at the entry of a virtual function's
+  /// definition, its override pairs' obligations at entry -- in an override
+  /// shadow, with the pair's premises -- and the snapshots their B::f
+  /// assertions read.
+  void emitContractOverrideEntry();
+  /// D4405: after the function's postconditions, with its result \p RV (null
+  /// if none, or returned in memory), the obligations its override pairs
+  /// make at each return.
+  void emitContractOverridePosts(llvm::Value *RV);
+  /// D4405: ahead of the evaluations of a virtual function's own
+  /// postcondition \p S, its override pairs' obligations of it.
+  void emitContractOverrideOwnPost(const ContractStmt &S);
+  /// D4405: whether this is an override shadow of a complete-object
+  /// destructor, which runs the whole destructor instead of calling the
+  /// base-object one (ContractProveOverride.cpp).
+  bool isContractOverrideWholeDestructor() const;
   /// D4405: whether the analysis evaluation of \p S is placed where \p S is
   /// emitted in this function -- the body of a function, for a postcondition
   /// or an assertion (in C, for a precondition too), and not a P3097 wrapper.

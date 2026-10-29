@@ -791,6 +791,9 @@ bool CodeGenFunction::structorVariantDelegates() const {
     case Dtor_VectorDeleting:
       return true;
     case Dtor_Complete:
+      // D4405: an override shadow runs the whole destructor.
+      if (isContractOverrideWholeDestructor())
+        return false;
       return !isa_and_nonnull<CXXTryStmt>(Dtor->getBody());
     default:
       return false;
@@ -1507,7 +1510,8 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
     // Enter the cleanup scopes for virtual bases.
     EnterDtorCleanups(Dtor, Dtor_Complete);
 
-    if (!isTryBody) {
+    // D4405: an override shadow runs the whole destructor.
+    if (!isTryBody && !isContractOverrideWholeDestructor()) {
       QualType ThisTy = Dtor->getFunctionObjectParameterType();
       EmitCXXDestructorCall(Dtor, Dtor_Base, /*ForVirtualBase=*/false,
                             /*Delegating=*/false, LoadCXXThisAddress(), ThisTy);

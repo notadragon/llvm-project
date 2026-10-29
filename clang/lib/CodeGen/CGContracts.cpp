@@ -1116,6 +1116,9 @@ void CodeGenFunction::EmitContractStmtAsFullStmt(const ContractStmt &S) {
   // shadow, whose real-code assumption (-fcontracts-prove-assume) then lets
   // the optimizers drop the check that follows.
   bool Analyzed = false;
+  // D4405: a virtual function's postcondition is analyzed first for each
+  // override pair, ahead of its own analysis evaluation.
+  emitContractOverrideOwnPost(S);
   if (isContractAnalyzedHere(S)) {
     ContractEvaluationSemantic Analysis =
         S.ensureAnalysisSemantic(getContext(), FnCtx);

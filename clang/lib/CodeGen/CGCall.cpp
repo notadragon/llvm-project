@@ -4625,6 +4625,13 @@ void CodeGenFunction::EmitFunctionEpilog(
 
 llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
   const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl);
+  // D4405: then the obligations of a virtual function's override pairs.
+  struct OverridePosts {
+    CodeGenFunction &CGF;
+    llvm::Value *&RV;
+    ~OverridePosts() { CGF.emitContractOverridePosts(RV); }
+  } OverridePostsAtExit{*this, RV};
+
   if (!FD || !FD->hasContracts() || structorVariantDelegates())
     return RV;
 

@@ -1713,6 +1713,9 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // Emit the standard function prologue.
   StartFunction(GD, ResTy, Fn, FnInfo, Args, Loc, BodyRange.getBegin());
 
+  // D4405: a virtual function's override pairs' obligations at entry.
+  emitContractOverrideEntry();
+
   // Emit preconditions and postcondition capture initializations in
   // lexical order (P3098: captures are initialized at function entry).  A
   // constructor or destructor variant that delegates to another evaluates

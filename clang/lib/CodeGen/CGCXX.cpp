@@ -31,6 +31,17 @@ using namespace CodeGen;
 
 /// Try to emit a base destructor as an alias to its primary
 /// base-class destructor.
+/// D4405: whether \p MD overrides, directly or indirectly, a function with
+/// contract assertions.
+static bool overridesDestructorWithContracts(const CXXMethodDecl *MD) {
+  for (const CXXMethodDecl *O : MD->overridden_methods())
+    if (llvm::any_of(O->redecls(),
+                     [](const FunctionDecl *R) { return R->hasContracts(); }) ||
+        overridesDestructorWithContracts(O))
+      return true;
+  return false;
+}
+
 bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   if (!getCodeGenOpts().CXXCtorDtorAliases)
     return true;
@@ -60,6 +71,12 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   // body, which an alias would drop.
   if (llvm::any_of(D->redecls(),
                    [](const FunctionDecl *R) { return R->hasContracts(); }))
+    return true;
+
+  // D4405: a virtual destructor overriding one with contract assertions is
+  // analyzed in its own base-object destructor (its override pairs).
+  if (getLangOpts().ContractsP4405 && getLangOpts().ContractsP3097 &&
+      overridesDestructorWithContracts(D))
     return true;
 
   const CXXRecordDecl *Class = D->getParent();

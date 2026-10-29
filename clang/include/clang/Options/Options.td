@@ -1944,6 +1944,12 @@ defm contracts_prove_shadow : BoolFOption<"contracts-prove-shadow",
           "When optimizing, prove the predicates of prove and diagnose evaluations in an optimized copy of each function holding one, never emitted (implied by -fcontracts-p4405)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_prove_override : BoolFOption<"contracts-prove-override",
+  LangOpts<"ContractsProveOverride">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "When optimizing, prove each virtual function's obligations for a call through each function it overrides in an optimized copy of it, never emitted, that takes that function's preconditions as given (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_prove_assume : BoolFOption<"contracts-prove-assume",
   LangOpts<"ContractsProveAssume">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],

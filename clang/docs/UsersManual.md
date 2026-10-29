@@ -4578,6 +4578,46 @@ expression makes the destruction non-constant.  The destructor calls the
 implementation generates for the elements of such an array are analyzed
 like any other call.
 
+:::{option} -fcontracts-prove-override
+
+* D4405's override shadows, a proving strategy implied by
+  `-fcontracts-p4405` (`-fno-contracts-prove-override` turns it off).  For
+  each function `B::f` that a virtual function `D::f` defined in the
+  translation unit overrides, directly or indirectly, the analysis
+  evaluations for a call through `B::f` -- of `D::f`'s preconditions at
+  entry, and at each return of `D::f`'s postconditions, ahead of their own
+  checks, and of `B::f`'s, after them -- are made in an *override shadow*:
+  a copy of `D::f`, optimized but never emitted, that takes `B::f`'s
+  preconditions as given, with `B::f`'s parameters `D::f`'s (a by-value
+  parameter `D::f` may modify read as it was at entry, as the call's own
+  check reads it), `this` the `B` subobject and a covariant result
+  converted to `B::f`'s return type.  Virtual destructors, implicitly
+  defined ones too, get override shadows like any other overrider; a base
+  class occurring as several subobjects gives one per subobject when
+  `B::f`'s contract assertions name `this`.  A postcondition with captures
+  is settled only by folding.  An unproven one is diagnosed at
+  `D::f`'s definition as "contract assertion cannot be proven for a call
+  through 'B::f'" (an error for `prove`, a `-Wcontract-unproven` warning
+  for `diagnose`), with a note at the predicate.  An override shadow for a
+  `B::f` with no contract assertions takes nothing as given, so `D::f`'s
+  preconditions must then hold for every argument.  A proof relying on a
+  precondition of `B::f` is sound only when its label allows nothing but
+  terminating semantics and `assume`, since the callers evaluate it, and
+  one relying on another analysis evaluation in `D::f` only when that is
+  proven soundly; `-Rcontract-proof` says "override shadow" for these.  No
+  override proof becomes an assumption: `D::f` also serves calls not made
+  through `B::f`.  Override shadows are made when proof shadows could be
+  (the module is optimized) and `D::f` can have one; a function the
+  translation unit does not emit, such as an inline overrider whose vtable
+  is emitted elsewhere, is not analyzed.
+* Without override shadows (the option off, or none can be made), the same
+  obligations are decided more cheaply: `D::f`'s preconditions must fold
+  to `true`, and `B::f`'s postconditions are obligations of `D::f`'s own at
+  each return, proven in its proof shadow with nothing given, read as in
+  an override shadow; `D::f`'s postconditions need nothing beyond their own
+  analysis evaluations.
+:::
+
 ### Controlling implementation limits
 
 :::{option} -fbracket-depth=N
