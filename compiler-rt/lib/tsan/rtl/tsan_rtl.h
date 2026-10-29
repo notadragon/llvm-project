@@ -496,6 +496,9 @@ void ForkBefore(ThreadState *thr, uptr pc);
 void ForkParentAfter(ThreadState *thr, uptr pc);
 void ForkChildAfter(ThreadState *thr, uptr pc, bool start_thread);
 
+// Makes a routed report's handler call deferred by OutputReport; no locks may
+// be held.
+void FlushPendingContractReport();
 void ReportRace(ThreadState *thr, RawShadow *shadow_mem, Shadow cur, Shadow old,
                 AccessType typ);
 bool OutputReport(ThreadState *thr, ScopedReport &srep);

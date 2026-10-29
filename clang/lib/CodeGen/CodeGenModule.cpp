@@ -4089,6 +4089,19 @@ void CodeGenModule::emitAsanContractSemanticDescriptor() {
                            "__asan_contract_semantic_pointer_subtract");
 }
 
+// ThreadSanitizer routing descriptor: a single whole-program check (data race)
+// with its own weak wire byte __tsan_contract_semantic, read by compiler-rt's
+// libtsan OutputReport.  Same wire encoding and emit-nothing-for-stock rule as
+// the ASan descriptor.
+void CodeGenModule::emitTsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+  emitContractRouteByteFor(*this, SanitizerKind::Thread,
+                           "__tsan_contract_semantic");
+}
+
 // The routed UBSan runtime checks, each with its slot in the weak
 // __ubsan_contract_semantic array.  The slots MUST stay in sync with the RUC_*
 // enum in compiler-rt's ubsan_diag.cpp.

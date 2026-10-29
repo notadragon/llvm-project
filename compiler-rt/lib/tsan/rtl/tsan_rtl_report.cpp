@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
@@ -47,6 +48,105 @@ bool OnReport(const ReportDesc *rep, bool suppressed) {
 SANITIZER_WEAK_DEFAULT_IMPL
 void __tsan_on_report(const ReportDesc *rep) {
   (void)rep;
+}
+
+// -------------------- P3100 contract-routing ------------------- {{{1
+//
+// The compiler emits a per-TU weak byte __tsan_contract_semantic when
+// -fcontracts-p3100 routes the thread (data-race) check to the C++
+// contract-violation handler.  Wire encoding (shared with ASan/UBSan):
+//   0 = stock         (routing off / symbol absent -> keep stock behavior)
+//   1 = observe       (call handler, then continue; the report is NOT counted,
+//                      so the process does not force a nonzero exit for it)
+//   2 = enforce       (call handler, then terminate)
+//   3 = quick_enforce (terminate WITHOUT calling the handler)
+// Declared weak so a non-p3100 program (no such symbol) reads 0 = stock and the
+// runtime keeps its existing behavior untouched.
+//
+// The handler is invoked from FlushPendingContractReport, on libtsan's
+// implicitly-noexcept report path, so a throwing handler can never propagate --
+// it would hit "exception escaping a noexcept function" and std::terminate()
+// below any user catch/RAII.  The compiler therefore only routes the
+// NON-throwing realizations here (noexcept_observe / noexcept_enforce, gated on
+// -fcontracts-p4298; quick_enforce terminates without the handler).
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __tsan_contract_semantic;
+
+static unsigned char TsanContractSemantic() {
+  if (&__tsan_contract_semantic == nullptr)
+    return kContractRouteStock;
+  return __tsan_contract_semantic;
+}
+
+// Lazy populator context: a concise, producer-owned description of the data
+// race, returned on demand (only if the handler calls
+// contract_violation::report()).  Unlike ASan, libtsan has no error-message
+// buffer sink to capture the full multi-line PrintReport text from.  The
+// routed sanitizer emits nothing itself -- the handler owns all output and
+// gets this description via report().
+struct TsanContractReportCtx {
+  const char *description;
+};
+
+// The report kinds that are undefined behaviour -- a data race, and a race
+// with a free or on a vptr -- are the ones the thread check routes; the others
+// (lock-order inversion, thread leak, mutex misuse, signal-handler hazards)
+// are diagnostics and stay on the stock path.  Returns the routed kind's
+// check name for the violation's comment and its report() description, or
+// false for a kind that is not routed.
+static bool TsanContractRoutedKind(ReportType typ, const char **comment,
+                                   const char **description) {
+  switch (typ) {
+    case ReportTypeRace:
+      *comment = "data-race";
+      *description = "ThreadSanitizer: data race";
+      return true;
+    case ReportTypeVptrRace:
+      *comment = "data-race";
+      *description =
+          "ThreadSanitizer: data race on vptr (ctor/dtor vs virtual call)";
+      return true;
+    case ReportTypeUseAfterFree:
+      *comment = "heap-use-after-free";
+      *description = "ThreadSanitizer: heap-use-after-free";
+      return true;
+    case ReportTypeVptrUseAfterFree:
+      *comment = "heap-use-after-free";
+      *description =
+          "ThreadSanitizer: heap-use-after-free (virtual call vs free)";
+      return true;
+    default:
+      return false;
+  }
+}
+
+static const char *TsanContractReportPopulate(const void *ctx_v) {
+  return static_cast<const TsanContractReportCtx *>(ctx_v)->description;
+}
+
+// A routed report's handler call, deferred until the reporting locks are
+// released.  OutputReport runs under ReportRace's slot, thread-registry and
+// report locks and with interceptors ignored, so a handler called there that
+// creates a thread (or otherwise needs the registry) deadlocks.  It records the
+// call here instead, and DoReportRace makes it once ReportRace has returned.
+struct TsanPendingContract {
+  const char *comment;
+  const char *description;
+  unsigned char route;  // kContractRouteStock: nothing pending
+};
+static THREADLOCAL TsanPendingContract tsan_pending_contract;
+
+void FlushPendingContractReport() {
+  TsanPendingContract pending = tsan_pending_contract;
+  if (pending.route == kContractRouteStock)
+    return;
+  tsan_pending_contract.route = kContractRouteStock;
+  TsanContractReportCtx report_ctx = {pending.description};
+  ContractReportPopulator report_populator = {&TsanContractReportPopulate,
+                                              &report_ctx};
+  __cxa_contract_violation_sanitizer(pending.comment, /*file=*/"", /*line=*/0,
+                                     pending.route, &report_populator);
+  if (pending.route == kContractRouteEnforce)
+    Die();  // noexcept_enforce: terminate; handler owns output
 }
 
 static void StackStripMain(SymbolizedStack *frames) {
@@ -700,6 +800,40 @@ bool OutputReport(ThreadState *thr, ScopedReport &srep) {
       return false;
     }
   }
+
+  // P3100 contract routing: when the thread check is routed to the contract
+  // handler, the handler owns ALL output -- libtsan prints nothing.  observe
+  // calls the handler and continues, and does NOT count the report (so the
+  // process does not force a nonzero exit at finalize for it); enforce calls
+  // the handler then terminates; quick_enforce terminates WITHOUT the handler.
+  // The routed path decides continue-vs-terminate purely from the wire byte,
+  // independent of TSAN_OPTIONS (halt_on_error).  When routing is off (stock)
+  // the code below is byte-for-byte unchanged.
+  {
+    const unsigned char route = TsanContractSemantic();
+    const char *comment, *description;
+    if (route != kContractRouteStock &&
+        TsanContractRoutedKind(rep->typ, &comment, &description)) {
+      const bool handler_linked =
+          (&__cxa_contract_violation_sanitizer != nullptr);
+      if (route == kContractRouteQuick) {
+        thr->current_report = nullptr;
+        Die();  // silent terminate: no handler, no output
+      }
+      if (handler_linked &&
+          (route == kContractRouteObserve || route == kContractRouteEnforce)) {
+        // The handler runs once the reporting locks are released: see
+        // FlushPendingContractReport.
+        tsan_pending_contract = {comment, description, route};
+        thr->current_report = nullptr;
+        return false;  // not counted -> no forced nonzero exit
+      }
+      // Defensive: routed but the handler entry point is not linked (should not
+      // happen for observe/enforce, since the compiler routes only when the
+      // contracts runtime is present) -- fall through to stock behavior.
+    }
+  }
+
   PrintReport(rep);
   __tsan_on_report(rep);
   atomic_fetch_add(&ctx->nreported, 1, memory_order_relaxed);
