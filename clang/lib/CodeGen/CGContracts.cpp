@@ -1393,6 +1393,35 @@ llvm::Value *CodeGenFunction::EmitImplicitSubstitutingGuard(
   return Result;
 }
 
+llvm::Value *CodeGenFunction::EmitImplicitArrayBoundsGuard(
+    llvm::Value *Idx, bool IdxSigned, llvm::Value *Bound, bool AllowEnd,
+    StringRef Group, StringRef Comment, SourceLocation Loc) {
+  // Resolve the semantic once for this index; assume leaves the raw index
+  // and emits no predicate.
+  ContractEvaluationSemantic Sem = resolveImplicitSemantic(Group, Loc);
+  if (Sem == ContractEvaluationSemantic::Assume)
+    return Idx;
+
+  // out_of_range predicate, mirroring EmitBoundsCheckImpl: widen the index and
+  // the (non-negative constant) bound to a common type and compare unsigned so
+  // a negative index is caught too.  For an element the valid range is
+  // [0,bound); where the one-past index is valid (AllowEnd), index == bound is
+  // allowed.
+  unsigned IdxBits = cast<llvm::IntegerType>(Idx->getType())->getBitWidth();
+  unsigned BoundBits = cast<llvm::IntegerType>(Bound->getType())->getBitWidth();
+  llvm::Type *Ty = IdxBits >= BoundBits ? Idx->getType() : Bound->getType();
+  llvm::Value *IdxW = Builder.CreateIntCast(Idx, Ty, IdxSigned);
+  llvm::Value *BoundW = Builder.CreateIntCast(Bound, Ty, /*isSigned=*/false);
+  llvm::Value *IsViolation = AllowEnd
+                                 ? Builder.CreateICmpUGT(IdxW, BoundW, "oob")
+                                 : Builder.CreateICmpUGE(IdxW, BoundW, "oob");
+
+  // Redirect an out-of-range index to the valid index 0.
+  return EmitImplicitSubstitutingGuard(
+      Sem, IsViolation, Idx, llvm::Constant::getNullValue(Idx->getType()), Loc,
+      Comment);
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
