@@ -884,6 +884,74 @@ static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
   return Mask;
 }
 
+/// Extract group names from label's group_names member (identification_label).
+/// Returns a vector of group name strings; empty if no group_names member.
+static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
+                                                  QualType LabelTy,
+                                                  const CXXRecordDecl *RD,
+                                                  SourceLocation Loc) {
+  // As for the function facets: a member this context cannot name is not a
+  // facet, and must not be an error.
+  LookupResult R = makeFacetLookup(S, LabelFacet::GroupNames, Loc);
+  if (!lookupFacetMember(S, RD, LabelTy, R))
+    return {};
+
+  // P3400 requires is_const_v<decltype(t.group_names)>, so that nothing
+  // implies a label's group membership could change at run time and have an
+  // effect -- the names are read during translation and never again.  An
+  // array of const elements is itself a const-qualified type, so both the
+  // `static constexpr' and the const-non-static spellings qualify.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return {};
+
+  // Read the names as the concept does ([support.contract.control.ident]):
+  // group_names[i] converted to const char*, for each of the
+  // sizeof(group_names) / sizeof(group_names[0]) elements -- an array of
+  // strings, of pointers to strings, or a std::array of either; a static or a
+  // non-static member, or one inherited from a combined label's base.
+  Sema::SFINAETrap Trap(S);
+  ExprResult GN = buildFacetMemberRef(S, LabelExpr, LabelTy, R, Loc);
+  if (GN.isInvalid())
+    return {};
+  auto Index = [&](uint64_t I) -> Expr * {
+    QualType SizeTy = S.Context.getSizeType();
+    Expr *Idx = IntegerLiteral::Create(
+        S.Context, llvm::APInt(S.Context.getTypeSize(SizeTy), I), SizeTy, Loc);
+    ExprResult E =
+        S.ActOnArraySubscriptExpr(/*S=*/nullptr, GN.get(), Loc, Idx, Loc);
+    return E.isInvalid() ? nullptr : E.get();
+  };
+  Expr *Elt0 = Index(0);
+  if (!Elt0 || GN.get()->getType()->isDependentType())
+    return {};
+  CharUnits Total = S.Context.getTypeSizeInChars(GN.get()->getType());
+  CharUnits Each = S.Context.getTypeSizeInChars(Elt0->getType());
+  if (Each.isZero())
+    return {};
+  QualType ConstCharPtrTy =
+      S.Context.getPointerType(S.Context.CharTy.withConst());
+
+  SmallVector<std::string> Groups;
+  for (uint64_t I = 0, N = Total / Each; I != N; ++I) {
+    Expr *Elt = Index(I);
+    if (!Elt)
+      continue;
+    ExprResult Conv = S.PerformImplicitConversion(Elt, ConstCharPtrTy,
+                                                  AssignmentAction::Converting);
+    if (Conv.isInvalid())
+      continue;
+    std::optional<std::string> Str = Conv.get()->tryEvaluateString(S.Context);
+    if (Str && !Str->empty())
+      Groups.push_back(std::move(*Str));
+  }
+  return Groups;
+}
+
 /// Resolve the contract config of CS, in groups Groups, via the P3595 ordered
 /// config system and D4405's steps 1 to 5 (ContractOptions::resolveContract),
 /// recording the runtime evaluation's semantic and the analysis evaluation's,
