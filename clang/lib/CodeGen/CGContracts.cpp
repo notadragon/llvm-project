@@ -209,6 +209,7 @@ CurrentContractInfo *CodeGenFunction::CurContract() {
                                    : nullptr;
 }
 
+namespace {
 // Saves and restores the enclosing contract: a contract_assert in a statement
 // expression in another contract's predicate is emitted while the outer one
 // is current.
@@ -1148,6 +1149,677 @@ static llvm::Value *emitContractDataBlock(CodeGenFunction &CGF,
   Builder.CreateDefaultAlignedStore(LabelAddr, LabelField);
 
   return ExtBlockRaw;
+}
+
+// -------------------------------------------------------------------
+// Rethrow shortcut analysis (quality of implementation).
+//
+// A P3400 local violation handler that responds to an evaluation_exception
+// detection by rethrowing the in-flight exception makes the EH region we wrap
+// around a possibly-throwing predicate pure overhead: the exception is caught
+// only to be handed to a handler that throws it straight back out.  This
+// analysis recognizes that shape so the caller can skip the region and let the
+// predicate's exception propagate on its own.
+//
+// Equivalence rests on the local handler running before the global one and
+// short-circuiting it (libcontracts/dispatch.c): if the local handler
+// rethrows, nothing else observable happens between the catch and the rethrow,
+// and no violation is ever reported.  It holds only for the enforce and
+// observe semantics -- quick_enforce calls no handler, and the P4298 noexcept_
+// semantics exist precisely to guarantee nothing propagates.
+//
+// The walk follows calls, which is what lets it see through delegation: a
+// handler that calls a helper whose body is just `throw;', and the
+// __combined_label handler that forwards to the component labels, both come
+// out of the same mechanism rather than being special-cased.
+//
+// Everything here is conservative: any construct it does not model makes it
+// answer "no", leaving the EH region in place.
+//
+// Mirror of gnu_gcc's contract_local_handler_always_rethrows_p.  One
+// deliberate divergence: GCC has to force template instantiation to get the
+// combined handler's body, because it runs during genericization while the
+// definition is still only queued.  Clang performs pending instantiations
+// before CodeGen, so the body is simply there.
+// -------------------------------------------------------------------
+
+namespace {
+
+/// An abstract value tracked while walking a handler body.
+enum AValKind {
+  AV_Unknown,          ///< Nothing known.
+  AV_Const,            ///< A known integer, enumeration or boolean value.
+  AV_CurrentException, ///< The result of std::current_exception().
+};
+
+struct AVal {
+  AValKind Kind = AV_Unknown;
+  int64_t Val = 0;
+};
+
+static AVal avUnknown() { return AVal{AV_Unknown, 0}; }
+static AVal avConst(int64_t V) { return AVal{AV_Const, V}; }
+static AVal avCurrentException() { return AVal{AV_CurrentException, 0}; }
+
+/// How control left a statement, under the analysis assumption.
+///
+/// RO_Returned is distinct from RO_Fail because the two mean different things
+/// depending on whose frame the walk is in.  For the handler itself, returning
+/// is a failure: it did not rethrow.  For a function the handler called,
+/// returning is a success of sorts -- the call completed without doing
+/// anything observable, so the walk of the caller carries on past it.
+enum RethrowOutcome {
+  RO_Fallthrough, ///< Control continues with the next statement.
+  RO_Rethrown,    ///< Control left by rethrowing the in-flight exception.
+  RO_Returned,    ///< Control returned normally, having done nothing
+                  ///< observable.
+  RO_Break,       ///< Control left the innermost enclosing switch by a break.
+  RO_Fail,        ///< Could not be analysed, or something observable happened.
+};
+
+/// How deep the walk will follow calls before giving up.  A handler that
+/// delegates more than this far is not a shape worth proving, and the limit
+/// doubles as the termination guard for mutual recursion.
+static const int RethrowMaxDepth = 8;
+
+/// One analysis of one handler body, under one (semantic, kind) pair.  The
+/// walk assumes the violation was detected as ExceptionRaised.
+class RethrowAnalysis {
+public:
+  RethrowAnalysis(const ParmVarDecl *ViolationParm,
+                  ContractEvaluationSemantic Semantic, int64_t KindValue,
+                  int Depth = 0)
+      : ViolationParm(ViolationParm), Semantic(Semantic), KindValue(KindValue),
+        Depth(Depth) {}
+
+  RethrowOutcome walkStmt(const Stmt *S);
+
+  /// Valid after walkStmt returned RO_Returned: what the function returned, as
+  /// far as the abstract domain could tell.
+  AVal returnedValue() const { return Returned; }
+
+private:
+  RethrowOutcome walkSwitch(const SwitchStmt *Sw);
+  AVal eval(const Expr *E);
+  bool accessorValue(const CXXMemberCallExpr *Call, AVal &Out);
+  RethrowOutcome callOutcome(const CallExpr *Call, AVal &ValueOut);
+
+  /// Evaluate E for its value, insisting that getting there costs nothing
+  /// observable.  False means the expression is not something the domain can
+  /// account for, and the statement containing it must not be walked past.
+  bool evalPure(const Expr *E, AVal &Out) {
+    Impure = false;
+    Rethrew = false;
+    Out = eval(E);
+    return !Impure;
+  }
+
+  /// Evaluate E where a value is wanted and control is expected to carry on.
+  /// RO_Fallthrough means Out holds it; RO_Rethrown means evaluating E never
+  /// produced a value at all, because something it called rethrew.
+  RethrowOutcome evalValue(const Expr *E, AVal &Out) {
+    if (evalPure(E, Out))
+      return RO_Fallthrough;
+    return Rethrew ? RO_Rethrown : RO_Fail;
+  }
+
+  const ParmVarDecl *ViolationParm;
+  ContractEvaluationSemantic Semantic;
+  int64_t KindValue;
+  int Depth;
+  AVal Returned;
+
+  /// Set by eval when it meets something it cannot account for.  AV_Unknown
+  /// alone does not mean "unmodelled" -- reading an untracked local yields an
+  /// unknown value from a perfectly pure expression -- so a caller willing to
+  /// carry on with an unknown value still has to know whether getting there
+  /// cost anything observable.
+  bool Impure = false;
+
+  /// Set alongside Impure when the reason no value came back is that a call
+  /// inside the expression always rethrows.
+  bool Rethrew = false;
+
+  /// Local scalar VarDecl -> abstract value.
+  llvm::DenseMap<const VarDecl *, AVal> Env;
+
+  /// How many switches the walk is inside: a break leaves the innermost one,
+  /// and anywhere else it is a jump this walk does not model.
+  unsigned SwitchDepth = 0;
+};
+
+/// If CALL invokes one of the contract_violation accessors whose result is
+/// known at the point the check is emitted, store that value in OUT and return
+/// true.  The call must be on the handler's own violation parameter: a
+/// different contract_violation object tells us nothing.
+bool RethrowAnalysis::accessorValue(const CXXMemberCallExpr *Call, AVal &Out) {
+  const CXXMethodDecl *MD = Call->getMethodDecl();
+  if (!MD || !MD->getDeclName().isIdentifier() || !ViolationParm)
+    return false;
+
+  const CXXRecordDecl *RD = MD->getParent();
+  if (!RD || RD->getName() != "contract_violation")
+    return false;
+
+  const auto *Obj = dyn_cast_or_null<DeclRefExpr>(
+      Call->getImplicitObjectArgument()->IgnoreParenImpCasts());
+  if (!Obj || Obj->getDecl() != ViolationParm)
+    return false;
+
+  StringRef Name = MD->getName();
+  if (Name == "detection_mode")
+    Out = avConst(static_cast<int64_t>(ContractDetectionMode::ExceptionRaised));
+  else if (Name == "semantic")
+    Out = avConst(static_cast<int64_t>(Semantic));
+  else if (Name == "kind")
+    Out = avConst(KindValue);
+  else if (Name == "is_terminating")
+    // Of the two semantics this analysis runs for, only enforce terminates.
+    Out = avConst(Semantic == Enforce);
+  else
+    return false;
+
+  return true;
+}
+
+/// Walk into CALL's callee and report how control leaves the call.
+///
+/// RO_Rethrown means the callee always rethrows the in-flight exception, so
+/// the call is as good as a `throw;' written here.  RO_Returned means it always
+/// returns having done nothing observable, so the caller's walk carries on;
+/// ValueOut then holds the returned value where that could be folded.
+///
+/// The recursion is the same predicate applied one frame down, so "did nothing
+/// else observable first" is enforced at every level for free.
+RethrowOutcome RethrowAnalysis::callOutcome(const CallExpr *Call,
+                                            AVal &ValueOut) {
+  ValueOut = avUnknown();
+
+  if (Depth >= RethrowMaxDepth)
+    return RO_Fail;
+
+  const FunctionDecl *FD = Call->getDirectCallee();
+  if (!FD)
+    return RO_Fail;
+
+  // Calling a function with contracts evaluates them too; a weak definition
+  // may be replaced at link time; and a virtual call runs the dynamic
+  // overrider, not the method named, unless the call is qualified.
+  if (FD->hasContracts() || FD->isWeak())
+    return RO_Fail;
+  if (const auto *MC = dyn_cast<CXXMemberCallExpr>(Call))
+    if (const CXXMethodDecl *MD = MC->getMethodDecl(); MD && MD->isVirtual()) {
+      const auto *ME = dyn_cast<MemberExpr>(MC->getCallee()->IgnoreParens());
+      if (!ME || !ME->hasQualifier())
+        return RO_Fail;
+    }
+
+  const Stmt *Body = FD->getBody();
+  if (!Body)
+    return RO_Fail;
+
+  // Find the callee parameter, if any, that received our violation object, so
+  // the accessors keep folding across the delegation.  When none does -- the
+  // `void helper() { throw; }' shape -- the nested walk simply runs without a
+  // violation parameter, which is all such a helper needs.
+  const ParmVarDecl *NestedParm = nullptr;
+  if (ViolationParm) {
+    unsigned N = std::min<unsigned>(Call->getNumArgs(), FD->getNumParams());
+    for (unsigned I = 0; I != N; ++I) {
+      const auto *Arg =
+          dyn_cast<DeclRefExpr>(Call->getArg(I)->IgnoreParenImpCasts());
+      if (Arg && Arg->getDecl() == ViolationParm) {
+        NestedParm = FD->getParamDecl(I);
+        break;
+      }
+    }
+  }
+
+  RethrowAnalysis Nested(NestedParm, Semantic, KindValue, Depth + 1);
+  switch (Nested.walkStmt(Body)) {
+  case RO_Rethrown:
+    // A rethrow out of a noexcept callee terminates rather than propagating,
+    // which is not what skipping the EH region would do.
+    if (FD->getType()->castAs<FunctionProtoType>()->isNothrow())
+      return RO_Fail;
+    return RO_Rethrown;
+  case RO_Returned:
+    ValueOut = Nested.returnedValue();
+    return RO_Returned;
+  case RO_Fallthrough:
+    // Ran off the end of a void body: it returned, with no value.
+    return RO_Returned;
+  default:
+    return RO_Fail;
+  }
+}
+
+/// Evaluate E as far as the abstract domain allows.
+AVal RethrowAnalysis::eval(const Expr *E) {
+  if (!E)
+    return avUnknown();
+
+  E = E->IgnoreParens();
+
+  // A constexpr-if condition arrives already folded, as does anything else
+  // Clang could evaluate; take the value rather than re-deriving it.
+  if (const auto *CE = dyn_cast<ConstantExpr>(E))
+    if (CE->hasAPValueResult() && CE->getAPValueResult().isInt())
+      return avConst(CE->getAPValueResult().getInt().getSExtValue());
+
+  if (const auto *IL = dyn_cast<IntegerLiteral>(E))
+    return avConst(IL->getValue().getSExtValue());
+  if (const auto *BL = dyn_cast<CXXBoolLiteralExpr>(E))
+    return avConst(BL->getValue());
+
+  if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+    if (const auto *ECD = dyn_cast<EnumConstantDecl>(DRE->getDecl()))
+      return avConst(ECD->getInitVal().getSExtValue());
+    // A volatile access is observable behaviour ([intro.abstract]).
+    if (DRE->getType().isVolatileQualified()) {
+      Impure = true;
+      return avUnknown();
+    }
+    if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      auto It = Env.find(VD);
+      if (It != Env.end())
+        return It->second;
+    }
+    return avUnknown();
+  }
+
+  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(E))
+    return eval(ICE->getSubExpr());
+  if (const auto *ECE = dyn_cast<ExplicitCastExpr>(E))
+    return eval(ECE->getSubExpr());
+  if (const auto *EWC = dyn_cast<ExprWithCleanups>(E))
+    return eval(EWC->getSubExpr());
+  if (const auto *BTE = dyn_cast<CXXBindTemporaryExpr>(E))
+    return eval(BTE->getSubExpr());
+  if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(E))
+    return eval(MTE->getSubExpr());
+
+  // Reading an object is not observable, unless it is volatile
+  // ([intro.abstract]); __combined_label reaches its components through
+  // this->First.
+  if (isa<CXXThisExpr>(E))
+    return avUnknown();
+  if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+    if (ME->getType().isVolatileQualified()) {
+      Impure = true;
+      return avUnknown();
+    }
+    eval(ME->getBase());
+    return avUnknown();
+  }
+
+  if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+    if (UO->getOpcode() == UO_Deref && !UO->getType().isVolatileQualified()) {
+      eval(UO->getSubExpr());
+      return avUnknown();
+    }
+    if (UO->getOpcode() == UO_LNot) {
+      AVal A = eval(UO->getSubExpr());
+      return A.Kind == AV_Const ? avConst(!A.Val) : avUnknown();
+    }
+    Impure = true;
+    return avUnknown();
+  }
+
+  if (const auto *BO = dyn_cast<BinaryOperator>(E)) {
+    switch (BO->getOpcode()) {
+    case BO_LAnd: {
+      AVal L = eval(BO->getLHS());
+      if (L.Kind == AV_Const && !L.Val)
+        return avConst(0);
+      AVal R = eval(BO->getRHS());
+      if (L.Kind != AV_Const || R.Kind != AV_Const)
+        return avUnknown();
+      return avConst(L.Val && R.Val);
+    }
+    case BO_LOr: {
+      AVal L = eval(BO->getLHS());
+      if (L.Kind == AV_Const && L.Val)
+        return avConst(1);
+      AVal R = eval(BO->getRHS());
+      if (L.Kind != AV_Const || R.Kind != AV_Const)
+        return avUnknown();
+      return avConst(L.Val || R.Val);
+    }
+    case BO_EQ:
+    case BO_NE:
+    case BO_LT:
+    case BO_LE:
+    case BO_GT:
+    case BO_GE: {
+      AVal L = eval(BO->getLHS());
+      AVal R = eval(BO->getRHS());
+      if (L.Kind != AV_Const || R.Kind != AV_Const)
+        return avUnknown();
+      switch (BO->getOpcode()) {
+      case BO_EQ:
+        return avConst(L.Val == R.Val);
+      case BO_NE:
+        return avConst(L.Val != R.Val);
+      case BO_LT:
+        return avConst(L.Val < R.Val);
+      case BO_LE:
+        return avConst(L.Val <= R.Val);
+      case BO_GT:
+        return avConst(L.Val > R.Val);
+      default:
+        return avConst(L.Val >= R.Val);
+      }
+    }
+    default:
+      Impure = true;
+      return avUnknown();
+    }
+  }
+
+  if (const auto *Call = dyn_cast<CallExpr>(E)) {
+    AVal A;
+    if (const auto *MC = dyn_cast<CXXMemberCallExpr>(Call))
+      if (accessorValue(MC, A))
+        return A;
+
+    if (const FunctionDecl *FD = Call->getDirectCallee())
+      if (FD->getDeclName().isIdentifier() &&
+          FD->getName() == "current_exception" && FD->isInStdNamespace())
+        return avCurrentException();
+
+    // The arguments are evaluated first, the object of a member call among
+    // them; a side effect there is observable whatever the callee does.
+    if (const auto *MC = dyn_cast<CXXMemberCallExpr>(Call))
+      eval(MC->getImplicitObjectArgument());
+    for (const Expr *Arg : Call->arguments())
+      eval(Arg);
+    if (Impure)
+      return avUnknown();
+
+    // Otherwise follow the callee.  It may return something knowable having
+    // done nothing observable, in which case the value stands in for the call;
+    // or it may always rethrow, in which case the expression yields no value
+    // and the statement containing it has to be told.
+    AVal V;
+    switch (callOutcome(Call, V)) {
+    case RO_Returned:
+      return V;
+    case RO_Rethrown:
+      Rethrew = true;
+      Impure = true;
+      return avUnknown();
+    default:
+      Impure = true;
+      return avUnknown();
+    }
+  }
+
+  Impure = true;
+  return avUnknown();
+}
+
+/// Walk statement S under the assumption that the violation was detected as
+/// ExceptionRaised, reporting how control leaves it.
+RethrowOutcome RethrowAnalysis::walkStmt(const Stmt *S) {
+  if (!S)
+    return RO_Fallthrough;
+
+  if (isa<NullStmt>(S))
+    return RO_Fallthrough;
+
+  if (const auto *CS = dyn_cast<CompoundStmt>(S)) {
+    for (const Stmt *Sub : CS->body()) {
+      RethrowOutcome O = walkStmt(Sub);
+      if (O != RO_Fallthrough)
+        return O;
+    }
+    return RO_Fallthrough;
+  }
+
+  if (const auto *AS = dyn_cast<AttributedStmt>(S)) {
+    // Look through only the attributes known to have no run-time effect: an
+    // [[assume]] is a checked assertion under -fcontracts-p3100.
+    for (const Attr *A : AS->getAttrs())
+      if (!isa<LikelyAttr, UnlikelyAttr, FallThroughAttr>(A))
+        return RO_Fail;
+    return walkStmt(AS->getSubStmt());
+  }
+
+  if (const auto *DS = dyn_cast<DeclStmt>(S)) {
+    for (const Decl *D : DS->decls()) {
+      // Type aliases carry no code -- __combined_label's `using _Ret = ...'
+      // arrives here.
+      if (isa<TypeDecl>(D) || isa<UsingDecl>(D) || isa<StaticAssertDecl>(D))
+        continue;
+      const auto *VD = dyn_cast<VarDecl>(D);
+      if (!VD || VD->hasGlobalStorage())
+        return RO_Fail;
+      // Only scalars: a class-typed local brings a destructor, and with it
+      // cleanup control flow this walk does not model.
+      if (!VD->getType()->isScalarType())
+        return RO_Fail;
+      AVal Init = avUnknown();
+      if (const Expr *E = VD->getInit()) {
+        RethrowOutcome O = evalValue(E, Init);
+        if (O != RO_Fallthrough)
+          return O;
+      }
+      Env[VD] = Init;
+    }
+    return RO_Fallthrough;
+  }
+
+  if (const auto *If = dyn_cast<IfStmt>(S)) {
+    // An `if constexpr' in an instantiated template arrives with its condition
+    // already folded and the discarded branch left empty, so the same
+    // fold-and-take-one-branch logic covers both forms.
+    if (If->getInit() || If->getConditionVariable())
+      return RO_Fail;
+    AVal C = avUnknown();
+    RethrowOutcome O = evalValue(If->getCond(), C);
+    if (O != RO_Fallthrough)
+      return O;
+    if (C.Kind != AV_Const)
+      return RO_Fail;
+    return walkStmt(C.Val ? If->getThen() : If->getElse());
+  }
+
+  if (const auto *Sw = dyn_cast<SwitchStmt>(S))
+    return walkSwitch(Sw);
+
+  if (isa<BreakStmt>(S))
+    return SwitchDepth ? RO_Break : RO_Fail;
+
+  if (const auto *Ret = dyn_cast<ReturnStmt>(S)) {
+    // Record what was returned, for a caller that is following this call.
+    AVal V = avUnknown();
+    if (const Expr *RV = Ret->getRetValue()) {
+      RethrowOutcome O = evalValue(RV, V);
+      if (O != RO_Fallthrough)
+        return O;
+    }
+    Returned = V;
+    return RO_Returned;
+  }
+
+  // An expression statement: a rethrow, a modelled call, or an assignment to a
+  // local we are tracking.
+  if (const auto *E = dyn_cast<Expr>(S)) {
+    const Expr *Inner = E->IgnoreParens();
+    if (const auto *EWC = dyn_cast<ExprWithCleanups>(Inner))
+      Inner = EWC->getSubExpr()->IgnoreParens();
+
+    // `throw;' is a CXXThrowExpr with no operand.  `throw X;' raises a
+    // different exception, which is not what skipping the region would do.
+    if (const auto *Throw = dyn_cast<CXXThrowExpr>(Inner))
+      return Throw->getSubExpr() ? RO_Fail : RO_Rethrown;
+
+    // std::rethrow_exception(std::current_exception()) rethrows the exception
+    // that is in flight, so it reaches the same place.
+    if (const auto *Call = dyn_cast<CallExpr>(Inner))
+      if (const FunctionDecl *FD = Call->getDirectCallee())
+        if (FD->getDeclName().isIdentifier() &&
+            FD->getName() == "rethrow_exception" && FD->isInStdNamespace() &&
+            Call->getNumArgs() == 1 &&
+            eval(Call->getArg(0)).Kind == AV_CurrentException)
+          return RO_Rethrown;
+
+    if (const auto *BO = dyn_cast<BinaryOperator>(Inner)) {
+      if (BO->getOpcode() != BO_Assign)
+        return RO_Fail;
+      // Only assignments to locals we are already tracking; a store anywhere
+      // else is an observable effect.
+      const auto *LHS =
+          dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
+      const auto *VD = LHS ? dyn_cast<VarDecl>(LHS->getDecl()) : nullptr;
+      if (!VD || !Env.count(VD))
+        return RO_Fail;
+      AVal RHS = avUnknown();
+      RethrowOutcome O = evalValue(BO->getRHS(), RHS);
+      if (O != RO_Fallthrough)
+        return O;
+      Env[VD] = RHS;
+      return RO_Fallthrough;
+    }
+
+    // Any other discarded-value expression: let eval decide, which follows
+    // calls and reports a rethrow.
+    AVal Discarded = avUnknown();
+    return evalValue(Inner, Discarded);
+  }
+
+  return RO_Fail;
+}
+
+/// Append S to Out as the flat sequence a switch's case labels sit in: each
+/// label (CaseStmt or DefaultStmt) itself, followed by the flattening of the
+/// statement it labels.  Statements are not descended into otherwise.
+static void flattenSwitchBody(const Stmt *S,
+                              SmallVectorImpl<const Stmt *> &Out) {
+  if (!S)
+    return;
+  Out.push_back(S);
+  if (const auto *SC = dyn_cast<SwitchCase>(S))
+    flattenSwitchBody(SC->getSubStmt(), Out);
+}
+
+/// Whether S contains a case or default label of the switch being walked,
+/// that is, one nested inside a statement rather than at the switch body's
+/// top level.  An inner switch's labels are its own.
+static bool containsNestedSwitchLabel(const Stmt *S) {
+  if (!S || isa<SwitchStmt>(S))
+    return false;
+  if (isa<SwitchCase>(S))
+    return true;
+  for (const Stmt *Child : S->children())
+    if (containsNestedSwitchLabel(Child))
+      return true;
+  return false;
+}
+
+/// Walk Sw: fold its condition, find the case label it selects (or the
+/// default), and walk on from there through the labels that follow, which
+/// control falls through, until a break leaves the switch.  No matching label
+/// and no default skips the body.  Anything irregular -- a condition the
+/// domain cannot fold, a case label nested inside a statement, a jump other
+/// than a break -- fails.
+RethrowOutcome RethrowAnalysis::walkSwitch(const SwitchStmt *Sw) {
+  if (Sw->getInit() || Sw->getConditionVariable())
+    return RO_Fail;
+  AVal C = avUnknown();
+  RethrowOutcome O = evalValue(Sw->getCond(), C);
+  if (O != RO_Fallthrough)
+    return O;
+  if (C.Kind != AV_Const)
+    return RO_Fail;
+
+  SmallVector<const Stmt *, 16> Body;
+  if (const auto *CS = dyn_cast_or_null<CompoundStmt>(Sw->getBody())) {
+    for (const Stmt *Sub : CS->body())
+      flattenSwitchBody(Sub, Body);
+  } else {
+    flattenSwitchBody(Sw->getBody(), Body);
+  }
+
+  // The case labels must all be at the top level.
+  std::optional<unsigned> Start, Default;
+  for (unsigned I = 0, N = Body.size(); I != N; ++I) {
+    const Stmt *St = Body[I];
+    if (const auto *Case = dyn_cast<CaseStmt>(St)) {
+      if (Start)
+        continue;
+      AVal Lo = eval(Case->getLHS());
+      AVal Hi = Case->getRHS() ? eval(Case->getRHS()) : Lo;
+      if (Lo.Kind != AV_Const || Hi.Kind != AV_Const)
+        return RO_Fail;
+      if (Lo.Val <= C.Val && C.Val <= Hi.Val)
+        Start = I;
+    } else if (isa<DefaultStmt>(St)) {
+      Default = I;
+    } else if (containsNestedSwitchLabel(St)) {
+      return RO_Fail;
+    }
+  }
+  if (!Start)
+    Start = Default;
+  if (!Start)
+    return RO_Fallthrough;
+
+  ++SwitchDepth;
+  O = RO_Fallthrough;
+  for (unsigned I = *Start, N = Body.size(); I != N && O == RO_Fallthrough; ++I)
+    if (!isa<SwitchCase>(Body[I]))
+      O = walkStmt(Body[I]);
+  --SwitchDepth;
+  return O == RO_Break ? RO_Fallthrough : O;
+}
+
+} // anonymous namespace
+
+/// True if S's label carries a local violation handler that, for a violation
+/// detected as ExceptionRaised under SEMANTIC, always exits by rethrowing the
+/// in-flight exception without first doing anything else observable.  When it
+/// does, the caller may skip wrapping the predicate in an EH region: the
+/// exception reaches the same place either way.
+///
+/// Conservative -- false whenever this cannot be proven.
+static bool contractLocalHandlerAlwaysRethrows(CodeGenFunction &CGF,
+                                               const ContractStmt &S,
+                                               ContractEvaluationSemantic Sem,
+                                               bool IsPostCapture) {
+  if (!CGF.getLangOpts().ContractBypassRethrowingLocalHandler)
+    return false;
+
+  // Only the two semantics whose handler may legitimately let an exception
+  // escape.
+  if (Sem != Enforce && Sem != Observe)
+    return false;
+
+  if (!S.hasLocalHandler() || !S.getLabelExpr())
+    return false;
+
+  const CXXMethodDecl *HCV = findLocalViolationHandler(S);
+  if (!HCV || HCV->isVirtual())
+    return false;
+
+  // A noexcept handler cannot rethrow -- it would terminate.
+  if (HCV->getType()->castAs<FunctionProtoType>()->isNothrow())
+    return false;
+
+  // Calling a handler with contracts evaluates them before its body.
+  if (HCV->hasContracts())
+    return false;
+
+  const Stmt *Body = HCV->getBody();
+  if (!Body || HCV->getNumParams() != 1)
+    return false;
+
+  RethrowAnalysis Analysis(
+      HCV->getParamDecl(0), Sem,
+      static_cast<int64_t>(
+          getContractAssertionKind(S.getContractKind(), IsPostCapture)));
+  return Analysis.walkStmt(Body) == RO_Rethrown;
 }
 
 void CodeGenFunction::emitCheckForSemantic(const ContractStmt &S,
