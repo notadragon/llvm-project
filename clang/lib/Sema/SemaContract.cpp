@@ -795,6 +795,95 @@ callLabelStringMethod(Sema &S, Expr *LabelExpr, QualType LabelTy,
   return Conv.get()->tryEvaluateString(S.Context);
 }
 
+/// Extract the label's allowed_semantics restriction (bit N = semantic value N
+/// allowed), probing every valid semantic including "assume" and the P4298
+/// noexcept_enforce/noexcept_observe variants.  This is the flag-independent
+/// restriction; the -fcontracts-allow-assume / -fcontracts-p4298 gates are
+/// applied later, at query construction.  Returns
+/// AllContractSemanticsMaskWithExtensions (no restriction) if no
+/// allowed_semantics member exists.
+static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
+                                   const CXXRecordDecl *RD,
+                                   SourceLocation Loc) {
+  LookupResult R = makeFacetLookup(S, LabelFacet::AllowedSemantics, Loc);
+  if (!lookupFacetMember(S, RD, LabelTy, R))
+    return AllContractSemanticsMaskWithExtensions;
+
+  // The concept requires `__is_const(decltype(_T::allowed_semantics))'.  A
+  // `static constexpr' member is const-qualified already, and so is a plain
+  // `const' one; a non-const member is not a facet.  Honouring it anyway
+  // narrowed the semantic set for a label the library says has no
+  // allowed_semantics facet at all, so a bare label and its combined form
+  // disagreed.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return AllContractSemanticsMaskWithExtensions;
+
+  Sema::SFINAETrap Trap(S);
+  ExprResult ASRef = buildFacetMemberRef(S, LabelExpr, LabelTy, R, Loc);
+  if (ASRef.isInvalid())
+    return AllContractSemanticsMaskWithExtensions;
+
+  // The facet is `evaluation_semantic_set({label.allowed_semantics})'
+  // ([support.contract.control.allowed]): build that set, as the library
+  // concept does, and ask it -- a single semantic, or any type convertible to
+  // the set, works that way, and only that way.  A type that does not convert
+  // is not a facet.  A conversion or contains() that is not a constant
+  // expression is diagnosed, once.
+  QualType SetTy = getStdContractsTagType(S, "evaluation_semantic_set", Loc);
+  const CXXRecordDecl *SetRD =
+      SetTy.isNull() ? nullptr : SetTy->getAsCXXRecordDecl();
+  if (!SetRD)
+    return AllContractSemanticsMaskWithExtensions;
+  DeclarationName ContainsName = &S.Context.Idents.get("contains");
+
+  unsigned Mask = 0;
+  // Query contains() for each evaluation-semantic value.  Bit N of the mask
+  // corresponds to semantic value N, matching resolveContractSemantic().
+  // Assume and the P4298 noexcept_* variants are probed here too; the flag
+  // gates that may exclude them (-fcontracts-allow-assume / -fcontracts-p4298)
+  // are applied later, at query construction.
+  for (unsigned Sem = FirstContractEvaluationSemantic;
+       Sem <= LastContractEvaluationSemantic; ++Sem) {
+    Expr *Member = ASRef.get();
+    ExprResult Init = S.ActOnInitList(Loc, Member, Loc);
+    if (Init.isInvalid())
+      return AllContractSemanticsMaskWithExtensions;
+    Expr *InitList = Init.get();
+    ExprResult Set = S.BuildCXXTypeConstructExpr(
+        S.Context.getTrivialTypeSourceInfo(SetTy, Loc), Loc, InitList, Loc,
+        /*ListInitialization=*/false);
+    if (Set.isInvalid())
+      return AllContractSemanticsMaskWithExtensions;
+    LookupResult CR(S, ContainsName, Loc, Sema::LookupMemberName);
+    if (!S.LookupQualifiedName(CR, const_cast<CXXRecordDecl *>(SetRD)))
+      return AllContractSemanticsMaskWithExtensions;
+    ExprResult ContainsRef = buildFacetMemberRef(S, Set.get(), SetTy, CR, Loc);
+    Expr *Arg = buildSemanticFacetArg(S, Sem, Loc);
+    if (ContainsRef.isInvalid() || !Arg)
+      return AllContractSemanticsMaskWithExtensions;
+    ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, ContainsRef.get(), Loc,
+                                      {Arg}, Loc, /*ExecConfig=*/nullptr);
+    if (Call.isInvalid())
+      return AllContractSemanticsMaskWithExtensions;
+
+    Expr::EvalResult Eval;
+    if (!evaluateFacetConstant(S, Call.get(), Eval,
+                               getLabelFacetName(LabelFacet::AllowedSemantics),
+                               LabelTy, Loc) ||
+        !Eval.Val.isInt())
+      return AllContractSemanticsMaskWithExtensions;
+    if (Eval.Val.getInt().getBoolValue())
+      Mask |= (1u << Sem);
+  }
+
+  return Mask;
+}
+
 /// Resolve the contract config of CS, in groups Groups, via the P3595 ordered
 /// config system and D4405's steps 1 to 5 (ContractOptions::resolveContract),
 /// recording the runtime evaluation's semantic and the analysis evaluation's,

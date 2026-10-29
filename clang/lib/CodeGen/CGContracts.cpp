@@ -1758,6 +1758,42 @@ void CodeGenFunction::EmitVirtualContractWrapperBody(llvm::Function *Fn,
   FinishFunction();
 }
 
+/// P3400: whether every translation unit's copy of the function holding
+/// \p S makes the same choice as far as throwing goes, from the label's
+/// allowed set (the same in every TU): a non-empty subset of
+/// {noexcept_enforce, quick_enforce, assume}, which never throw from the
+/// evaluation; or {enforce} alone, the same handler call in every copy; or,
+/// in a noexcept function \p FD, a subset of {enforce, noexcept_enforce,
+/// quick_enforce, assume}, where a throwing handler terminates in every copy.
+/// A dynamically selected evaluation is never settled: under such a label
+/// it keeps to the allowed set and throws nothing from the check (an invalid
+/// selection is a noexcept_enforce violation or a quick_enforce trap,
+/// DECISIONS.md E137 and E138), but the copy calls the selector, an ordinary
+/// external function with no exception specification that another copy need
+/// not call, so an exception from it, and what it reads and writes, is the
+/// caller's to see.  (gnu_gcc's contract_evaluation_settled_p.)  One residual
+/// is accepted, as there (E137): a handler on its way to termination may
+/// observe memory a caller optimized with a quick_enforce or assume copy's
+/// facts.
+static bool isContractEvaluationSettled(const ContractStmt &S,
+                                        const Decl *FD) {
+  using CES = ContractEvaluationSemantic;
+  if (S.isDynamic())
+    return false;
+  auto Bit = [](CES Sem) { return 1u << static_cast<unsigned>(Sem); };
+  unsigned Mask = S.getAllowedMask();
+  unsigned Continuing = Bit(CES::Ignore) | Bit(CES::Observe) |
+                        Bit(CES::NoexceptObserve) | Bit(CES::Prove) |
+                        Bit(CES::Diagnose);
+  if (!Mask || (Mask & Continuing))
+    return false;
+  if (!(Mask & Bit(CES::Enforce)) || Mask == Bit(CES::Enforce))
+    return true;
+  const auto *F = dyn_cast_or_null<FunctionDecl>(FD);
+  const auto *FPT = F ? F->getType()->getAs<FunctionProtoType>() : nullptr;
+  return FPT && FPT->isNothrow();
+}
+
 /// Refinable bodies: note an evaluation of \p S in the function being
 /// emitted.  Unless its semantic is settled, another translation unit's copy
 /// of the function may evaluate it differently, so facts about this copy's
@@ -1765,5 +1801,8 @@ void CodeGenFunction::EmitVirtualContractWrapperBody(llvm::Function *Fn,
 /// P3100's implicit checks are never noted: going past one is undefined
 /// behaviour in every copy.
 void CodeGenFunction::noteContractEvaluation(const ContractStmt &S) {
+  // P3400: a settled evaluation leaves the same choice in every copy.
+  if (isContractEvaluationSettled(S, CurFuncDecl))
+    return;
   CurFnHoldsUnsettledContract = true;
 }

@@ -880,6 +880,132 @@ static bool configEntryMatches(const ContractConfigEntry &Entry,
   return true;
 }
 
+// The safety level of a semantic: higher is "safer" (more checking).  Two
+// semantics share a level when they differ only in throwing-ness, and the
+// P4405 prove and diagnose share ignore's: none of the three has a run-time
+// effect.  -1 for a value that is not a semantic.
+static constexpr int semanticLevel(ContractEvaluationSemantic S) {
+  switch (S) {
+  case ContractEvaluationSemantic::Assume:
+    return 0;
+  case ContractEvaluationSemantic::Ignore:
+  case ContractEvaluationSemantic::Prove:
+  case ContractEvaluationSemantic::Diagnose:
+    return 1;
+  case ContractEvaluationSemantic::Observe:
+  case ContractEvaluationSemantic::NoexceptObserve:
+    return 2;
+  case ContractEvaluationSemantic::Enforce:
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    return 3;
+  case ContractEvaluationSemantic::QuickEnforce:
+    return 4;
+  }
+  return -1;
+}
+
+static constexpr int MaxSemanticLevel = 4;
+
+// Every semantic has a level, so a new one cannot slip past the allowed set
+// by having none: clampToAllowed returns the invalid value for a candidate
+// without a level.
+static constexpr bool everySemanticHasALevel() {
+  for (unsigned V = FirstContractEvaluationSemantic;
+       V <= LastContractEvaluationSemantic; ++V)
+    if (semanticLevel(static_cast<ContractEvaluationSemantic>(V)) < 0 ||
+        semanticLevel(static_cast<ContractEvaluationSemantic>(V)) >
+            MaxSemanticLevel)
+      return false;
+  return true;
+}
+static_assert(everySemanticHasALevel(),
+              "a contract evaluation semantic has no best-fit level");
+
+// Return the first semantic present in Mask at safety level Lvl for a walk
+// that started from Candidate.  At the two-variant levels (2 and 3) the
+// variant matching Candidate's throwing-ness is tried first (the throwing one
+// for observe/enforce, else the noexcept one).  At level 1 ignore is
+// preferred, then diagnose, then prove (D3595R1, "Adjusting a Semantic to the
+// Allowed Set"), except that a prove Candidate tries prove, diagnose, then
+// ignore, and a diagnose Candidate diagnose, ignore, then prove.
+// InvalidContractEvaluationSemantic means the level has nothing in Mask.
+static ContractEvaluationSemantic
+semanticAtLevel(int Lvl, unsigned Mask, ContractEvaluationSemantic Candidate) {
+  using CES = ContractEvaluationSemantic;
+  const CES None = InvalidContractEvaluationSemantic;
+  bool PreferThrowing =
+      (Candidate == CES::Observe || Candidate == CES::Enforce);
+  CES Order[3] = {None, None, None};
+  switch (Lvl) {
+  case 0:
+    Order[0] = CES::Assume;
+    break;
+  case 1:
+    if (Candidate == CES::Prove) {
+      Order[0] = CES::Prove;
+      Order[1] = CES::Diagnose;
+      Order[2] = CES::Ignore;
+    } else if (Candidate == CES::Diagnose) {
+      Order[0] = CES::Diagnose;
+      Order[1] = CES::Ignore;
+      Order[2] = CES::Prove;
+    } else {
+      Order[0] = CES::Ignore;
+      Order[1] = CES::Diagnose;
+      Order[2] = CES::Prove;
+    }
+    break;
+  case 2:
+    Order[0] = PreferThrowing ? CES::Observe : CES::NoexceptObserve;
+    Order[1] = PreferThrowing ? CES::NoexceptObserve : CES::Observe;
+    break;
+  case 3:
+    Order[0] = PreferThrowing ? CES::Enforce : CES::NoexceptEnforce;
+    Order[1] = PreferThrowing ? CES::NoexceptEnforce : CES::Enforce;
+    break;
+  case 4:
+    Order[0] = CES::QuickEnforce;
+    break;
+  default:
+    return None;
+  }
+  for (CES S : Order)
+    if (S != None && (Mask & (1u << static_cast<unsigned>(S))))
+      return S;
+  return None;
+}
+
+ContractEvaluationSemantic
+ContractOptions::clampToAllowed(ContractEvaluationSemantic Candidate,
+                                unsigned AllowedMask) {
+  // Walk the safety levels outward from Candidate's own level -- same level,
+  // then upward (nearest safer), then downward (safest available) --
+  // returning the first semantic present in AllowedMask, with the per-level
+  // order of semanticAtLevel.  This subsumes the old assume->ignore special
+  // case (assume is level 0, so the upward walk reaches ignore first).
+  using CES = ContractEvaluationSemantic;
+  const CES None = InvalidContractEvaluationSemantic;
+  int L = semanticLevel(Candidate);
+  // A value that is not a semantic is never adjusted into the allowed set.
+  if (L < 0)
+    return None;
+
+  if (CES R = semanticAtLevel(L, AllowedMask, Candidate); R != None)
+    return R;
+  for (int Lvl = L + 1; Lvl <= MaxSemanticLevel; ++Lvl)
+    if (CES R = semanticAtLevel(Lvl, AllowedMask, Candidate); R != None)
+      return R;
+  for (int Lvl = L - 1; Lvl >= 0; --Lvl)
+    if (CES R = semanticAtLevel(Lvl, AllowedMask, Candidate); R != None)
+      return R;
+
+  // The walk visits every level and every semantic at each, so nothing is
+  // allowed: an empty allowed set (an empty label mask is diagnosed in Sema
+  // before resolution).  Never invent a semantic outside the set; the caller
+  // diagnoses "no valid evaluation semantic".
+  return None;
+}
+
 // D4405R0, "Adjusting to the Allowed Semantics":
 // 1. the lookup for the analysis evaluation gives its configured semantic
 //    (ignore if no entry matches), and the lookup for the runtime evaluation
