@@ -178,6 +178,10 @@ public:
   /// Whether we found an immediate-escalating expression.
   bool FoundImmediateEscalatingExpression : 1;
 
+  /// The index in Sema's contract scope stack of the contract this function
+  /// scope is currently inside, or -1 if none.
+  unsigned ContractScopeIndex = -1;
+
   /// First coroutine statement in the current function.
   /// (ex co_return, co_await, co_yield)
   SourceLocation FirstCoroutineStmtLoc;
@@ -549,6 +553,8 @@ public:
     CoroutineSuspends.first = Initial;
     CoroutineSuspends.second = Final;
   }
+
+  bool isInContract() const { return ContractScopeIndex != unsigned(-1); }
 
   /// Clear out the information in this function scope, making it
   /// suitable for reuse.

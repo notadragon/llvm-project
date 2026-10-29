@@ -125,6 +125,11 @@ namespace {
             if (SemaRef.isVisible(I))
               visit(I, InnermostFileDC);
         }
+        if (SemaRef.InAssertionControlExpression) {
+          for (auto *I : S->contract_control_using_directives())
+            if (SemaRef.isVisible(I))
+              visit(I, InnermostFileDC);
+        }
       }
     }
 
@@ -162,7 +167,8 @@ namespace {
       while (true) {
         for (auto *UD : DC->using_directives()) {
           DeclContext *NS = UD->getNominatedNamespace();
-          if (SemaRef.isVisible(UD) && visited.insert(NS).second) {
+          if (SemaRef.isUsingDirectiveInEffect(UD) &&
+              visited.insert(NS).second) {
             addUsingDirective(UD, EffectiveDC);
             queue.push_back(NS);
           }
@@ -2368,7 +2374,7 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
   // with its using-children.
   for (auto *I : StartDC->using_directives()) {
     NamespaceDecl *ND = I->getNominatedNamespace()->getFirstDecl();
-    if (S.isVisible(I) && Visited.insert(ND).second)
+    if (S.isUsingDirectiveInEffect(I) && Visited.insert(ND).second)
       Queue.push_back(ND);
   }
 
@@ -2416,7 +2422,7 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
 
     for (auto *I : ND->using_directives()) {
       NamespaceDecl *Nom = I->getNominatedNamespace();
-      if (S.isVisible(I) && Visited.insert(Nom).second)
+      if (S.isUsingDirectiveInEffect(I) && Visited.insert(Nom).second)
         Queue.push_back(Nom);
     }
   }
@@ -4242,7 +4248,7 @@ private:
     if (QualifiedNameLookup) {
       ShadowContextRAII Shadow(Visited);
       for (auto *I : Ctx->using_directives()) {
-        if (!Result.getSema().isVisible(I))
+        if (!Result.getSema().isUsingDirectiveInEffect(I))
           continue;
         lookupInDeclContext(I->getNominatedNamespace(), Result,
                             QualifiedNameLookup, InBaseClass);

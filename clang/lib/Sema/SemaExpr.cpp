@@ -21,6 +21,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DynamicRecursiveASTVisitor.h"
@@ -2502,8 +2503,9 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                        NestedNameSpecifierLoc NNS, NamedDecl *FoundD,
                        SourceLocation TemplateKWLoc,
                        const TemplateArgumentListInfo *TemplateArgs) {
-  bool RefersToCapturedVariable = isa<VarDecl, BindingDecl>(D) &&
-                                  NeedToCaptureVariable(D, NameInfo.getLoc());
+  bool RefersToCapturedVariable =
+      isa<VarDecl, BindingDecl, ResultNameDecl>(D) &&
+      NeedToCaptureVariable(D, NameInfo.getLoc());
 
   DeclRefExpr *E = DeclRefExpr::Create(
       Context, NNS, TemplateKWLoc, D, RefersToCapturedVariable, NameInfo, Ty,
@@ -3572,6 +3574,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
   case Decl::Decomposition:
   case Decl::Binding:
   case Decl::OMPCapturedExpr:
+  case Decl::PostconditionCapture:
     // In C, "extern void blah;" is valid and is an r-value.
     if (!getLangOpts().CPlusPlus && !type.hasQualifiers() &&
         type->isVoidType()) {
@@ -3589,6 +3592,19 @@ ExprResult Sema::BuildDeclarationNameExpr(
     // FIXME: Does the addition of const really only apply in
     // potentially-evaluated contexts? Since the variable isn't actually
     // captured in an unevaluated context, it seems that the answer is no.
+    if (!isUnevaluatedContext()) {
+      QualType CapturedType = getCapturedDeclRefType(cast<ValueDecl>(VD), Loc);
+      if (!CapturedType.isNull())
+        type = CapturedType;
+    }
+    break;
+  }
+
+  case Decl::ResultName: {
+    // A result name is an lvalue naming the returned object.  It is a local
+    // entity ([basic.pre]), so a lambda in the postcondition captures it.
+    valueKind = VK_LValue;
+    type = type.getNonReferenceType();
     if (!isUnevaluatedContext()) {
       QualType CapturedType = getCapturedDeclRefType(cast<ValueDecl>(VD), Loc);
       if (!CapturedType.isNull())
@@ -3676,6 +3692,9 @@ ExprResult Sema::BuildDeclarationNameExpr(
     valueKind = VK_PRValue;
     break;
   }
+
+  if (getContractConstification(VD) == CC_ApplyConst)
+    type = type.withConst();
 
   auto *E =
       BuildDeclRefExpr(VD, type, valueKind, NameInfo, &SS, FoundD,
@@ -14647,6 +14666,13 @@ static bool CheckForModifiableLvalue(Expr *E, SourceLocation Loc, Sema &S) {
     // Use a specialized diagnostic when we're assigning to an object
     // from an enclosing function or block.
     if (NonConstCaptureKind NCCK = isReferenceToNonConstCapture(S, E)) {
+      if (NCCK == NCCK_Contract) {
+        S.Diag(Loc, diag::err_contract_lambda_decl_ref_not_modifiable_lvalue)
+            << isCopyCapturedInInnermostLambda(S, E) << E->getSourceRange()
+            << (Loc != OrigLoc ? SourceRange(OrigLoc, OrigLoc)
+                               : SourceRange());
+        return true;
+      }
       if (NCCK == NCCK_Block)
         DiagID = diag::err_block_decl_ref_not_modifiable_lvalue;
       else
@@ -15482,7 +15508,7 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
       }
     } else if (!isa<FunctionDecl, TemplateParamObjectDecl,
                     NonTypeTemplateParmDecl, BindingDecl, MSGuidDecl,
-                    UnnamedGlobalConstantDecl>(dcl))
+                    UnnamedGlobalConstantDecl, ResultNameDecl>(dcl))
       llvm_unreachable("Unknown/unexpected decl type");
   }
 
@@ -17867,7 +17893,7 @@ ExprResult Sema::ActOnSourceLocExpr(SourceLocIdentKind Kind,
   case SourceLocIdentKind::Column:
     ResultTy = Context.UnsignedIntTy;
     break;
-  case SourceLocIdentKind::SourceLocStruct:
+  case SourceLocIdentKind::SourceLocStruct: {
     if (!StdSourceLocationImplDecl) {
       StdSourceLocationImplDecl =
           LookupStdSourceLocationImpl(*this, BuiltinLoc);
@@ -19371,6 +19397,40 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       (OdrUse == OdrUseContext::Used ||
        (NeededForConstantEvaluation && !Func->isPureVirtual()));
 
+  // [dcl.contract.func]: a function's contract assertions are needed when it
+  // is odr-used, not only when it is defined; see
+  // InstantiateFunctionContractsOnUse.
+  //
+  // Odr-use alone is too narrow, because of pure virtual functions.  A pure
+  // virtual called by unqualified virtual dispatch is deliberately not
+  // odr-used: [basic.def.odr] says a function is odr-used when it is "named
+  // by a potentially evaluated expression", and excludes a pure virtual from
+  // being "named by" one unless the name is explicitly qualified.  So
+  // MarkMemberReferenced passes MightBeOdrUse = false and OdrUse is None
+  // here -- yet the call must still check the contracts, and nothing else
+  // will ever substitute them, a pure virtual having no definition to
+  // instantiate either.
+  //
+  // [dcl.contract.func] does not currently cover that.  A core issue --
+  // "function contract assertions aren't needed enough" -- proposes adding "in a potentially evaluated expression, the function is
+  // selected by overload resolution" alongside its existing odr-used and
+  // defined bullets.  [except.spec] already carries the equivalent bullet,
+  // which is why the exception specification of the very same pure virtual
+  // *is* resolved at the very same call.  Implemented ahead of the wording
+  // because P3097 does not work for pure virtual functions without it.
+  //
+  // isOdrUseContext answers "is this a potentially evaluated, non-dependent
+  // context", independently of whether the *definition* is needed.  So an
+  // unevaluated operand still does not need the contracts -- decltype,
+  // sizeof, noexcept and requires-expressions must not instantiate them.
+  bool ContractsNeeded = OdrUse == OdrUseContext::Used;
+  if (!ContractsNeeded)
+    if (const auto *MD = dyn_cast<CXXMethodDecl>(Func))
+      ContractsNeeded =
+          MD->isVirtual() && isOdrUseContext(*this) == OdrUseContext::Used;
+  if (ContractsNeeded)
+    InstantiateFunctionContractsOnUse(Loc, Func);
+
   // C++14 [temp.expl.spec]p6:
   //   If a template [...] is explicitly specialized then that specialization
   //   shall be declared before the first use of that specialization that would
@@ -19588,6 +19648,17 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
 static void
 MarkVarDeclODRUsed(ValueDecl *V, SourceLocation Loc, Sema &SemaRef,
                    const unsigned *const FunctionScopeIndexToStopAt = nullptr) {
+  // A result name has no underlying variable: capture it and nothing else.
+  if (isa<ResultNameDecl>(V)) {
+    QualType CaptureType, DeclRefType;
+    SemaRef.tryCaptureVariable(V, Loc, TryCaptureKind::Implicit,
+                               /*EllipsisLoc*/ SourceLocation(),
+                               /*BuildAndDiagnose*/ true, CaptureType,
+                               DeclRefType, FunctionScopeIndexToStopAt);
+    V->markUsed(SemaRef.Context);
+    return;
+  }
+
   // Keep track of used but undefined variables.
   // FIXME: We shouldn't suppress this warning for static data members.
   VarDecl *Var = V->getPotentiallyDecomposedVarDecl();
@@ -19677,10 +19748,21 @@ static void diagnoseUncapturableValueReferenceOrBinding(Sema &S,
 
   //  If the parameter still belongs to the translation unit, then
   //  we're actually just using one parameter in the declaration of
-  //  the next.
-  if (isa<ParmVarDecl>(var) &&
-      isa<TranslationUnitDecl>(VarDC))
-    return;
+  //  the next -- unless the use is from a local class's member function in a
+  //  contract assertion, which is parsed off the declarator before the
+  //  parameters are reparented: that use is as ill-formed as anywhere.
+  if (isa<ParmVarDecl>(var) && isa<TranslationUnitDecl>(VarDC)) {
+    bool FromLocalClass = false;
+    if (S.getFirstEnclosingContractScopeForContext(S.CurContext))
+      for (const DeclContext *DC = S.CurContext; DC; DC = DC->getParent())
+        if (const auto *RD = dyn_cast<CXXRecordDecl>(DC);
+            RD && !RD->isLambda() && RD->isLocalClass()) {
+          FromLocalClass = true;
+          break;
+        }
+    if (!FromLocalClass)
+      return;
+  }
 
   // For C code, don't diagnose about capture if we're not actually in code
   // right now; it's impossible to write a non-constant expression outside of
@@ -19742,6 +19824,9 @@ static bool isVariableAlreadyCapturedInScopeInfo(CapturingScopeInfo *CSI,
         !(isa<CapturedRegionScopeInfo>(CSI) &&
           cast<CapturedRegionScopeInfo>(CSI)->CapRegionKind == CR_OpenMP))
       DeclRefType.addConst();
+    if (Cap.isCapturedAcrossContract()) {
+      DeclRefType.addConst();
+    }
     return true;
   }
   return false;

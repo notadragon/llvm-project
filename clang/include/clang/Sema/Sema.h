@@ -7198,6 +7198,9 @@ public:
     /// example, in a for-range initializer).
     bool InLifetimeExtendingContext = false;
 
+    /// Whether we're currently evaluating the predicate of a contract assertion
+    bool InContractAssertion = false;
+
     /// Whether evaluating an expression for a switch case label.
     bool IsCaseExpr = false;
 
@@ -7272,6 +7275,8 @@ public:
                isPotentiallyEvaluated()) &&
               InDiscardedStatement);
     }
+
+    bool isContractAssertionContext() const { return InContractAssertion; }
   };
 
   const ExpressionEvaluationContextRecord &currentEvaluationContext() const {
@@ -7300,6 +7305,117 @@ public:
     return ExprEvalContexts.back().ExprContext ==
            ExpressionEvaluationContextRecord::ExpressionKind::EK_AttrArgument;
   }
+
+  /// True if the current context is directly the predicate of the innermost
+  /// contract assertion being parsed -- not a lambda or other context nested
+  /// inside it.  (ExpressionEvaluationContextRecord::isContractAssertionContext
+  /// says instead whether an evaluation context was pushed for one.)
+  bool isDirectlyInContractPredicate() const;
+
+  /// True while the initializer of a postcondition capture (P3098) is being
+  /// parsed: it runs at function entry, so in a constructor it may not name
+  /// a member through the implicit object ([expr.prim.id.general]).
+  bool InPostconditionCaptureInit = false;
+
+  struct ContractScopeRecord {
+    // The index of this entry within the ContractScopeStack.
+    unsigned Index;
+    ContractKind Kind;
+
+    // Whether this scope was pushed prior to the function declaration
+    // being available, and so the ContextAtPush is not the function itself yet,
+    // but the context in which the function is being declared.
+    ContractScopeOffset ScopeOffset;
+
+    SourceLocation KeywordLoc;
+    DeclContext *ContextAtPush;
+    QualType PreviousCXXThisType;
+    /// The index of the current function scope when the contract was entered
+    /// (0 if there was none).
+    unsigned FunctionIndex;
+
+    sema::FunctionScopeInfo *FunctionScopeAtPush = nullptr;
+    bool AddedConstToCXXThis = false;
+    bool WasInContractContext = false;
+    /// The scope this one displaced -- in ContractScopeIndexMap for
+    /// ContextAtPush, and as FunctionScopeAtPush's ContractScopeIndex -- when
+    /// it is nested in another contract assertion of the same context (a
+    /// contract_assert in a statement expression in a predicate); -1 if none.
+    unsigned PrevIndexForContext = unsigned(-1);
+    unsigned PrevFunctionScopeContractIndex = unsigned(-1);
+    const DeclContext *getFunctionContext(bool AllowLambda = true) const;
+  };
+
+  SmallVector<ContractScopeRecord, 4> ContractScopeStack;
+  llvm::DenseMap<const DeclContext *, unsigned> ContractScopeIndexMap;
+
+  /// True while an assertion-control expression (P3400: a contract label) is
+  /// parsed, where a `using namespace contract_control` directive's names are
+  /// visible to lookup.
+  bool InAssertionControlExpression = false;
+
+  /// P3400 [expr.contract.control]: contract_control (E) is an lvalue denoting
+  /// a constexpr object of E's deduced type initialized by E.  A dependent E
+  /// is kept as a call to __builtin_contract_control and finished at
+  /// instantiation.
+  ExprResult ActOnContractControlExpr(SourceLocation KwLoc, Expr *E,
+                                      SourceLocation RParenLoc);
+  ExprResult BuildContractControlObject(SourceLocation Loc, Expr *E);
+
+  /// Label types already checked for near-miss facets, so that a label named
+  /// by a hundred contracts does not warn a hundred times.  The answer depends
+  /// only on the type.
+  llvm::DenseSet<const CXXRecordDecl *> ContractNearMissCheckedLabels;
+  /// The synthesized functions through which the runtime calls a label's local
+  /// violation handler (false) or query (true) facet, by label type.
+  llvm::DenseMap<std::pair<const Type *, unsigned>, FunctionDecl *>
+      ContractLabelFacetTrampolines;
+
+  const ContractScopeRecord *
+  getFirstEnclosingContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getLastEnclosingContractScopeForContext(const DeclContext *DC) const;
+  const ContractScopeRecord *
+  getFirstEnclosedContractScopeForContext(const DeclContext *DC) const;
+
+  void PushContractScope(ContractKind CK, ContractScopeOffset ScopeOffset,
+                         SourceLocation Loc);
+  ContractScopeRecord PopContractScope();
+
+  ArrayRef<ContractScopeRecord> getContractScopes() const;
+
+  struct ContractScopeRAII {
+    ContractScopeRAII(Sema &S, ContractKind CK, ContractScopeOffset Offset,
+                      SourceLocation ContractLoc);
+    ~ContractScopeRAII();
+
+  private:
+    ContractScopeRAII(ContractScopeRAII const &) = delete;
+    ContractScopeRAII &operator=(ContractScopeRAII const &) = delete;
+
+    Sema &S;
+  };
+
+  // The contract whose condition is the current expression evaluation context.
+  // or null if we're not inside a contract.
+  const ContractScopeRecord *getCurrentContractEntry() const;
+
+  SourceLocation getCurrentContractKeywordLoc() {
+    assert(getCurrentContractEntry() && "No current contract?");
+    return getCurrentContractEntry()->KeywordLoc;
+  }
+
+  // Return whether to constify the specified variable in the current context.
+  ContractConstification getContractConstification(const ValueDecl *VD);
+
+  /// Return true if the usage of this variable in the current context would
+  /// "cross" a contract boundary. Meaning the variable is declared above the
+  /// contract scope and used below it.
+  bool isUsageAcrossContract(const ValueDecl *VD);
+
+  /// Return the correctly constified 'this' type, accounting for any
+  /// constification contexts that may be in effect.
+  QualType adjustCXXThisTypeForContracts(QualType QT);
 
   /// Increment when we find a reference; decrement when we find an ignored
   /// assignment.  Ultimately the value is 0 if every reference is an ignored
@@ -8799,6 +8915,10 @@ public:
   /// current context not being a non-static member function. In such cases,
   /// this provides the type used for 'this'.
   QualType CXXThisTypeOverride;
+
+  /// Whether the current CXXThisTypeOverride has `const` added to it by a
+  /// contract constification context when the current 'this' type would have
+  /// otherwise been non-const. Used when issuing diagnostics.
 
   /// RAII object used to temporarily allow the C++ 'this' expression
   /// to be used, with the given qualifiers on the current class type.
