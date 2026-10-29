@@ -27,6 +27,7 @@ __cpp_lib_apply                                         201603L <tuple>
 __cpp_lib_array_constexpr                               201811L <array> <iterator>
                                                         201603L // C++17
 __cpp_lib_as_const                                      201510L <utility>
+__cpp_lib_assert_can_use_contracts                      202610L <cassert>
 __cpp_lib_associative_heterogeneous_erasure             202110L <map> <set> <unordered_map>
                                                                 <unordered_set>
 __cpp_lib_associative_heterogeneous_insertion           202306L <map> <set> <unordered_map>
@@ -98,6 +99,12 @@ __cpp_lib_containers_ranges                             202202L <deque> <forward
                                                                 <map> <queue> <set>
                                                                 <stack> <string> <unordered_map>
                                                                 <unordered_set> <vector>
+__cpp_lib_contracts                                     202502L <contracts>
+__cpp_lib_contracts_api                                 202610L <contracts>
+__cpp_lib_contracts_implicit                            202610L <contracts>
+__cpp_lib_contracts_labels                              202610L <contracts>
+__cpp_lib_contracts_message                             202610L <contracts>
+__cpp_lib_contracts_report                              202610L <contracts>
 __cpp_lib_copyable_function                             202306L <functional>
 __cpp_lib_coroutine                                     201902L <coroutine>
 __cpp_lib_debugging                                     202403L <debugging>
@@ -237,6 +244,7 @@ __cpp_lib_rcu                                           202306L <rcu>
 __cpp_lib_reference_from_temporary                      202202L <type_traits>
 __cpp_lib_reference_wrapper                             202403L <functional>
 __cpp_lib_remove_cvref                                  201711L <type_traits>
+__cpp_lib_replaceable_contract_violation_handler        202603L <contracts>
 __cpp_lib_result_of_sfinae                              201210L <functional> <type_traits>
 __cpp_lib_robust_nonmodifying_seq_ops                   201304L <algorithm>
 __cpp_lib_sample                                        201603L <algorithm>
@@ -412,6 +420,9 @@ __cpp_lib_void_t                                        201411L <type_traits>
 #if _LIBCPP_STD_VER >= 20
 # undef  __cpp_lib_array_constexpr
 # define __cpp_lib_array_constexpr                      201811L
+# if defined(__clang_contracts_p3290)
+#   define __cpp_lib_assert_can_use_contracts           202610L
+# endif
 # define __cpp_lib_assume_aligned                       201811L
 # define __cpp_lib_atomic_flag_test                     201907L
 # define __cpp_lib_atomic_float                         201711L
@@ -445,6 +456,24 @@ __cpp_lib_void_t                                        201411L <type_traits>
 # define __cpp_lib_constexpr_tuple                      201811L
 # define __cpp_lib_constexpr_utility                    201811L
 # define __cpp_lib_constexpr_vector                     201907L
+# if defined(__cpp_contracts)
+#   define __cpp_lib_contracts                          202502L
+# endif
+# if defined(__clang_contracts_p3290)
+#   define __cpp_lib_contracts_api                      202610L
+# endif
+# if defined(__clang_contracts_p3100)
+#   define __cpp_lib_contracts_implicit                 202610L
+# endif
+# if defined(__cpp_contracts_labels)
+#   define __cpp_lib_contracts_labels                   202610L
+# endif
+# if defined(__cpp_contracts_message)
+#   define __cpp_lib_contracts_message                  202610L
+# endif
+# if defined(__cpp_contracts_report)
+#   define __cpp_lib_contracts_report                   202610L
+# endif
 # define __cpp_lib_coroutine                            201902L
 # if defined(__cpp_impl_destroying_delete) && __cpp_impl_destroying_delete >= 201806L
 #   define __cpp_lib_destroying_delete                  201806L
@@ -481,6 +510,9 @@ __cpp_lib_void_t                                        201411L <type_traits>
 # endif
 # define __cpp_lib_ranges                               202110L
 # define __cpp_lib_remove_cvref                         201711L
+# if defined(__cpp_contracts) && defined(__ELF__)
+#   define __cpp_lib_replaceable_contract_violation_handler 202603L
+# endif
 # if _LIBCPP_HAS_THREADS
 #   define __cpp_lib_semaphore                          201907L
 # endif

@@ -31,8 +31,10 @@ for header in public_headers:
         lambda h: f"_LIBCPP_{str(h).upper().replace('.', '_').replace('/', '_')}"
     )
 
-    # <cassert> has no header guards
-    if header == "cassert":
+    # <cassert> and its C compatibility header <assert.h> have no header
+    # guards: both must be re-includable so that `assert` is redefined
+    # according to the current NDEBUG.
+    if header in ("cassert", "assert.h"):
         checks = ""
     else:
         checks = f"""

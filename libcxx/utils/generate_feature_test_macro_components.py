@@ -149,6 +149,17 @@ feature_test_macros = [
             "headers": ["utility"],
         },
         {
+            "name": "__cpp_lib_assert_can_use_contracts",
+            # P3290; like every contracts macro, defined from C++20 (what
+            # <contracts> needs is <source_location>) whenever the compiler
+            # predefines the language macro of the facility, since
+            # -fcontracts and the per-paper flags reach dialects below C++26.
+            "values": {"c++20": 202610},
+            "headers": ["cassert"],
+            "test_suite_guard": "defined(__clang_contracts_p3290)",
+            "libcxx_guard": "defined(__clang_contracts_p3290)",
+        },
+        {
             "name": "__cpp_lib_associative_heterogeneous_erasure",
             "values": {"c++23": 202110},
             "headers": ["map", "set", "unordered_map", "unordered_set"],
@@ -493,6 +504,54 @@ feature_test_macros = [
                 "unordered_set",
                 "vector",
             ],
+        },
+        {
+            "name": "__cpp_lib_contracts",
+            # P2900; see __cpp_lib_assert_can_use_contracts for the C++20 floor
+            "values": {"c++20": 202502},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts)",
+            "libcxx_guard": "defined(__cpp_contracts)",
+        },
+        {
+            "name": "__cpp_lib_contracts_api",
+            # P3290
+            "values": {"c++20": 202610},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__clang_contracts_p3290)",
+            "libcxx_guard": "defined(__clang_contracts_p3290)",
+        },
+        {
+            "name": "__cpp_lib_contracts_implicit",
+            # P3100
+            "values": {"c++20": 202610},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__clang_contracts_p3100)",
+            "libcxx_guard": "defined(__clang_contracts_p3100)",
+        },
+        {
+            "name": "__cpp_lib_contracts_labels",
+            # P3400
+            "values": {"c++20": 202610},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_labels)",
+            "libcxx_guard": "defined(__cpp_contracts_labels)",
+        },
+        {
+            "name": "__cpp_lib_contracts_message",
+            # P3099
+            "values": {"c++20": 202610},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_message)",
+            "libcxx_guard": "defined(__cpp_contracts_message)",
+        },
+        {
+            "name": "__cpp_lib_contracts_report",
+            # P4301
+            "values": {"c++20": 202610},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_report)",
+            "libcxx_guard": "defined(__cpp_contracts_report)",
         },
         {
             "name": "__cpp_lib_copyable_function",
@@ -1262,6 +1321,15 @@ feature_test_macros = [
             "name": "__cpp_lib_remove_cvref",
             "values": {"c++20": 201711},
             "headers": ["type_traits"],
+        },
+        {
+            "name": "__cpp_lib_replaceable_contract_violation_handler",
+            # Replaceable where the weak default can be overridden, as for
+            # libstdc++: an ELF target.
+            "values": {"c++20": 202603},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts) && defined(__ELF__)",
+            "libcxx_guard": "defined(__cpp_contracts) && defined(__ELF__)",
         },
         {
             "name": "__cpp_lib_result_of_sfinae",
