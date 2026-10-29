@@ -1,0 +1,3 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.representable.type.result"}, "output": {"semantic": "enforce"}}
+]

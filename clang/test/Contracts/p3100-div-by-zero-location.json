@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.div.by.zero", "location": "p3100-div-by-zero-location.cpp:25-25"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.div.by.zero"}, "output": {"semantic": "observe"}}
+]
