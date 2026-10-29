@@ -389,6 +389,185 @@ static LookupResult makeFacetLookup(Sema &S, LabelFacet F, SourceLocation Loc) {
                       Sema::LookupMemberName);
 }
 
+/// The function through which the runtime calls a label's local violation
+/// handler (IsQuery false) or query facet (IsQuery true), one per label type:
+///
+///   static int H(const void *__label, const void *__violation) {
+///     return int(violation_handled(
+///         static_cast<const L *>(__label)->handle_contract_violation(
+///             *static_cast<const contract_violation *>(__violation))));
+///   }   // or, for a void handler, the call and then `return 0;'
+///   static void *Q(const void *__label, const void *__key, size_t __index) {
+///     return static_cast<const L *>(__label)->query(__key, __index);
+///   }
+///
+/// These are the signatures the runtime calls.  The facet call is built with
+/// ordinary lookup and overload resolution, so every shape the label concepts
+/// admit -- a member template, a default argument, an explicit object
+/// parameter, a result convertible to violation_handled, a static member, a
+/// member of a base -- is called as the concept calls it.  Null if the call
+/// cannot be built, which facet detection has already ruled out.
+static FunctionDecl *getLabelFacetTrampoline(Sema &S, QualType LabelTy,
+                                             const CXXRecordDecl *RD,
+                                             bool IsQuery, SourceLocation Loc) {
+  ASTContext &C = S.Context;
+  QualType ObjTy = LabelTy.getUnqualifiedType().withConst();
+  auto Key = std::make_pair(C.getCanonicalType(ObjTy).getTypePtr(),
+                            static_cast<unsigned>(IsQuery));
+  if (FunctionDecl *Cached = S.ContractLabelFacetTrampolines.lookup(Key))
+    return Cached;
+
+  QualType CVTy;
+  QualType HandledTy;
+  if (!IsQuery) {
+    CVTy = getContractViolationType(S, Loc);
+    if (CVTy.isNull())
+      return nullptr;
+  }
+
+  // Name it after the label type: one per type, and the same in every TU.
+  std::string Name =
+      IsQuery ? "__clang_contract_query_" : "__clang_contract_local_handler_";
+  {
+    llvm::raw_string_ostream OS(Name);
+    std::unique_ptr<MangleContext> MC(C.createMangleContext());
+    MC->mangleCanonicalTypeName(LabelTy.getUnqualifiedType(), OS);
+  }
+
+  QualType ConstVoidPtr = C.getPointerType(C.VoidTy.withConst());
+  SmallVector<QualType, 3> ParamTys = {ConstVoidPtr, ConstVoidPtr};
+  if (IsQuery)
+    ParamTys.push_back(C.getSizeType());
+  QualType RetTy = IsQuery ? C.VoidPtrTy : C.IntTy;
+  QualType FnTy =
+      C.getFunctionType(RetTy, ParamTys, FunctionProtoType::ExtProtoInfo());
+  FunctionDecl *FD = FunctionDecl::Create(
+      C, C.getTranslationUnitDecl(), Loc, Loc, &C.Idents.get(Name), FnTy,
+      C.getTrivialTypeSourceInfo(FnTy, Loc), SC_Static,
+      S.getCurFPFeatures().isFPConstrained(), /*isInlineSpecified=*/false,
+      /*hasWrittenPrototype=*/true);
+  FD->setImplicit();
+
+  static constexpr StringRef ParamNames[2][3] = {
+      {"__label", "__violation", ""}, {"__label", "__key", "__index"}};
+  SmallVector<ParmVarDecl *, 3> Params;
+  for (unsigned I = 0; I != ParamTys.size(); ++I) {
+    auto *P = ParmVarDecl::Create(
+        C, FD, Loc, Loc, &C.Idents.get(ParamNames[IsQuery][I]), ParamTys[I],
+        C.getTrivialTypeSourceInfo(ParamTys[I], Loc), SC_None, nullptr);
+    P->setScopeInfo(0, I);
+    Params.push_back(P);
+  }
+  FD->setParams(Params);
+
+  // Build the body as the body of FD, in a scope of its own and potentially
+  // evaluated (facet detection runs in a constant-evaluated context).
+  Sema::ContextRAII SavedContext(S, FD);
+  Sema::FunctionScopeRAII FunctionScope(S);
+  S.PushFunctionScope();
+  EnterExpressionEvaluationContext PotentiallyEvaluated(
+      S, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+
+  auto ParamValue = [&](unsigned I) {
+    return S.DefaultLvalueConversion(
+        S.BuildDeclRefExpr(Params[I], Params[I]->getType(), VK_LValue, Loc));
+  };
+  // *static_cast<const T *>(param I)
+  auto Deref = [&](unsigned I, QualType T) -> ExprResult {
+    ExprResult V = ParamValue(I);
+    if (V.isInvalid())
+      return ExprError();
+    QualType PtrTy = C.getPointerType(T);
+    ExprResult Cast = S.BuildCXXNamedCast(
+        Loc, tok::kw_static_cast, C.getTrivialTypeSourceInfo(PtrTy, Loc),
+        V.get(), SourceRange(Loc, Loc), SourceRange(Loc, Loc));
+    if (Cast.isInvalid())
+      return ExprError();
+    return S.CreateBuiltinUnaryOp(Loc, UO_Deref, Cast.get());
+  };
+
+  ExprResult Obj = Deref(0, ObjTy);
+  if (Obj.isInvalid())
+    return nullptr;
+  LookupResult R = makeFacetLookup(
+      S, IsQuery ? LabelFacet::Query : LabelFacet::HandleContractViolation,
+      Loc);
+  if (!lookupFacetMember(S, RD, LabelTy, R))
+    return nullptr;
+  ExprResult Member = buildFacetMemberRef(S, Obj.get(), ObjTy, R, Loc);
+  if (Member.isInvalid())
+    return nullptr;
+
+  // The arguments are lvalues, as the concept's requirement parameters are.
+  SmallVector<Expr *, 2> Args;
+  if (IsQuery) {
+    for (unsigned I : {1u, 2u})
+      Args.push_back(
+          S.BuildDeclRefExpr(Params[I], Params[I]->getType(), VK_LValue, Loc));
+  } else {
+    ExprResult A = Deref(1, CVTy.withConst());
+    if (A.isInvalid())
+      return nullptr;
+    Args.push_back(A.get());
+  }
+  ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, Member.get(), Loc, Args,
+                                    Loc, /*ExecConfig=*/nullptr);
+  if (Call.isInvalid())
+    return nullptr;
+
+  SmallVector<Stmt *, 2> Body;
+  Expr *Result = Call.get();
+  if (!IsQuery) {
+    if (Result->getType()->isVoidType()) {
+      ExprResult Full =
+          S.ActOnFinishFullExpr(Result, Loc, /*DiscardedValue=*/true);
+      if (Full.isInvalid())
+        return nullptr;
+      Body.push_back(Full.get());
+      Result = IntegerLiteral::Create(C, llvm::APInt(C.getIntWidth(C.IntTy), 0),
+                                      C.IntTy, Loc);
+    } else {
+      HandledTy = getStdContractsTagType(S, "violation_handled", Loc);
+      if (HandledTy.isNull())
+        return nullptr;
+      ExprResult Handled = S.PerformImplicitConversion(
+          Result, HandledTy, AssignmentAction::Converting);
+      if (Handled.isInvalid())
+        return nullptr;
+      ExprResult AsInt = S.BuildCXXNamedCast(
+          Loc, tok::kw_static_cast, C.getTrivialTypeSourceInfo(C.IntTy, Loc),
+          Handled.get(), SourceRange(Loc, Loc), SourceRange(Loc, Loc));
+      if (AsInt.isInvalid())
+        return nullptr;
+      Result = AsInt.get();
+    }
+  }
+  StmtResult Ret = S.BuildReturnStmt(Loc, Result);
+  if (Ret.isInvalid())
+    return nullptr;
+  Body.push_back(Ret.get());
+  FD->setBody(CompoundStmt::Create(C, Body, FPOptionsOverride(), Loc, Loc));
+
+  // CodeGen's rethrowing-local-handler bypass reads the handler's body to
+  // decide whether the predicate needs an EH region at all, and CodeGen has no
+  // Sema to instantiate one with.  For a template specialization --
+  // __combined_label's handler above all, which is the case the optimization
+  // most wants to see -- the reference above only queues the definition until
+  // the end of the TU, by which point an eagerly emitted guarded function has
+  // already been code-generated without it.  Instantiate it now: the
+  // trampoline odr-uses it, so this only moves the instantiation earlier.
+  if (!IsQuery)
+    if (auto *CE = dyn_cast<CallExpr>(Call.get()->IgnoreImplicit()))
+      if (FunctionDecl *Callee = CE->getDirectCallee())
+        if (!Callee->hasBody() && Callee->isTemplateInstantiation())
+          S.InstantiateFunctionDefinition(Loc, Callee, /*Recursive=*/false,
+                                          /*DefinitionRequired=*/false,
+                                          /*AtEndOfTU=*/false);
+
+  S.ContractLabelFacetTrampolines[Key] = FD;
+  return FD;
+}
+
 /// The argument a compute_semantic facet, or evaluation_semantic_set::contains,
 /// is called with: a non-const lvalue of std::contracts::evaluation_semantic
 /// holding \p SemVal, as in the library concept.  Passing that and letting
