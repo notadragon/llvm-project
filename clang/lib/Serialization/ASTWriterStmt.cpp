@@ -501,6 +501,64 @@ void ASTStmtWriter::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
   Code = serialization::EXPR_DEPENDENT_COAWAIT;
 }
 
+void ASTStmtWriter::VisitContractStmt(ContractStmt *S) {
+  VisitStmt(S);
+
+  CurrentPackingBits.updateBits();
+  CurrentPackingBits.addBits(S->ContractStmtBits.ContractKind,
+                             /*BitsWidth=*/NumContractKindBits);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasResultName);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasMessage);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasLabel);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasLocalHandler);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasQuery);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasCaptures);
+  CurrentPackingBits.addBit(S->ContractStmtBits.HasRequiresClause);
+  CurrentPackingBits.addBit(S->ContractStmtBits.PredicateCanThrow);
+  Record.push_back(S->getAttrs().size());
+  Record.push_back(S->getAllowedMask());
+  Record.push_back(static_cast<unsigned>(S->getLabelAnalysisSemantic()));
+
+  Record.AddSourceLocation(S->getKeywordLoc());
+  Record.AddSourceLocation(S->getRParenLoc());
+  Record.AddStmt(S->getCond());
+  if (S->hasResultName())
+    Record.AddStmt(S->getResultNameDeclStmt());
+  if (S->hasMessage())
+    Record.AddStmt(S->getMessageExpr());
+  if (S->hasLabel())
+    Record.AddStmt(S->getLabelExpr());
+  if (S->hasCaptures())
+    Record.AddStmt(S->getCapturesDeclStmt());
+  if (S->hasRequiresClause())
+    Record.AddStmt(S->getRequiresClause());
+  Record.AddAttributes(S->getAttrs());
+  Record.push_back(S->hasTransformedComment());
+  Record.AddString(S->getTransformedComment());
+  Record.push_back(S->hasTransformedMessage());
+  Record.AddString(S->getTransformedMessage());
+  if (S->hasLocalHandler())
+    Record.AddDeclRef(S->getLocalHandlerFn());
+  if (S->hasQuery())
+    Record.AddDeclRef(S->getQueryFn());
+  Record.push_back(S->isInvalid());
+
+  // P3595 dynamic selection: the resolved descriptor + precomputed transform
+  // table are computed in Sema (applyLabelFacets) and cannot be recomputed
+  // lazily on the reader side (codegen has no Sema), so serialize them.
+  Record.push_back(S->isDynamic());
+  if (S->isDynamic()) {
+    Record.AddString(S->getDynName());
+    Record.push_back(static_cast<unsigned>(S->getDynLinkage()));
+    Record.push_back(S->getDynProvideWeak());
+    Record.push_back(static_cast<unsigned>(S->getDynConfiguredSemantic()));
+    for (unsigned R = 1; R <= ContractStmt::NumDynRawSemantics; ++R)
+      Record.push_back(static_cast<unsigned>(S->getDynTransform(R)));
+  }
+
+  Code = serialization::STMT_CXX_CONTRACT;
+}
+
 static void
 addConstraintSatisfaction(ASTRecordWriter &Record,
                           const ASTConstraintSatisfaction &Satisfaction) {

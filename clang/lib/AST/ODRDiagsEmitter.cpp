@@ -9,6 +9,7 @@
 #include "clang/AST/ODRDiagsEmitter.h"
 #include "clang/AST/DeclFriend.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/AST/ODRHash.h"
 #include "clang/Basic/DiagnosticAST.h"
 #include "clang/Basic/Module.h"
@@ -1670,6 +1671,7 @@ bool ODRDiagsEmitter::diagnoseMismatch(
     ParameterSingleDefaultArgument,
     ParameterDifferentDefaultArgument,
     FunctionBody,
+    FunctionContracts,
   };
 
   std::string FirstModule = getOwningModuleNameForDiagnostic(FirstFunction);
@@ -1778,6 +1780,24 @@ bool ODRDiagsEmitter::diagnoseMismatch(
 
     assert(computeODRHash(FirstParam) == computeODRHash(SecondParam) &&
            "Undiagnosed parameter difference.");
+  }
+
+  // The function contract specifiers: their number, kinds and predicates.
+  auto ContractsHash = [](const FunctionDecl *FD) {
+    llvm::SmallVector<unsigned, 4> Hashes;
+    if (const ContractSpecifierDecl *Contracts = FD->getContracts())
+      for (const ContractStmt *CS : Contracts->contracts()) {
+        Hashes.push_back(static_cast<unsigned>(CS->getContractKind()));
+        Hashes.push_back(computeODRHash(CS->getCond()));
+      }
+    return Hashes;
+  };
+  if (ContractsHash(FirstFunction) != ContractsHash(SecondFunction)) {
+    DiagError(FirstFunction->getLocation(), FirstFunction->getSourceRange(),
+              FunctionContracts);
+    DiagNote(SecondFunction->getLocation(), SecondFunction->getSourceRange(),
+             FunctionContracts);
+    return true;
   }
 
   // If no error has been generated before now, assume the problem is in

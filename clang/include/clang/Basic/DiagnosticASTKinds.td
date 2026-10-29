@@ -897,7 +897,8 @@ def err_module_odr_violation_function : Error<
   "%ordinal4 parameter with type %5%select{| decayed from %7}6|"
   "%ordinal4 parameter with%select{out|}5 a default argument|"
   "%ordinal4 parameter with a default argument|"
-  "function body"
+  "function body|"
+  "function contract specifiers"
   "}3">;
 
 def note_module_odr_violation_function : Note<"but in '%0' found "
@@ -907,7 +908,8 @@ def note_module_odr_violation_function : Note<"but in '%0' found "
   "%ordinal2 parameter with type %3%select{| decayed from %5}4|"
   "%ordinal2 parameter with%select{out|}3 a default argument|"
   "%ordinal2 parameter with a different default argument|"
-  "a different body"
+  "a different body|"
+  "different function contract specifiers"
   "}1">;
 
 def err_module_odr_violation_enum : Error<

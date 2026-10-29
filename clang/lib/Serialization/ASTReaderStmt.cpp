@@ -40,6 +40,7 @@
 #include "clang/AST/UnresolvedSet.h"
 #include "clang/Basic/BuiltinTraits.h"
 #include "clang/Basic/CapturedStmt.h"
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OpenMPKinds.h"
@@ -510,6 +511,68 @@ void ASTStmtReader::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
   E->KeywordLoc = readSourceLocation();
   for (auto &SubExpr: E->SubExprs)
     SubExpr = Record.readSubStmt();
+}
+
+void ASTStmtReader::VisitContractStmt(ContractStmt *S) {
+  VisitStmt(S);
+  // Skip the packed bit field.  ReadStmtFromStream has already unpacked it,
+  // because CreateEmpty needs the sizing bits (the kind, and which optional
+  // trailing objects are present) before the object exists to visit.
+  Record.skipInts(1);
+  unsigned NumAttrs = Record.readInt();
+  S->setAllowedMask(Record.readInt());
+  S->setLabelAnalysisSemantic(
+      static_cast<ContractEvaluationSemantic>(Record.readInt()));
+
+  S->KeywordLoc = Record.readSourceLocation();
+  S->RParenLoc = Record.readSourceLocation();
+  S->setCondition(Record.readExpr());
+  if (S->hasResultName())
+    S->setResultName(cast<DeclStmt>(Record.readStmt()));
+  if (S->hasMessage())
+    S->setMessage(Record.readExpr());
+  if (S->hasLabel())
+    S->setLabel(Record.readExpr());
+  if (S->hasCaptures())
+    S->setCaptures(cast<DeclStmt>(Record.readStmt()));
+  if (S->hasRequiresClause())
+    S->setRequiresClause(Record.readExpr());
+  AttrVec Attrs;
+  Record.readAttributes(Attrs);
+  assert(Attrs.size() == NumAttrs);
+  ((void)NumAttrs);
+  S->copyAttrs(Attrs);
+
+  bool HasTC = Record.readInt();
+  std::string TC = Record.readString();
+  if (HasTC)
+    S->setTransformedComment(Record.getContext().backupStr(TC));
+  bool HasTM = Record.readInt();
+  std::string TM = Record.readString();
+  if (HasTM)
+    S->setTransformedMessage(Record.getContext().backupStr(TM));
+  if (S->hasLocalHandler())
+    S->setLocalHandlerFn(readDeclAs<FunctionDecl>());
+  if (S->hasQuery())
+    S->setQueryFn(readDeclAs<FunctionDecl>());
+  if (Record.readInt())
+    S->setInvalid();
+
+  // P3595 dynamic selection: restore the descriptor + precomputed transform
+  // table written by ASTStmtWriter::VisitContractStmt.
+  bool IsDynamic = Record.readInt();
+  if (IsDynamic) {
+    std::string DynName = Record.readString();
+    auto DynLinkage = static_cast<ContractDynamicLinkage>(Record.readInt());
+    bool DynProvideWeak = Record.readInt();
+    auto DynConfigured =
+        static_cast<ContractEvaluationSemantic>(Record.readInt());
+    uint8_t Table[ContractStmt::NumDynRawSemantics];
+    for (unsigned I = 0; I < ContractStmt::NumDynRawSemantics; ++I)
+      Table[I] = static_cast<uint8_t>(Record.readInt());
+    S->setDynamicInfo(Record.getContext().backupStr(DynName), DynLinkage,
+                      DynProvideWeak, DynConfigured, Table);
+  }
 }
 
 void ASTStmtReader::VisitCapturedStmt(CapturedStmt *S) {
@@ -4608,6 +4671,32 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
     case EXPR_DEPENDENT_COAWAIT:
       S = new (Context) DependentCoawaitExpr(Empty);
       break;
+
+    case STMT_CXX_CONTRACT: {
+      BitsUnpacker ContractBits(Record[ASTStmtReader::NumStmtFields]);
+      ContractKind CK = static_cast<ContractKind>(
+          ContractBits.getNextBits(NumContractKindBits));
+      bool HasResultName = ContractBits.getNextBit();
+      bool HasMessage = ContractBits.getNextBit();
+      bool HasLabel = ContractBits.getNextBit();
+      bool HasLocalHandler = ContractBits.getNextBit();
+      bool HasQuery = ContractBits.getNextBit();
+      bool HasCaptures = ContractBits.getNextBit();
+      bool HasRequiresClause = ContractBits.getNextBit();
+      bool PredicateCanThrow = ContractBits.getNextBit();
+
+      unsigned NumAttrs = Record[ASTStmtReader::NumStmtFields + 1];
+
+      S = ContractStmt::CreateEmpty(Context, CK, HasResultName, HasMessage,
+                                    HasLabel, HasCaptures, HasRequiresClause,
+                                    NumAttrs);
+      if (HasLocalHandler)
+        cast<ContractStmt>(S)->setHasLocalHandler(true);
+      if (HasQuery)
+        cast<ContractStmt>(S)->setHasQuery(true);
+      cast<ContractStmt>(S)->setPredicateCanThrow(PredicateCanThrow);
+      break;
+    }
 
     case EXPR_CONCEPT_SPECIALIZATION: {
       S = new (Context) ConceptSpecializationExpr(Empty);

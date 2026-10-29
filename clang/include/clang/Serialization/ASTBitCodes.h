@@ -1565,7 +1565,16 @@ enum DeclCode {
   /// An ExplicitInstantiationDecl record.
   DECL_EXPLICIT_INSTANTIATION,
 
-  DECL_LAST = DECL_EXPLICIT_INSTANTIATION
+  /// A ResultNameDecl record.
+  DECL_RESULT_NAME,
+
+  /// A PostconditionCaptureDecl record.
+  DECL_POSTCONDITION_CAPTURE,
+
+  /// A ContractSpecifierDecl record.
+  DECL_CONTRACT_SPECIFIER,
+
+  DECL_LAST = DECL_CONTRACT_SPECIFIER
 };
 
 /// Record codes for each kind of statement or expression.
@@ -2110,6 +2119,9 @@ enum StmtCode {
   EXPR_HLSL_OUT_ARG,
 
   STMT_DEFER,
+
+  /// A ContractStmt record.
+  STMT_CXX_CONTRACT,
 };
 
 /// The kinds of designators that can occur in a
