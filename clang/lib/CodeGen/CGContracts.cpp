@@ -2052,6 +2052,168 @@ SanitizerSet CodeGenFunction::EmitImplicitPlacementNewGuards(
   return Handled;
 }
 
+// P3100: [expr.assign] makes a built-in assignment undefined when the value
+// stored is read from an object that overlaps the destination, unless the
+// overlap is exact and the two objects have the same type
+// ({expr.assign.overlap}).  The value is read by the load EmitCheckedLValue
+// makes of the source glvalue while the right operand is emitted, so the scope
+// names that glvalue and EmitCheckedLValue records its address; the left
+// operand is emitted after it.  Neither operand is emitted twice, so operands
+// with side effects are checked too.
+const Expr *CodeGenFunction::stripP3100OverlapGlvalue(const Expr *E) {
+  for (;;) {
+    E = E->IgnoreParens();
+    const auto *CE = dyn_cast<CastExpr>(E);
+    if (!CE || CE->getCastKind() != CK_NoOp || !CE->isGLValue())
+      return E;
+    E = CE->getSubExpr();
+  }
+}
+
+/// P3100: the variable the glvalue E names directly, through '.' accesses of
+/// non-static data members and subscripts of arrays; null otherwise.  Two
+/// different variables cannot overlap.
+static const VarDecl *getP3100OverlapBaseVar(const Expr *E) {
+  for (;;) {
+    E = CodeGenFunction::stripP3100OverlapGlvalue(E);
+    if (const auto *ME = dyn_cast<MemberExpr>(E)) {
+      if (ME->isArrow() || !isa<FieldDecl>(ME->getMemberDecl()))
+        return nullptr;
+      E = ME->getBase();
+      continue;
+    }
+    if (const auto *AS = dyn_cast<ArraySubscriptExpr>(E)) {
+      const auto *IC =
+          dyn_cast<ImplicitCastExpr>(AS->getBase()->IgnoreParens());
+      if (!IC || IC->getCastKind() != CK_ArrayToPointerDecay)
+        return nullptr;
+      E = IC->getSubExpr();
+      continue;
+    }
+    break;
+  }
+  const auto *DRE = dyn_cast<DeclRefExpr>(E);
+  const auto *VD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+  if (!VD || VD->getType()->isReferenceType())
+    return nullptr;
+  return VD;
+}
+
+/// P3100: whether a cast of kind K converts the value read without reading
+/// anything else.
+static bool isP3100OverlapValueConversion(CastKind K) {
+  switch (K) {
+  case CK_NoOp:
+  case CK_IntegralCast:
+  case CK_IntegralToBoolean:
+  case CK_IntegralToFloating:
+  case CK_FloatingToIntegral:
+  case CK_FloatingToBoolean:
+  case CK_FloatingCast:
+  case CK_BooleanToSignedIntegral:
+  case CK_BitCast:
+  case CK_PointerToBoolean:
+  case CK_PointerToIntegral:
+  case CK_IntegralToPointer:
+  case CK_MemberPointerToBoolean:
+  case CK_DerivedToBase:
+  case CK_UncheckedDerivedToBase:
+  case CK_BaseToDerived:
+    return true;
+  default:
+    return false;
+  }
+}
+
+CodeGenFunction::P3100AssignOverlapScope::P3100AssignOverlapScope(
+    CodeGenFunction &CGF, const BinaryOperator *E)
+    : CGF(CGF), E(E), Sem(ContractEvaluationSemantic::Assume),
+      SavedSrc(CGF.P3100OverlapSrc), SavedAddr(CGF.P3100OverlapSrcAddr) {
+  CGF.P3100OverlapSrc = nullptr;
+  CGF.P3100OverlapSrcAddr = Address::invalid();
+  if (!CGF.getLangOpts().ContractsP3100 || E->getOpcode() != BO_Assign)
+    return;
+  const Expr *LHS = E->getLHS();
+  QualType DestTy = LHS->getType();
+  if (!DestTy->isScalarType() || DestTy->isAtomicType() ||
+      LHS->refersToBitField())
+    return;
+
+  // The glvalue the stored value is read from, through conversions of the
+  // value read.
+  const Expr *Src = nullptr;
+  for (const Expr *R = E->getRHS();;) {
+    const auto *CE = dyn_cast<CastExpr>(R->IgnoreParens());
+    if (!CE)
+      return;
+    if (CE->getCastKind() == CK_LValueToRValue) {
+      Src = stripP3100OverlapGlvalue(CE->getSubExpr());
+      break;
+    }
+    if (!isP3100OverlapValueConversion(CE->getCastKind()) ||
+        !CE->getSubExpr()->isPRValue())
+      return;
+    R = CE->getSubExpr();
+  }
+  QualType SrcTy = Src->getType();
+  if (!SrcTy->isScalarType() || SrcTy->isAtomicType() ||
+      Src->refersToBitField())
+    return;
+  const VarDecl *DestVar = getP3100OverlapBaseVar(LHS);
+  const VarDecl *SrcVar = getP3100OverlapBaseVar(Src);
+  if (DestVar && SrcVar && DestVar != SrcVar)
+    return;
+
+  Sem = CGF.resolveImplicitSemantic("ub:expr.assign.overlap", E->getExprLoc());
+  if (Sem == ContractEvaluationSemantic::Assume ||
+      Sem == ContractEvaluationSemantic::Ignore)
+    return;
+  CGF.P3100OverlapSrc = Src;
+}
+
+CodeGenFunction::P3100AssignOverlapScope::~P3100AssignOverlapScope() {
+  CGF.P3100OverlapSrc = SavedSrc;
+  CGF.P3100OverlapSrcAddr = SavedAddr;
+}
+
+void CodeGenFunction::P3100AssignOverlapScope::check(LValue Dest) {
+  const Expr *Src = CGF.P3100OverlapSrc;
+  Address SrcAddr = CGF.P3100OverlapSrcAddr;
+  if (!Src || !SrcAddr.isValid() || !Dest.isSimple() || !CGF.HaveInsertPoint())
+    return;
+  ASTContext &Ctx = CGF.getContext();
+  CGBuilderTy &Builder = CGF.Builder;
+  QualType DestTy = E->getLHS()->getType();
+  QualType SrcTy = Src->getType();
+  auto Size = [&](QualType T) {
+    return llvm::ConstantInt::get(CGF.IntPtrTy,
+                                  Ctx.getTypeSizeInChars(T).getQuantity());
+  };
+
+  // overlap := dest < src + size(src) && src < dest + size(dest); between
+  // objects of the same type only an inexact overlap is undefined.
+  llvm::Value *DestBegin = Builder.CreatePtrToInt(
+      Dest.getAddress().emitRawPointer(CGF), CGF.IntPtrTy);
+  llvm::Value *SrcBegin =
+      Builder.CreatePtrToInt(SrcAddr.emitRawPointer(CGF), CGF.IntPtrTy);
+  llvm::Value *Overlap = Builder.CreateAnd(
+      Builder.CreateICmpULT(DestBegin,
+                            Builder.CreateAdd(SrcBegin, Size(SrcTy))),
+      Builder.CreateICmpULT(SrcBegin,
+                            Builder.CreateAdd(DestBegin, Size(DestTy))),
+      "assign.overlap");
+  if (Ctx.hasSameUnqualifiedType(DestTy, SrcTy))
+    Overlap = Builder.CreateAnd(Overlap,
+                                Builder.CreateICmpNE(DestBegin, SrcBegin));
+
+  llvm::BasicBlock *ViolBB = CGF.createBasicBlock("assign.overlap.viol");
+  llvm::BasicBlock *ContBB = CGF.createBasicBlock("assign.overlap.ok");
+  Builder.CreateCondBr(Overlap, ViolBB, ContBB);
+  CGF.emitImplicitGuardReaction(Sem, ViolBB, ContBB, E->getExprLoc(),
+                                "assignment from an overlapping object",
+                                dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl));
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
