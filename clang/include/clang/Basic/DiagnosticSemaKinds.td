@@ -13181,8 +13181,13 @@ let CategoryName = "Contract Issue" in {
 def err_contract_on_deleted_or_defaulted : Error<
   "%select{deleted function %1|function %1 defaulted on its first "
   "declaration}0 cannot have a function-contract-specifier">;
+def err_contract_label_no_semantics : Error<
+  "assertion-control label of type %0 allows no evaluation semantics">;
 def err_contract_no_valid_semantic : Error<
   "no valid evaluation semantic for contract assertion">;
+def err_contract_compute_semantic_disallowed : Error<
+  "compute_semantic result is not in the allowed evaluation semantics of "
+  "assertion-control label of type %0">;
 def err_contract_violation_handler_invalid : Error<
   "%select{"
   "'::handle_contract_violation' must not be declared 'inline'|"
@@ -13295,10 +13300,30 @@ def err_contract_lambda_decl_ref_not_modifiable_lvalue : Error<
 def err_contract_message_and_attribute : Error<
   "cannot use both a syntactic diagnostic message and "
   "'[[clang::contract_message]]' on the same contract assertion">;
+def warn_contract_invalid_label_facet : Warning<
+  "assertion-control object %1 does not provide the %0 facet because that "
+  "member is %select{inaccessible|not 'const'|inaccessible and not 'const'}2">,
+  InGroup<ContractInvalidLabelFacet>;
+def note_contract_invalid_label_facet : Note<"declared here">;
+def err_contract_facet_not_constant : Error<
+  "%0 facet of assertion-control object %1 must be usable in a constant "
+  "expression">, NoSFINAE;
+def err_contract_invalid_label : Error<
+  "value of type %0 is not a valid assertion-control label; its type must be a "
+  "class type with an 'assertion_control_object' member type">;
 // P3097 virtual function contracts diagnostics
 def err_contracts_on_virtual_require_flag : Error<
   "contracts on virtual functions require '-fcontracts-p3097'">;
 
+// [over.call.func]/p3.1, [expr.prim.id.general]: an unqualified reference to a
+// non-static member (requiring an implied 'this') in a constructor precondition
+// or a destructor postcondition is ill-formed, because no object is within its
+// lifetime at that point.
+def err_contract_control_not_constant : Error<
+  "operand of 'contract_control' is not a constant expression">;
+def err_contract_control_bad_type : Error<
+  "operand of 'contract_control' has type %0, which cannot be the type of a "
+  "constexpr object">;
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"

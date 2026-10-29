@@ -14083,7 +14083,10 @@ ASTContext::getUnnamedGlobalConstantDecl(QualType Ty,
 
 TemplateParamObjectDecl *
 ASTContext::getTemplateParamObjectDecl(QualType T, const APValue &V) const {
-  assert(T->isRecordType() && "template param object of unexpected type");
+  // A record type for a class-type template parameter object; a P3400
+  // contract_control (E) object may also be of scalar type.
+  assert((T->isRecordType() || T->isScalarType()) &&
+         "template param object of unexpected type");
 
   // C++ [temp.param]p8:
   //   [...] a static storage duration object of type 'const T' [...]

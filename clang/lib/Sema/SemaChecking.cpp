@@ -3410,6 +3410,17 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
   }
   case Builtin::BI__builtin_launder:
     return BuiltinLaunder(*this, TheCall);
+  case Builtin::BI__builtin_contract_control: {
+    if (checkArgCount(TheCall, 1))
+      return ExprError();
+    Expr *Arg = TheCall->getArg(0);
+    if (!Arg->isValueDependent())
+      return BuildContractControlObject(TheCall->getBeginLoc(), Arg);
+    // Still dependent: kept type-dependent, finished at instantiation.
+    return CallExpr::Create(Context, TheCall->getCallee(), {Arg},
+                            Context.DependentTy, VK_PRValue,
+                            TheCall->getRParenLoc(), FPOptionsOverride());
+  }
   case Builtin::BI__builtin_is_within_lifetime:
     return BuiltinIsWithinLifetime(*this, TheCall);
   case Builtin::BI__builtin_trivially_relocate:
