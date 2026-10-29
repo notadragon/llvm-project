@@ -246,6 +246,7 @@ public:
   bool visitCompoundStmt(const CompoundStmt *S);
   bool visitDeclStmt(const DeclStmt *DS, bool EvaluateConditionDecl = false);
   bool visitReturnStmt(const ReturnStmt *RS);
+  bool visitContractStmt(const ContractStmt *S);
   bool visitIfStmt(const IfStmt *IS);
   bool visitWhileStmt(const WhileStmt *S);
   bool visitDoStmt(const DoStmt *S);
@@ -518,6 +519,18 @@ protected:
   llvm::SmallVector<LabelInfo> LabelInfoStack;
 
   const FunctionDecl *CompilingFunction = nullptr;
+
+  /// When the function being compiled has postconditions, every return jumps
+  /// here, with a primitive return value still on the stack, and they are
+  /// checked before the function returns.
+  OptLabelTy PostconditionLabel = std::nullopt;
+  /// The scope holding the postcondition captures, which a return must not
+  /// destroy before the postconditions have read them.
+  VariableScope<Emitter> *ContractScope = nullptr;
+
+  bool visitPreconditions(const FunctionDecl *F);
+  bool visitPostconditions(const FunctionDecl *F);
+  bool emitReturnThroughPostconditions(SourceInfo SI);
 };
 
 extern template class Compiler<ByteCodeEmitter>;

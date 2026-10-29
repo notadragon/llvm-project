@@ -6801,6 +6801,8 @@ template <class Emitter> bool Compiler<Emitter>::visitStmt(const Stmt *S) {
   switch (S->getStmtClass()) {
   case Stmt::CompoundStmtClass:
     return visitCompoundStmt(cast<CompoundStmt>(S));
+  case Stmt::ContractStmtClass:
+    return visitContractStmt(cast<ContractStmt>(S));
   case Stmt::DeclStmtClass:
     return visitDeclStmt(cast<DeclStmt>(S), /*EvaluateConditionDecl=*/true);
   case Stmt::ReturnStmtClass:
@@ -6958,6 +6960,8 @@ bool Compiler<Emitter>::visitReturnStmt(const ReturnStmt *RS) {
       if (!this->visit(RE))
         return false;
       this->emitCleanup();
+      if (PostconditionLabel)
+        return this->jump(*PostconditionLabel, RS);
       return this->emitRet(*ReturnType, RS);
     }
 
@@ -6976,13 +6980,109 @@ bool Compiler<Emitter>::visitReturnStmt(const ReturnStmt *RS) {
         return false;
 
       this->emitCleanup();
-      return this->emitRetVoid(RS);
+      return emitReturnThroughPostconditions(RS);
     }
   }
 
   // Void return.
   this->emitCleanup();
-  return this->emitRetVoid(RS);
+  return emitReturnThroughPostconditions(RS);
+}
+
+template <class Emitter>
+bool Compiler<Emitter>::emitReturnThroughPostconditions(SourceInfo SI) {
+  if (PostconditionLabel)
+    return this->jump(*PostconditionLabel, SI);
+  return this->emitRetVoid(SI);
+}
+
+template <class Emitter>
+bool Compiler<Emitter>::visitContractStmt(const ContractStmt *S) {
+  using CES = ContractEvaluationSemantic;
+  // An invalid contract has already been diagnosed; see EvaluateContract in
+  // ExprConstant.cpp.
+  if (S->isInvalid())
+    return true;
+  const FunctionDecl *F = this->CompilingFunction;
+  CES Sem = S->ensureCESemantic(Ctx.getASTContext(),
+                                F ? F->getDeclContext() : nullptr);
+  // An assumption is not evaluated in constant evaluation either, and the
+  // P4405 prove and diagnose never get here; see EvaluateContract in
+  // ExprConstant.cpp, which this follows.
+  if (Sem == CES::Ignore || Sem == CES::Assume ||
+      isProvingContractSemantic(Sem))
+    return true;
+  bool NonTerminating = Sem == CES::Observe || Sem == CES::NoexceptObserve;
+
+  LabelTy EndLabel = this->getLabel();
+  if (!this->emitShouldEvalContract(S->hasResultName(), S))
+    return false;
+  if (!this->jumpFalse(EndLabel, S))
+    return false;
+  {
+    LocalScope<Emitter> CondScope(this, ScopeKind::FullExpression);
+    if (!this->visitBool(S->getCond()))
+      return false;
+    if (!CondScope.destroyLocals())
+      return false;
+  }
+  if (!this->jumpTrue(EndLabel, S))
+    return false;
+  if (!this->emitContractFailed(S, NonTerminating, S))
+    return false;
+  this->emitLabel(EndLabel);
+  return true;
+}
+
+/// Checks the preconditions of \p F and binds its postcondition captures, at
+/// entry to the function.
+template <class Emitter>
+bool Compiler<Emitter>::visitPreconditions(const FunctionDecl *F) {
+  const ContractSpecifierDecl *Contracts = F->getContracts();
+  if (!Contracts)
+    return true;
+  for (const ContractStmt *S : Contracts->preconditions())
+    if (!visitContractStmt(S))
+      return false;
+  for (const ContractStmt *S : Contracts->postconditions()) {
+    if (!S->hasCaptures())
+      continue;
+    // As EvaluatePostconditionCaptures in ExprConstant.cpp.
+    ContractEvaluationSemantic CESem =
+        S->ensureCESemantic(Ctx.getASTContext(), F->getDeclContext());
+    if (CESem == ContractEvaluationSemantic::Ignore ||
+        isProvingContractSemantic(CESem))
+      continue;
+    if (!visitDeclStmt(S->getCapturesDeclStmt()))
+      return false;
+  }
+  return true;
+}
+
+/// Checks the postconditions of \p F at PostconditionLabel, with a primitive
+/// return value on the stack.  The result name denotes a local holding that
+/// value, or the object an RVO pointer designates (see visitDeclRef).
+template <class Emitter>
+bool Compiler<Emitter>::visitPostconditions(const FunctionDecl *F) {
+  const ContractSpecifierDecl *Contracts = F->getContracts();
+  const ResultNameDecl *RND = Contracts->getCanonicalResultName();
+  std::optional<unsigned> ResultOffset;
+  if (RND && ReturnType) {
+    ResultOffset = this->allocateLocalPrimitive(RND, *ReturnType,
+                                                /*IsConst=*/true);
+    Scope::Local Local = Locals.find(RND)->second;
+    for (const ContractStmt *S : Contracts->postconditions())
+      if (S->hasResultName())
+        Locals.insert({S->getResultName(), Local});
+    if (!this->emitSetLocal(*ReturnType, *ResultOffset, F))
+      return false;
+  }
+  for (const ContractStmt *S : Contracts->postconditions())
+    if (!visitContractStmt(S))
+      return false;
+  if (ResultOffset)
+    return this->emitGetLocal(*ReturnType, *ResultOffset, F);
+  return true;
 }
 
 template <class Emitter> bool Compiler<Emitter>::visitIfStmt(const IfStmt *IS) {
@@ -7977,10 +8077,36 @@ bool Compiler<Emitter>::visitFunc(const FunctionDecl *F) {
       return this->emitLambdaStaticInvokerBody(MD);
   }
 
-  // Regular functions.
+  // Regular functions.  With contracts, the function-level scope holds the
+  // postcondition captures and the result name.
+  std::optional<LocalScope<Emitter>> ContractsScope;
+  const ContractSpecifierDecl *Contracts = F->getContracts();
+  if (Contracts) {
+    ContractsScope.emplace(this);
+    if (!visitPreconditions(F))
+      return false;
+    if (!Contracts->postconditions().empty()) {
+      PostconditionLabel = this->getLabel();
+      ContractScope = &*ContractsScope;
+    }
+  }
+
   if (const auto *Body = F->getBody())
     if (!visitStmt(Body))
       return false;
+
+  if (PostconditionLabel) {
+    // Flowing off the end of a non-void function is still an error; a void
+    // function flows into its postconditions.
+    if (!F->getReturnType()->isVoidType() && !this->emitNoRet(SourceInfo{}))
+      return false;
+    this->emitLabel(*PostconditionLabel);
+    if (!visitPostconditions(F) || !ContractsScope->destroyLocals())
+      return false;
+    if (ReturnType)
+      return this->emitRet(*ReturnType, SourceInfo{});
+    return this->emitRetVoid(SourceInfo{});
+  }
 
   // Emit a guard return to protect against a code path missing one.
   if (F->getReturnType()->isVoidType())
@@ -8567,6 +8693,15 @@ bool Compiler<Emitter>::visitDeclRef(const ValueDecl *D, const Expr *E) {
                                       /*InitializerFailed=*/false, E);
   }
 
+  // A result name that visitPostconditions did not bind to a local denotes
+  // the returned object, which the function constructs through its RVO
+  // pointer.
+  if (isa<ResultNameDecl>(D) && !Locals.contains(D) && PostconditionLabel) {
+    if (DiscardResult)
+      return true;
+    return this->emitRVOPtr(E);
+  }
+
   // Local variables.
   if (auto It = Locals.find(D); It != Locals.end()) {
     const unsigned Offset = It->second.Offset;
@@ -8723,7 +8858,8 @@ bool Compiler<Emitter>::VisitDesignatedInitUpdateExpr(
 }
 
 template <class Emitter> bool Compiler<Emitter>::emitCleanup() {
-  for (VariableScope<Emitter> *C = VarScope; C; C = C->getParent()) {
+  for (VariableScope<Emitter> *C = VarScope; C && C != ContractScope;
+       C = C->getParent()) {
     if (!C->destroyLocals())
       return false;
   }

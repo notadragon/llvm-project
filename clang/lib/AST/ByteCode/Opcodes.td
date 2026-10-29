@@ -77,6 +77,7 @@ def ArgVoidPtr : ArgType { let Name = "const void *"; }
 def ArgReflectionKind : ArgType { let Name = "ReflectionKind"; }
 def ArgDeclOrExpr : ArgType { let Name = "DeclOrExpr"; }
 def ArgCtorDecl : ArgType { let Name = "const CXXConstructorDecl *"; }
+def ArgContractStmt : ArgType { let Name = "const ContractStmt *"; }
 
 //===----------------------------------------------------------------------===//
 // Classes of types instructions operate on.
@@ -188,6 +189,17 @@ def Jmp : JumpOpcode;
 def Jt : JumpOpcode;
 // [Bool] -> [], jumps if false.
 def Jf : JumpOpcode;
+
+// [] -> [Bool], whether a contract assertion is evaluated at all: contracts
+// can be switched off for an evaluation, and a check of whether a function is
+// potentially constant has no return value for a result name to denote.
+def ShouldEvalContract : Opcode {
+  let Args = [ArgBool];
+  let NeedsOpPC = 0;
+}
+// [] -> [], the predicate of a contract assertion was false.  The Bool says
+// whether its semantic is non-terminating (observe).
+def ContractFailed : Opcode { let Args = [ArgContractStmt, ArgBool]; }
 
 def PushIgnoreDiags : SuccessOpcode;
 def PopIgnoreDiags : SuccessOpcode;

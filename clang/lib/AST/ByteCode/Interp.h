@@ -33,6 +33,7 @@
 #include "State.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/StmtCXX.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/Support/Compiler.h"
@@ -259,6 +260,17 @@ bool CheckFloatStatus(InterpState &S, CodePtr OpPC, APFloat::opStatus Status,
 bool CheckDeclRef(InterpState &S, CodePtr OpPC, const DeclRefExpr *DR);
 bool InvalidDeclRef(InterpState &S, CodePtr OpPC, const DeclRefExpr *DR,
                     bool InitializerFailed);
+
+inline bool ShouldEvalContract(InterpState &S, bool HasResultName) {
+  S.Stk.push<Boolean>(S.EvaluateContracts &&
+                      !(HasResultName &&
+                        S.checkingPotentialConstantExpression()));
+  return true;
+}
+
+/// Reports a contract violation, as EvaluateContract in ExprConstant.cpp does.
+bool ContractFailed(InterpState &S, CodePtr OpPC, const ContractStmt *CS,
+                    bool NonTerminating);
 
 /// DerivedToBaseMemberPointer
 bool CastMemberPtrBasePop(InterpState &S, int32_t Off,

@@ -1378,6 +1378,28 @@ bool CheckDeclRef(InterpState &S, CodePtr OpPC, const DeclRefExpr *DR) {
   return diagnoseUnknownDecl(S, OpPC, D);
 }
 
+bool ContractFailed(InterpState &S, CodePtr OpPC, const ContractStmt *CS,
+                    bool NonTerminating) {
+  const Expr *E = CS->getCond();
+  std::string UserMsg = CS->getUserMessage(S.getASTContext());
+  bool HasMsg = !UserMsg.empty();
+  if (NonTerminating) {
+    // Outside a manifestly constant-evaluated context nothing is reported: the
+    // evaluation is just not constant, so the check runs at run time.
+    if (!S.inConstantContext()) {
+      S.FFDiag(E, diag::err_constexpr_contract_failure)
+          << HasMsg << UserMsg << E->getSourceRange();
+      return false;
+    }
+    S.report(E->getExprLoc(), diag::warn_constexpr_contract_failure)
+        << HasMsg << UserMsg << E->getSourceRange();
+    return true;
+  }
+  S.CCEDiag(E, diag::err_constexpr_contract_failure)
+      << HasMsg << UserMsg << E->getSourceRange();
+  return false;
+}
+
 bool InvalidDeclRef(InterpState &S, CodePtr OpPC, const DeclRefExpr *DR,
                     bool InitializerFailed) {
   assert(DR);

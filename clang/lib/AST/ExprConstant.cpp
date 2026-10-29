@@ -90,6 +90,7 @@ namespace {
   struct LValue;
   class CallStackFrame;
   class EvalInfo;
+  class PredicateRollback;
 
   using SourceLocExprScopeGuard =
       CurrentSourceLocExprScope::SourceLocExprScopeGuard;
@@ -530,6 +531,15 @@ namespace {
       return {Callee, Index, ++CurTempVersion};
     }
 
+    // The slot for the result of the contract evaluation.
+    const LValue *ResultSlot = nullptr;
+    const APValue *ResultValue = nullptr;
+    // When the call has no result slot, the declaration that keys the
+    // temporary its postconditions read the result from.  Every result name
+    // in them denotes that one object, so which declaration keys it is
+    // decided here, for the sequence, and not by the result names.
+    const ResultNameDecl *ResultName = nullptr;
+
     // FIXME: Adding this to every 'CallStackFrame' may have a nontrivial impact
     // on the overall stack usage of deeply-recursing constexpr evaluations.
     // (We should cache this map rather than recomputing it repeatedly.)
@@ -877,6 +887,26 @@ namespace {
     /// depth at which we can mutate state, otherwise 0.
     unsigned SpeculativeEvaluationDepth = 0;
 
+    /// A contract problem met during a manifestly constant evaluation: the
+    /// assertion, whether its semantic terminates, and for a terminating one
+    /// the diagnostics to report -- the error at the assertion with the call
+    /// stack where it was met, and for a predicate that was not a core
+    /// constant expression the notes saying why.
+    struct ContractProblem {
+      const ContractStmt *S;
+      bool Terminating;
+      SmallVector<PartialDiagnosticAt, 2> Diags;
+    };
+
+    /// The contract problems of this evaluation, once per assertion, in
+    /// evaluation order.  Reported only if the evaluation completes; see
+    /// EvaluateContract and ContractProblemReport.
+    SmallVector<ContractProblem, 2> ContractProblems;
+
+    /// The innermost contract predicate being evaluated, whose modifications
+    /// are undone once its value is known; see PredicateRollback.
+    PredicateRollback *Rollback = nullptr;
+
     /// The current array initialization index, if we're performing array
     /// initialization.
     uint64_t ArrayInitIndex = -1;
@@ -1146,11 +1176,13 @@ namespace {
     EvalInfo *Info = nullptr;
     Expr::EvalStatus OldStatus;
     unsigned OldSpeculativeEvaluationDepth = 0;
+    unsigned OldContractProblems = 0;
 
     void moveFromAndCancel(SpeculativeEvaluationRAII &&Other) {
       Info = Other.Info;
       OldStatus = Other.OldStatus;
       OldSpeculativeEvaluationDepth = Other.OldSpeculativeEvaluationDepth;
+      OldContractProblems = Other.OldContractProblems;
       Other.Info = nullptr;
     }
 
@@ -1160,6 +1192,8 @@ namespace {
 
       Info->EvalStatus = OldStatus;
       Info->SpeculativeEvaluationDepth = OldSpeculativeEvaluationDepth;
+      // Contract problems met in a speculation are the speculation's.
+      Info->ContractProblems.truncate(OldContractProblems);
     }
 
   public:
@@ -1168,7 +1202,8 @@ namespace {
     SpeculativeEvaluationRAII(
         EvalInfo &Info, SmallVectorImpl<PartialDiagnosticAt> *NewDiag = nullptr)
         : Info(&Info), OldStatus(Info.EvalStatus),
-          OldSpeculativeEvaluationDepth(Info.SpeculativeEvaluationDepth) {
+          OldSpeculativeEvaluationDepth(Info.SpeculativeEvaluationDepth),
+          OldContractProblems(Info.ContractProblems.size()) {
       Info.EvalStatus.Diag = NewDiag;
       Info.SpeculativeEvaluationDepth = Info.CallStackDepth + 1;
     }
@@ -1804,12 +1839,15 @@ APValue &CallStackFrame::createParam(CallRef Args, const ParmVarDecl *PVD,
   return createLocal(Base, PVD, PVD->getType(), ScopeKind::Call);
 }
 
+static void noteCreatedInPredicate(EvalInfo &Info, const APValue *V);
+
 APValue &CallStackFrame::createLocal(APValue::LValueBase Base, const void *Key,
                                      QualType T, ScopeKind Scope) {
   assert(Base.getCallIndex() == Index && "lvalue for wrong frame");
   unsigned Version = Base.getVersion();
   APValue &Result = Temporaries[MapKeyTy(Key, Version)];
   assert(Result.isAbsent() && "local created multiple times");
+  noteCreatedInPredicate(Info, &Result);
 
   // If we're creating a local immediately in the operand of a speculative
   // evaluation, don't register a cleanup to be run outside the speculative
@@ -4306,7 +4344,142 @@ struct CompleteObject {
 
   explicit operator bool() const { return !Type.isNull(); }
 };
+
+/// Undoes what a contract predicate modifies during constant evaluation.
+///
+/// [basic.contract.eval] leaves it unspecified whether a predicate is
+/// evaluated, and permits an evaluation that produces its value without its
+/// side effects.  The predicate is evaluated for real -- modifying an object
+/// of the enclosing evaluation is fine in a core constant expression -- and
+/// everything it modified is undone once its value is known, so that the
+/// enclosing evaluation proceeds as if the predicate had not been evaluated
+/// and means the same under every evaluation semantic.
+///
+/// An object is saved the first time the predicate is about to modify it
+/// (findSubobject, for every modifying access) and restored in place when the
+/// predicate's evaluation ends, because the enclosing evaluation may hold a
+/// reference into it: a constructor initializes its subobjects in place.
+/// Objects created during the predicate are not saved; they end with it.  A
+/// heap allocation that existed when the predicate started is saved by its
+/// index instead, so that one the predicate deallocates is revived.
+/// Instances nest, and each restores the state at its own start.
+class PredicateRollback {
+  EvalInfo &Info;
+  PredicateRollback *Outer;
+  /// Heap allocations from this index on were made during the predicate.
+  unsigned FirstNewHeapAlloc;
+  llvm::SmallPtrSet<const APValue *, 8> Created;
+  llvm::SmallPtrSet<const APValue *, 8> SavedObjects;
+  SmallVector<std::pair<APValue *, APValue>, 4> Saved;
+  std::map<DynamicAllocLValue, DynAlloc, DynAllocOrder> SavedHeap;
+
+  static void restoreInPlace(APValue &Dst, const APValue &Src);
+
+public:
+  explicit PredicateRollback(EvalInfo &Info)
+      : Info(Info), Outer(Info.Rollback),
+        FirstNewHeapAlloc(Info.NumHeapAllocs) {
+    Info.Rollback = this;
+  }
+  PredicateRollback(const PredicateRollback &) = delete;
+  PredicateRollback &operator=(const PredicateRollback &) = delete;
+  ~PredicateRollback();
+
+  PredicateRollback *outer() const { return Outer; }
+
+  /// The object a local or temporary is being created in.
+  void created(const APValue *V) { Created.insert(V); }
+
+  /// Obj, or a subobject of it, is about to be modified.
+  void save(const CompleteObject &Obj) {
+    if (DynamicAllocLValue DA = Obj.Base.dyn_cast<DynamicAllocLValue>()) {
+      saveHeap(DA);
+      return;
+    }
+    if (!Obj.Value || Created.contains(Obj.Value) ||
+        !SavedObjects.insert(Obj.Value).second)
+      return;
+    Saved.emplace_back(Obj.Value, *Obj.Value);
+  }
+
+  /// The heap allocation DA is about to be modified or deallocated.
+  void saveHeap(DynamicAllocLValue DA) {
+    if (DA.getIndex() >= FirstNewHeapAlloc || SavedHeap.count(DA))
+      return;
+    if (std::optional<DynAlloc *> Alloc = Info.lookupDynamicAlloc(DA))
+      SavedHeap.emplace(DA, **Alloc);
+  }
+};
 } // end anonymous namespace
+
+void PredicateRollback::restoreInPlace(APValue &Dst, const APValue &Src) {
+  if (Dst.getKind() == Src.getKind()) {
+    switch (Src.getKind()) {
+    case APValue::Struct:
+      if (Dst.getStructNumBases() != Src.getStructNumBases() ||
+          Dst.getStructNumFields() != Src.getStructNumFields())
+        break;
+      for (unsigned I = 0, N = Src.getStructNumBases(); I != N; ++I)
+        restoreInPlace(Dst.getStructBase(I), Src.getStructBase(I));
+      for (unsigned I = 0, N = Src.getStructNumFields(); I != N; ++I)
+        restoreInPlace(Dst.getStructField(I), Src.getStructField(I));
+      return;
+    case APValue::Union:
+      if (Dst.getUnionField() == Src.getUnionField())
+        restoreInPlace(Dst.getUnionValue(), Src.getUnionValue());
+      else
+        // setUnion assigns into the member's existing storage.
+        Dst.setUnion(Src.getUnionField(), Src.getUnionValue());
+      return;
+    case APValue::Array: {
+      // A modification can only have expanded the array: elements past the
+      // ones Src holds take Src's filler.
+      unsigned SrcElts = Src.getArrayInitializedElts();
+      if (Dst.getArraySize() != Src.getArraySize() ||
+          Dst.getArrayInitializedElts() < SrcElts)
+        break;
+      for (unsigned I = 0, N = Dst.getArrayInitializedElts(); I != N; ++I)
+        restoreInPlace(Dst.getArrayInitializedElt(I),
+                       I < SrcElts ? Src.getArrayInitializedElt(I)
+                                   : Src.getArrayFiller());
+      if (Dst.hasArrayFiller())
+        restoreInPlace(Dst.getArrayFiller(), Src.getArrayFiller());
+      return;
+    }
+    default:
+      break;
+    }
+  }
+  Dst = Src;
+}
+
+PredicateRollback::~PredicateRollback() {
+  Info.Rollback = Outer;
+  for (auto &[Object, Value] : Saved)
+    restoreInPlace(*Object, Value);
+  for (auto &[DA, Alloc] : SavedHeap) {
+    auto It = Info.HeapAllocs.find(DA);
+    if (It != Info.HeapAllocs.end())
+      restoreInPlace(It->second.Value, Alloc.Value);
+    else
+      Info.HeapAllocs.emplace(DA, std::move(Alloc));
+  }
+}
+
+static void noteCreatedInPredicate(EvalInfo &Info, const APValue *V) {
+  for (PredicateRollback *R = Info.Rollback; R; R = R->outer())
+    R->created(V);
+}
+
+static void noteModifiedInPredicate(EvalInfo &Info, const CompleteObject &Obj) {
+  for (PredicateRollback *R = Info.Rollback; R; R = R->outer())
+    R->save(Obj);
+}
+
+static void noteDeallocatedInPredicate(EvalInfo &Info, DynamicAllocLValue DA) {
+  for (PredicateRollback *R = Info.Rollback; R; R = R->outer())
+    R->saveHeap(DA);
+}
 
 static QualType getSubobjectType(QualType ObjType, QualType SubobjType,
                                  bool IsMutable = false) {
@@ -4340,6 +4513,9 @@ findSubobject(EvalInfo &Info, const Expr *E, const CompleteObject &Obj,
       Info.FFDiag(E);
     return handler.failed();
   }
+
+  if (isModification(handler.AccessKind) && Info.Rollback)
+    noteModifiedInPredicate(Info, Obj);
 
   APValue *O = Obj.Value;
   QualType ObjType = Obj.Type;
@@ -4788,6 +4964,19 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
     // started in the current evaluation.
     BaseVal = Info.EvaluatingDeclValue;
   } else if (const ValueDecl *D = LVal.Base.dyn_cast<const ValueDecl *>()) {
+
+    // Allow reading the result of a function call inside a post contract.
+    // FIXME: There's more validation that needs to be done here.
+    if (auto *RND = dyn_cast<ResultNameDecl>(D); RND) {
+      APValue *Val = Frame->getTemporary(RND, LVal.Base.getVersion());
+
+      if (!Val) {
+        Info.CCEDiag(RND->getLocation(),
+                     diag::note_invalid_subexpr_in_const_expr);
+        return CompleteObject();
+      }
+      return CompleteObject(LVal.Base, Val, RND->getType());
+    }
     // Allow reading from a GUID declaration.
     if (auto *GD = dyn_cast<MSGuidDecl>(D)) {
       if (isModification(AK)) {
@@ -6026,6 +6215,192 @@ static bool CheckLocalVariableDeclaration(EvalInfo &Info, const VarDecl *VD) {
   return true;
 }
 
+static bool EvaluateContract(const ContractStmt *S, EvalInfo &Info,
+                             const FunctionDecl *Callee) {
+  using CES = ContractEvaluationSemantic;
+  auto &Ctx = Info.Ctx;
+
+  if (!Info.EvaluateContracts) {
+    Info.SkippedContract = true;
+    return true;
+  }
+
+  // An invalid contract has already been diagnosed and has nothing to
+  // evaluate.
+  if (S->isInvalid())
+    return true;
+
+  CES Sem =
+      S->ensureCESemantic(Ctx, Callee ? Callee->getDeclContext() : nullptr);
+  // An assumption is not evaluated in constant evaluation either: a false or
+  // non-constant predicate must never make the evaluation non-constant (and
+  // so turn into a silent substitution failure).  The P4405 prove and
+  // diagnose never get here: constant evaluation is never analyzed, and uses
+  // enforce and observe for them (D4405, contractConstantEvaluationSemantic).
+  if (Sem == CES::Ignore || Sem == CES::Assume ||
+      isProvingContractSemantic(Sem))
+    return true;
+
+  const Expr *E = S->getCond();
+  bool Result;
+  // Observe (and noexcept_observe) does not terminate.  P4298's noexcept
+  // semantics have no throw/terminate distinction during constant
+  // evaluation, so they behave as their plain counterparts.
+  const bool NonTerminating = Sem == CES::Observe || Sem == CES::NoexceptObserve;
+
+  // Whatever the predicate modifies is undone once its value is known (see
+  // PredicateRollback), in every kind of evaluation.  Its temporaries are
+  // destroyed at its end, so that their destructors are undone too.
+  PredicateRollback Rollback(Info);
+  auto EvaluatePredicate = [&] {
+    FullExpressionRAII Scope(Info);
+    return EvaluateCond(Info, nullptr, E, Result) && Scope.destroy();
+  };
+
+  // Outside a manifestly constant-evaluated context -- constant folding, or a
+  // speculative evaluation such as the unused-variable check's -- nothing is
+  // reported: a problem makes the evaluation non-constant, so the check is
+  // emitted and runs at run time.
+  if (!Info.InConstantContext) {
+    if (!EvaluatePredicate())
+      return false;
+    if (!Result) {
+      std::string UserMsg = S->getUserMessage(Ctx);
+      if (NonTerminating)
+        Info.FFDiag(E, diag::err_constexpr_contract_failure)
+            << !UserMsg.empty() << UserMsg << E->getSourceRange();
+      else
+        Info.CCEDiag(E, diag::err_constexpr_contract_failure)
+            << !UserMsg.empty() << UserMsg << E->getSourceRange();
+      return false;
+    }
+    return true;
+  }
+
+  // Checking whether the function can ever be constant, with unknown
+  // arguments: a predicate that cannot be decided stops it under a
+  // terminating semantic, and does not under observe, which continues past
+  // its violation.
+  if (Info.checkingPotentialConstantExpression()) {
+    if (NonTerminating)
+      return true;
+    if (!EvaluatePredicate())
+      return false;
+    if (!Result) {
+      std::string UserMsg = S->getUserMessage(Ctx);
+      Info.CCEDiag(E, diag::err_constexpr_contract_failure)
+          << !UserMsg.empty() << UserMsg << E->getSourceRange();
+      return false;
+    }
+    return true;
+  }
+
+  // In a manifestly constant-evaluated context a false predicate is a
+  // contract violation, and so is one that is not a core constant expression
+  // ([basic.contract.eval]).  Record it and continue: whether it is reported
+  // depends on the rest of the evaluation.  If that completes, every recorded
+  // problem is reported (ContractProblemReport); if it does not, the
+  // expression is not constant-evaluated at all and nothing is.
+  //
+  // So the predicate's own failure must not end the evaluation.  Evaluate it
+  // for real -- it may modify objects of the enclosing evaluation, which is
+  // permitted, and Rollback undoes that -- but with its diagnostics collected
+  // here and the evaluation status restored if it fails, together with any
+  // contract problems it met.  A predicate that evaluates but gathers a note
+  // is not a core constant expression either.
+  //
+  // EvaluateCond, not Expr::EvaluateAsBooleanCondition: the latter is the
+  // external entry point and starts an evaluation of its own, which is not
+  // available from inside one.  EvaluateCond is what if, while and for use
+  // here for the same reason.
+  SmallVector<PartialDiagnosticAt, 8> Why;
+  unsigned Before = Info.ContractProblems.size();
+  Expr::EvalStatus Saved = Info.EvalStatus;
+  Info.EvalStatus.Diag = &Why;
+  bool Evaluated = EvaluatePredicate();
+  bool NonConstant = !Evaluated || !Why.empty();
+  if (NonConstant) {
+    Info.EvalStatus = Saved;
+    Info.ContractProblems.truncate(Before);
+  } else {
+    Info.EvalStatus.Diag = Saved.Diag;
+  }
+  if (!NonConstant && Result)
+    return true;
+  for (const EvalInfo::ContractProblem &P : Info.ContractProblems)
+    if (P.S == S)
+      return true;
+
+  EvalInfo::ContractProblem P{S, !NonTerminating, {}};
+  if (P.Terminating) {
+    // Build the error now, while the call stack it was met in is there to be
+    // noted; ContractProblemReport emits it if the evaluation completes.
+    std::string UserMsg = S->getUserMessage(Ctx);
+    Expr::EvalStatus OuterStatus = Info.EvalStatus;
+    Info.EvalStatus.Diag = &P.Diags;
+    Info.CCEDiag(E, diag::err_constexpr_contract_failure)
+        << !UserMsg.empty() << UserMsg << E->getSourceRange();
+    Info.EvalStatus = OuterStatus;
+    if (NonConstant)
+      P.Diags.append(Why.begin(), Why.end());
+  }
+  Info.ContractProblems.push_back(std::move(P));
+  return true;
+}
+namespace {
+/// Reports the contract problems an evaluation of Outer recorded, once it is
+/// known whether the evaluation completed.  Construct it with the evaluation's
+/// EvalInfo and pass the evaluation's result through finish(): if it failed,
+/// the expression is not constant-evaluated and nothing is reported; if it
+/// succeeded, each problem is reported at its assertion -- under a
+/// terminating semantic as an error returned with the evaluation's notes
+/// (and the evaluation fails), under observe as a warning issued once per
+/// assertion and expression, however often and through whichever entry point
+/// the expression is evaluated.  The expression is identified by where it
+/// begins, which every wrapper of it shares: static_assert evaluates
+/// `f(g) == 1` twice, and the two evaluations need not see the same node.
+/// Anything not passed through finish() is discarded.  An evaluation with no
+/// expression (a variable's destruction) is identified by a location.
+class ContractProblemReport {
+  EvalInfo &Info;
+  SourceLocation Where;
+public:
+  ContractProblemReport(EvalInfo &Info, const Expr *Outer)
+      : Info(Info), Where(Outer->getBeginLoc()) {}
+  ContractProblemReport(EvalInfo &Info, SourceLocation Where)
+      : Info(Info), Where(Where) {}
+  ~ContractProblemReport() { Info.ContractProblems.clear(); }
+
+  bool finish(bool Success) {
+    // A contract assertion skipped in a speculation counts too: with
+    // contracts enabled, it could change what the speculation decides.
+    Info.EvalStatus.SkippedContract |= Info.SkippedContract;
+    if (Info.ContractProblems.empty() || !Success)
+      return Success;
+    bool Terminating = false;
+    for (EvalInfo::ContractProblem &P : Info.ContractProblems) {
+      const Expr *Cond = P.S->getCond();
+      std::string UserMsg = P.S->getUserMessage(Info.Ctx);
+      if (P.Terminating) {
+        Terminating = true;
+        Info.EvalStatus.DiagEmitted = true;
+        if (Info.EvalStatus.Diag)
+          Info.EvalStatus.Diag->append(P.Diags.begin(), P.Diags.end());
+        continue;
+      }
+      if (!Info.Ctx.ReportedConstexprContractWarnings
+               .insert({P.S, Where.getRawEncoding()})
+               .second)
+        continue;
+      Info.report(Cond->getExprLoc(), diag::warn_constexpr_contract_failure)
+          << !UserMsg.empty() << UserMsg << Cond->getSourceRange();
+    }
+    Info.ContractProblems.clear();
+    return !Terminating;
+  }
+};
+} // namespace
+
 // Evaluate a statement.
 static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
                                    const Stmt *S, const SwitchCase *Case) {
@@ -6274,7 +6649,13 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
     }
     return Scope.destroy() ? ESR_Succeeded : ESR_Failed;
   }
-
+  case Stmt::ContractStmtClass: {
+    const FunctionDecl *FD =
+        Info.CurrentCall ? Info.CurrentCall->Callee : nullptr;
+    if (EvaluateContract(cast<ContractStmt>(S), Info, FD))
+      return ESR_Succeeded;
+    return ESR_Failed;
+  }
   case Stmt::WhileStmtClass: {
     const WhileStmt *WS = cast<WhileStmt>(S);
     while (true) {
@@ -7290,6 +7671,85 @@ static void TryInstantiateFunctionBeforeCall(const FunctionDecl *FD,
     SProxy->instantiateFunctionDefinition(Loc, const_cast<FunctionDecl *>(FD));
 }
 
+static bool EvaluatePreContracts(EvalInfo &Info, const FunctionDecl *Callee,
+                                 CallStackFrame *Frame) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return true;
+  for (auto *S : Contracts->preconditions()) {
+    if (!EvaluateContract(S, Frame->Info, Callee)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool EvaluatePostContracts(EvalInfo &Info, const FunctionDecl *Callee,
+                                  APValue &ResultValue,
+                                  const LValue *ResultSlot) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return true;
+
+  // Expr::isPotentialConstantExpr -- "could this constexpr function ever be
+  // constant?" -- runs the body with unknown arguments, so there is no real
+  // return value here and a postcondition that binds the result name would
+  // read an unset APValue.  Skip exactly those; the rest are evaluated, which
+  // is what EvaluatePreContracts already does for every precondition.
+  //
+  // hasResultName() over-skips a postcondition that introduces a result name
+  // without using it; that errs toward checking less, which is the safe
+  // direction for a lint.
+  const bool CheckingPotential = Info.checkingPotentialConstantExpression();
+
+  BlockScopeRAII Scope(Info);
+  const ResultNameDecl *CanonicalResultName =
+      Contracts->getCanonicalResultName();
+
+  // A reference result is the lvalue the call returned, which the result
+  // name denotes directly (VisitResultNameDecl); there is nothing to copy.
+  bool NeedsResultSlot = !CheckingPotential &&
+                         (!ResultSlot || !ResultSlot->getLValueBase()) &&
+                         CanonicalResultName &&
+                         !CanonicalResultName->getType()->isReferenceType();
+
+  APValue *LastValue = nullptr;
+  LValue LV;
+  if (NeedsResultSlot) {
+    auto *RND = CanonicalResultName;
+    assert(RND->getType().isTriviallyCopyableType(Info.Ctx));
+
+    APValue &V = Info.CurrentCall->createTemporary(
+        CanonicalResultName, CanonicalResultName->getType(), ScopeKind::Block,
+        LV);
+
+    // Perform the trivial copy of the result of the function into the
+    // temporary.
+    V = ResultValue;
+    Info.CurrentCall->ResultSlot = nullptr;
+    Info.CurrentCall->ResultName = RND;
+    LastValue = &V;
+  } else {
+    Info.CurrentCall->ResultSlot = ResultSlot;
+    Info.CurrentCall->ResultValue = &ResultValue;
+    Info.CurrentCall->ResultName = nullptr;
+  }
+
+  for (auto *S : Contracts->postconditions()) {
+    if (CheckingPotential && S->hasResultName())
+      continue;
+    if (!EvaluateContract(S, Info, Callee))
+      return false;
+  }
+  // If we used a different result slot, the return value needs to be copied
+  // back.
+  if (NeedsResultSlot) {
+    assert(LastValue);
+    ResultValue = *LastValue;
+  }
+  return true;
+}
+
 /// Evaluate a function call.
 static bool HandleFunctionCall(SourceLocation CallLoc,
                                const FunctionDecl *Callee,
@@ -7347,14 +7807,22 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
                                         Frame.LambdaThisCaptureField);
   }
 
+  if (!EvaluatePreContracts(Info, Callee, &Frame))
+    return false;
+
   StmtResult Ret = {Result, ResultSlot};
   EvalStmtResult ESR = EvaluateStmt(Ret, Info, Body);
+
+  bool ContractsOK = false;
   if (ESR == ESR_Succeeded) {
     if (Callee->getReturnType()->isVoidType())
-      return true;
-    Info.FFDiag(Callee->getEndLoc(), diag::note_constexpr_no_return);
+      ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
+    else
+      Info.FFDiag(Callee->getEndLoc(), diag::note_constexpr_no_return);
+  } else if (ESR == ESR_Returned) {
+    ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
   }
-  return ESR == ESR_Returned;
+  return ContractsOK;
 }
 
 static bool HandleConstructorCall(const Expr *E, const LValue &This,
@@ -8025,6 +8493,7 @@ static bool HandleOperatorDeleteCall(EvalInfo &Info, const CallExpr *E) {
   if (!CheckDeleteKind(Info, E, Pointer, DynAllocKind::StdAllocator))
     return false;
 
+  noteDeallocatedInPredicate(Info, Pointer.Base.get<DynamicAllocLValue>());
   Info.HeapAllocs.erase(Pointer.Base.get<DynamicAllocLValue>());
   return true;
 }
@@ -9013,7 +9482,8 @@ public:
 
   bool VisitCallExpr(const CallExpr *E) {
     APValue Result;
-    if (!handleCallExpr(E, Result, nullptr))
+    LValue ResultSlot;
+    if (!handleCallExpr(E, Result, &ResultSlot))
       return false;
     return DerivedSuccess(Result, E);
   }
@@ -9614,6 +10084,7 @@ public:
 
   bool VisitCallExpr(const CallExpr *E);
   bool VisitDeclRefExpr(const DeclRefExpr *E);
+  bool VisitResultNameDecl(const DeclRefExpr *E, const ResultNameDecl *RND);
   bool VisitPredefinedExpr(const PredefinedExpr *E) { return Success(E); }
   bool VisitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *E);
   bool VisitCompoundLiteralExpr(const CompoundLiteralExpr *E);
@@ -9754,6 +10225,11 @@ bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
   if (isa<FunctionDecl, MSGuidDecl, TemplateParamObjectDecl,
           UnnamedGlobalConstantDecl>(D))
     return Success(cast<ValueDecl>(D));
+
+  if (const ResultNameDecl *RND = dyn_cast<ResultNameDecl>(D)) {
+    return VisitResultNameDecl(E, RND);
+  }
+
   if (const VarDecl *VD = dyn_cast<VarDecl>(D))
     return VisitVarDecl(E, VD);
   if (const BindingDecl *BD = dyn_cast<BindingDecl>(D))
@@ -9815,6 +10291,38 @@ bool LValueExprEvaluator::VisitVarDecl(const Expr *E, const VarDecl *VD) {
   }
 
   return Success(*V, E);
+}
+
+bool LValueExprEvaluator::VisitResultNameDecl(const DeclRefExpr *E,
+                                              const ResultNameDecl *RND) {
+  // Checking whether a function is potentially constant runs it with no
+  // return value for the result name to denote.
+  if (Info.checkingPotentialConstantExpression())
+    return false;
+
+  auto *Frame = Info.CurrentCall;
+  assert(Frame && "a result name outside any call");
+  // A reference result: the call's value is the lvalue it returned.
+  if (RND->getType()->isReferenceType()) {
+    if (!Frame->ResultValue || !Frame->ResultValue->isLValue())
+      return Error(E);
+    Result.setFrom(Info.Ctx, *Frame->ResultValue);
+    return true;
+  }
+  if (Frame->ResultSlot) {
+    // The object the call initializes in place, with its designator: a
+    // member or array element of a larger object, not the complete object.
+    Result = *Frame->ResultSlot;
+    return true;
+  } else {
+    // Outside the evaluation of the postconditions (Sema folding the
+    // predicate, say) there is no result; the result name then denotes no
+    // temporary, and reading it fails.
+    const ResultNameDecl *Key = Frame->ResultName ? Frame->ResultName : RND;
+    APValue::LValueBase Base(Key, Frame->Index,
+                             Frame->getCurrentTemporaryVersion(Key));
+    return Success(Base);
+  }
 }
 
 bool LValueExprEvaluator::VisitCallExpr(const CallExpr *E) {
@@ -22084,6 +22592,7 @@ bool VoidExprEvaluator::VisitCXXDeleteExpr(const CXXDeleteExpr *E) {
     }
   }
 
+  noteDeallocatedInPredicate(Info, Pointer.Base.get<DynamicAllocLValue>());
   if (!HandleDestruction(Info, E->getExprLoc(), Pointer.getLValueBase(),
                          (*Alloc)->Value, AllocType))
     return false;
@@ -22385,7 +22894,8 @@ static bool doEvaluateAsRValue(const Expr *E, Expr::EvalResult &Result,
 
   EvalInfo Info(Ctx, SProxy, Result, EvaluationMode::IgnoreSideEffects);
   Info.InConstantContext = InConstantContext;
-  return ::EvaluateAsRValue(E, Result, Ctx, Info);
+  ContractProblemReport Report(Info, E);
+  return Report.finish(::EvaluateAsRValue(E, Result, Ctx, Info));
 }
 
 /// EvaluateAsRValue - Return true if this is a constant which we can fold using
@@ -22449,7 +22959,9 @@ bool Expr::EvaluateAsInt(EvalResult &Result, const ASTContext &Ctx,
   EvalInfo Info(Ctx, /*SProxy=*/nullptr, Result,
                 EvaluationMode::IgnoreSideEffects);
   Info.InConstantContext = InConstantContext;
-  return ::EvaluateAsInt(this, Result, Ctx, AllowSideEffects, Info);
+  ContractProblemReport Report(Info, this);
+  return Report.finish(
+      ::EvaluateAsInt(this, Result, Ctx, AllowSideEffects, Info));
 }
 
 bool Expr::EvaluateAsFixedPoint(EvalResult &Result, const ASTContext &Ctx,
@@ -22480,7 +22992,9 @@ bool Expr::EvaluateAsFixedPoint(EvalResult &Result, const ASTContext &Ctx,
   EvalInfo Info(Ctx, /*SProxy=*/nullptr, Result,
                 EvaluationMode::IgnoreSideEffects);
   Info.InConstantContext = InConstantContext;
-  return ::EvaluateAsFixedPoint(this, Result, Ctx, AllowSideEffects, Info);
+  ContractProblemReport Report(Info, this);
+  return Report.finish(
+      ::EvaluateAsFixedPoint(this, Result, Ctx, AllowSideEffects, Info));
 }
 
 bool Expr::EvaluateAsFloat(APFloat &Result, const ASTContext &Ctx,
@@ -22522,6 +23036,7 @@ bool Expr::EvaluateAsLValue(EvalResult &Result, const ASTContext &Ctx,
   LValue LV;
   CheckedTemporaries CheckedTemps;
 
+  ContractProblemReport Report(Info, this);
   if (!EvaluateLValue(this, LV, Info) || !Info.discardCleanups() ||
       Result.HasSideEffects ||
       !CheckLValueConstantExpression(Info, getExprLoc(),
@@ -22530,14 +23045,18 @@ bool Expr::EvaluateAsLValue(EvalResult &Result, const ASTContext &Ctx,
     return false;
 
   LV.moveInto(Result.Val);
-  return true;
+  return Report.finish(true);
 }
 
+/// \p MustBeConstant: the destruction is required to be constant (a constexpr
+/// variable, a class-type template argument), rather than evaluated only to
+/// learn whether the object needs destroying at run time.
 static bool EvaluateDestruction(const ASTContext &Ctx, SemaProxy *SProxy,
                                 APValue::LValueBase Base,
                                 APValue DestroyedValue, QualType Type,
                                 SourceLocation Loc, Expr::EvalStatus &EStatus,
-                                bool IsConstantDestruction) {
+                                bool IsConstantDestruction,
+                                bool MustBeConstant) {
   EvalInfo Info(Ctx, SProxy, EStatus,
                 IsConstantDestruction ? EvaluationMode::ConstantExpression
                                       : EvaluationMode::ConstantFold);
@@ -22548,6 +23067,7 @@ static bool EvaluateDestruction(const ASTContext &Ctx, SemaProxy *SProxy,
   LValue LVal;
   LVal.set(Base);
 
+  ContractProblemReport Report(Info, Loc);
   if (!HandleDestruction(Info, Loc, Base, DestroyedValue, Type) ||
       EStatus.HasSideEffects)
     return false;
@@ -22555,7 +23075,14 @@ static bool EvaluateDestruction(const ASTContext &Ctx, SemaProxy *SProxy,
   if (!Info.discardCleanups())
     llvm_unreachable("Unhandled cleanup; missing full expression marker?");
 
-  return true;
+  // A contract problem of the destructor (a violation, or a predicate that is
+  // not a core constant expression) is reported as in any other constant
+  // evaluation when the destruction must be constant.  Otherwise it only
+  // makes the destruction non-constant, silently: the object is destroyed at
+  // run time, where the assertion is evaluated (CLANG-862).
+  if (!MustBeConstant && !Info.ContractProblems.empty())
+    return false;
+  return Report.finish(true);
 }
 
 static bool doEvaluateConstantExpr(Expr::EvalResult &Result,
@@ -22596,6 +23123,7 @@ static bool doEvaluateConstantExpr(Expr::EvalResult &Result,
 
   LValue LVal;
   LVal.set(Base);
+  ContractProblemReport Report(Info, E);
   // C++23 [intro.execution]/p5
   // A full-expression is [...] a constant-expression
   // So we need to make sure temporary objects are destroyed after having
@@ -22619,14 +23147,15 @@ static bool doEvaluateConstantExpr(Expr::EvalResult &Result,
   // destruction too.
   if (Kind == ConstantExprKind::ClassTemplateArgument &&
       (!EvaluateDestruction(Ctx, Info.getSemaProxy(), Base, Result.Val, T,
-                            E->getBeginLoc(), Result, true) ||
+                            E->getBeginLoc(), Result, true,
+                            /*MustBeConstant=*/true) ||
        Result.HasSideEffects)) {
     // FIXME: Prefix a note to indicate that the problem is lack of constant
     // destruction.
     return false;
   }
 
-  return true;
+  return Report.finish(true);
 }
 
 bool Expr::EvaluateAsConstantExpr(EvalResult &Result, const ASTContext &Ctx,
@@ -22647,7 +23176,8 @@ bool Expr::EvaluateAsMandatedConstantExpr(EvalResult &Result,
 static bool doEvaluateInitializer(const ASTContext &Ctx, SemaProxy *SProxy,
                                   const VarDecl *VD, const Expr *E,
                                   Expr::EvalResult &EStatus,
-                                  bool IsConstantInitialization) {
+                                  bool IsConstantInitialization,
+                                  bool EvaluateContracts) {
   assert(!E->isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
   assert(VD && "Need a valid VarDecl");
@@ -22661,6 +23191,10 @@ static bool doEvaluateInitializer(const ASTContext &Ctx, SemaProxy *SProxy,
   if (Ctx.getLangOpts().EnableNewConstInterp) {
     interp::EvalSettings Settings(EvalMode, EStatus, SProxy);
     Settings.InConstantContext = IsConstantInitialization;
+    Settings.EvaluateContracts = EvaluateContracts;
+    // The interpreter does not say whether it skipped a contract assertion,
+    // so assume it did whenever contracts were disabled.
+    EStatus.SkippedContract = !EvaluateContracts;
     return Ctx.getInterpContext().evaluateAsInitializer(Settings, VD, E,
                                                         EStatus.Val);
   }
@@ -22671,6 +23205,8 @@ static bool doEvaluateInitializer(const ASTContext &Ctx, SemaProxy *SProxy,
   EvalInfo Info(Ctx, SProxy, EStatus, EvalMode);
   Info.setEvaluatingDecl(VD, EStatus.Val);
   Info.InConstantContext = IsConstantInitialization;
+  Info.EvaluateContracts = EvaluateContracts;
+  ContractProblemReport Report(Info, E);
 
   LValue LVal;
   LVal.set(VD);
@@ -22699,14 +23235,16 @@ static bool doEvaluateInitializer(const ASTContext &Ctx, SemaProxy *SProxy,
   if (!Info.discardCleanups())
     llvm_unreachable("Unhandled cleanup; missing full expression marker?");
 
-  return CheckConstantExpression(Info, DeclLoc, DeclTy, EStatus.Val,
-                                 ConstantExprKind::Normal) &&
-         CheckMemoryLeaks(Info);
+  return Report.finish(CheckConstantExpression(Info, DeclLoc, DeclTy,
+                                               EStatus.Val,
+                                               ConstantExprKind::Normal) &&
+                       CheckMemoryLeaks(Info));
 }
 
 bool Expr::EvaluateAsInitializer(const ASTContext &Ctx, const VarDecl *VD,
                                  Expr::EvalResult &EStatus,
-                                 bool IsConstantInitialization) const {
+                                 bool IsConstantInitialization,
+                                 bool EvaluateContracts) const {
   llvm::TimeTraceScope TimeScope("EvaluateAsInitializer", [&] {
     std::string Name;
     llvm::raw_string_ostream OS(Name);
@@ -22715,13 +23253,14 @@ bool Expr::EvaluateAsInitializer(const ASTContext &Ctx, const VarDecl *VD,
   });
 
   return ::doEvaluateInitializer(Ctx, /*SProxy=*/nullptr, VD, this, EStatus,
-                                 IsConstantInitialization);
+                                 IsConstantInitialization, EvaluateContracts);
 }
 
 bool Expr::EvaluateAsMandatedConstantInitializer(EvalResult &EStatus,
                                                  const ASTContext &Ctx,
                                                  SemaProxy &SProxy,
-                                                 const VarDecl *VD) const {
+                                                 const VarDecl *VD,
+                                                 bool EvaluateContracts) const {
   llvm::TimeTraceScope TimeScope("EvaluateAsMandatedConstantInitializer", [&] {
     std::string Name;
     llvm::raw_string_ostream OS(Name);
@@ -22730,7 +23269,8 @@ bool Expr::EvaluateAsMandatedConstantInitializer(EvalResult &EStatus,
   });
 
   return ::doEvaluateInitializer(Ctx, &SProxy, VD, this, EStatus,
-                                 /*IsConstantInitialization=*/true);
+                                 /*IsConstantInitialization=*/true,
+                                 EvaluateContracts);
 }
 
 static bool doEvaluateDestruction(const VarDecl *VD, SemaProxy *SProxy,
@@ -22777,7 +23317,8 @@ static bool doEvaluateDestruction(const VarDecl *VD, SemaProxy *SProxy,
   }
 
   if (!EvaluateDestruction(Ctx, SProxy, VD, std::move(DestroyedValue), VarTy,
-                           VD->getLocation(), EStatus, IsConstantDestruction) ||
+                           VD->getLocation(), EStatus, IsConstantDestruction,
+                           /*MustBeConstant=*/VD->isConstexpr()) ||
       EStatus.HasSideEffects)
     return false;
 
@@ -22982,8 +23523,9 @@ static ICEDiag CheckEvalInICE(const Expr* E, const ASTContext &Ctx) {
                 EvaluationMode::ConstantExpression);
 
   Info.InConstantContext = true;
-  if (!::EvaluateAsRValue(E, EVResult, Ctx, Info) || EVResult.HasSideEffects ||
-      !EVResult.Val.isInt())
+  ContractProblemReport Report(Info, E);
+  if (!Report.finish(::EvaluateAsRValue(E, EVResult, Ctx, Info)) ||
+      EVResult.HasSideEffects || !EVResult.Val.isInt())
     return ICEDiag(IK_NotICE, E->getBeginLoc());
 
   return NoDiag();
@@ -23502,8 +24044,10 @@ Expr::getIntegerConstantExpr(const ASTContext &Ctx,
   EvalInfo Info(Ctx, /*SProxy=*/nullptr, Status,
                 EvaluationMode::IgnoreSideEffects);
   Info.InConstantContext = true;
+  ContractProblemReport Report(Info, this);
 
-  if (!::EvaluateAsInt(this, ExprResult, Ctx, SE_AllowSideEffects, Info))
+  if (!Report.finish(
+          ::EvaluateAsInt(this, ExprResult, Ctx, SE_AllowSideEffects, Info)))
     llvm_unreachable("ICE cannot be evaluated!");
 
   return ExprResult.Val.getInt();
@@ -23633,10 +24177,11 @@ bool Expr::EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
   // Build fake call to Callee.
   CallStackFrame Frame(Info, Callee->getLocation(), Callee, ThisPtr, This,
                        Call);
+  ContractProblemReport Report(Info, this);
   // FIXME: Missing ExprWithCleanups in enable_if conditions?
   FullExpressionRAII Scope(Info);
-  return Evaluate(Value, Info, this) && Scope.destroy() &&
-         !Info.EvalStatus.HasSideEffects;
+  return Report.finish(Evaluate(Value, Info, this) && Scope.destroy() &&
+                       !Info.EvalStatus.HasSideEffects);
 }
 
 bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
@@ -23836,6 +24381,7 @@ static bool EvaluateCharRangeAsStringImpl(const Expr *, T &Result,
   Info.InConstantContext = true;
 
   LValue String;
+  ContractProblemReport Report(Info, SizeExpression);
   FullExpressionRAII Scope(Info);
   APSInt SizeValue;
   if (!::EvaluateInteger(SizeExpression, SizeValue, Info))
@@ -23875,7 +24421,7 @@ static bool EvaluateCharRangeAsStringImpl(const Expr *, T &Result,
       return false;
   }
 
-  return Scope.destroy() && CheckMemoryLeaks(Info);
+  return Report.finish(Scope.destroy() && CheckMemoryLeaks(Info));
 }
 
 bool Expr::EvaluateCharRangeAsString(std::string &Result,

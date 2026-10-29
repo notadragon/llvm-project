@@ -31,6 +31,7 @@ InterpState::InterpState(const EvalSettings &Settings, Program &P,
       Settings.CheckingPotentialConstantExpression;
   CheckingForUndefinedBehavior = Settings.CheckingForUndefinedBehavior;
   EvalMode = Settings.EvalMode;
+  EvaluateContracts = Settings.EvaluateContracts;
 }
 
 InterpState::InterpState(const EvalSettings &Settings, Program &P,
@@ -46,6 +47,7 @@ InterpState::InterpState(const EvalSettings &Settings, Program &P,
       Settings.CheckingPotentialConstantExpression;
   CheckingForUndefinedBehavior = Settings.CheckingForUndefinedBehavior;
   EvalMode = Settings.EvalMode;
+  EvaluateContracts = Settings.EvaluateContracts;
 }
 
 InterpState::InterpState(Expr::EvalStatus &Status, Program &P, InterpStack &Stk,
