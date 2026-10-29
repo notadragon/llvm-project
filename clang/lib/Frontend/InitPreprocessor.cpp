@@ -788,6 +788,9 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_contracts_report", "202610L");
   if (LangOpts.ContractsP4405)
     Builder.defineMacro("__cpp_contracts_prove", "202610L");
+  if (LangOpts.ContractOpts.AllowAssume)
+    Builder.defineMacro("__clang_contracts_allow_assume");
+
   if (LangOpts.Char8)
     Builder.defineMacro("__cpp_char8_t", "202207L");
   Builder.defineMacro("__cpp_impl_destroying_delete", "201806L");
@@ -1022,6 +1025,9 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   if (LangOpts.CPlusPlus)
     InitializeCPlusPlusFeatureTestMacros(LangOpts, Builder, TI);
+  // P4299 C contracts honour -fcontracts-allow-assume too.
+  else if (LangOpts.ContractsP4299 && LangOpts.ContractOpts.AllowAssume)
+    Builder.defineMacro("__clang_contracts_allow_assume");
   // P4299's keywords need no header, so the compiler says it has them, in C
   // and in C++, where they are keywords too.  The date of the implemented
   // revision until P4299 is adopted.

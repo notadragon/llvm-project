@@ -865,6 +865,53 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     }
   }
 
+  // P3100 (assume): when -fcontracts-p3100 resolves the user-space address
+  // check to assume, AddressSanitizer must not instrument this function --
+  // byte-identical to a build without -fsanitize=address for that check.
+  // Clear the address bit so the SanitizeAddress attribute below is not
+  // applied; the (missing) attribute streams through (Thin)LTO exactly like
+  // GCC's per-function no_sanitize("address"), so the ASan pass honors it under
+  // LTO and non-LTO alike.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Address) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Address) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Address, false);
+
+  // Same for the two ASan pointer-pair checks (pointer-compare,
+  // pointer-subtract): when one resolves to assume, its instrumentation
+  // (__sanitizer_ptr_cmp / __sanitizer_ptr_sub) must not be emitted for this
+  // function.
+  if (getLangOpts().ContractsP3100)
+    for (SanitizerMask Bit :
+         {SanitizerKind::PointerCompare, SanitizerKind::PointerSubtract})
+      if (SanOpts.has(Bit) && CGM.getCodeGenOpts().getSanitizerSemantic(Bit) ==
+                                  ContractEvaluationSemantic::Assume)
+        SanOpts.set(Bit, false);
+
+  // Same for every routed UBSan runtime check: when one resolves to assume, its
+  // instrumentation must not be emitted for this function (byte-identical to a
+  // build without that -fsanitize= check).
+  if (getLangOpts().ContractsP3100) {
+    for (const CodeGenModule::RoutedUbsanCheck &RC :
+         CodeGenModule::getRoutedUbsanChecks())
+      if (SanOpts.has(RC.Kind) &&
+          CGM.getCodeGenOpts().getSanitizerSemantic(RC.Kind) ==
+              ContractEvaluationSemantic::Assume)
+        SanOpts.set(RC.Kind, false);
+  }
+
+  // Same for ThreadSanitizer: thread:assume must not instrument this function.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Thread) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Thread) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Thread, false);
+
+  // Same for MemorySanitizer: memory:assume must not instrument this function.
+  if (getLangOpts().ContractsP3100 && SanOpts.has(SanitizerKind::Memory) &&
+      CGM.getCodeGenOpts().getSanitizerSemantic(SanitizerKind::Memory) ==
+          ContractEvaluationSemantic::Assume)
+    SanOpts.set(SanitizerKind::Memory, false);
+
   if (ShouldSkipSanitizerInstrumentation()) {
     CurFn->addFnAttr(llvm::Attribute::DisableSanitizerInstrumentation);
   } else {

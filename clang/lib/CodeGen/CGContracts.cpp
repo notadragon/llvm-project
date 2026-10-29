@@ -1315,6 +1315,126 @@ bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
   return true;
 }
 
+void CodeGenFunction::EmitCXXAssumeCheck(const Expr *Cond,
+                                         ContractEvaluationSemantic Sem,
+                                         SourceLocation Loc,
+                                         const FunctionDecl *FD) {
+  using CES = ContractEvaluationSemantic;
+
+  // Evaluate the (side-effect-free) predicate and branch: true -> continue,
+  // false -> the violation reaction.
+  llvm::Value *CondVal = EvaluateExprAsBool(Cond);
+  llvm::BasicBlock *ViolBB = createBasicBlock("assume.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("assume.ok");
+  Builder.CreateCondBr(CondVal, ContBB, ViolBB);
+
+  EmitBlock(ViolBB);
+  bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce ||
+                    Sem == CES::QuickEnforce);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(
+                   Loc, "assumed condition is false", std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce/noexcept_enforce: the entry point is noreturn (block already
+    // terminated).  observe/noexcept_observe: the handler returned -- continue
+    // (with the predicate possibly false, so no assume hint below).
+    if (Sem == CES::Observe || Sem == CES::NoexceptObserve)
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  // Enforcing family: the predicate provably holds here, so keep the optimizer
+  // hint.  The observing family must not (execution may continue with it
+  // false).
+  if (IsEnforce)
+    Builder.CreateAssumption(CondVal);
+}
+
+/// P3100: whether the [[assume]] predicate S has a side effect written in it
+/// -- an assignment, an increment or decrement, or a volatile access -- as
+/// opposed to one it might have only through a call, which is opaque here.
+/// Unevaluated operands and lambda bodies are not part of its evaluation.
+static bool assumeHasOwnSideEffect(const Stmt *S) {
+  if (const auto *BO = dyn_cast<BinaryOperator>(S)) {
+    if (BO->isAssignmentOp())
+      return true;
+  } else if (const auto *UO = dyn_cast<UnaryOperator>(S)) {
+    if (UO->isIncrementDecrementOp())
+      return true;
+  } else if (const auto *CE = dyn_cast<CastExpr>(S)) {
+    if (CE->getCastKind() == CK_LValueToRValue &&
+        CE->getSubExpr()->getType().isVolatileQualified())
+      return true;
+  } else if (isa<UnaryExprOrTypeTraitExpr, CXXNoexceptExpr, LambdaExpr>(S)) {
+    return false;
+  } else if (const auto *TE = dyn_cast<CXXTypeidExpr>(S)) {
+    if (!TE->isPotentiallyEvaluated())
+      return false;
+  }
+  for (const Stmt *Child : S->children())
+    if (Child && assumeHasOwnSideEffect(Child))
+      return true;
+  return false;
+}
+
+void CodeGenFunction::EmitCXXAssumeAttr(const CXXAssumeAttr *AA) {
+  using CES = ContractEvaluationSemantic;
+
+  const Expr *Assumption = AA->getAssumption();
+  if (!getLangOpts().CXXAssumptions || !Builder.GetInsertBlock())
+    return;
+
+  bool HasSideEffects = Assumption->HasSideEffects(getContext());
+
+  // P3100: [[assume]] is a configurable implicit contract assertion, group
+  // ub:dcl.attr.assume.false (the assumed condition being false is that UB).
+  // The predicate's properties set the allowed set for this instance: a
+  // side-effect-free predicate is safe to evaluate, so it supports the full
+  // checking set; an opaque/side-effecting predicate cannot be evaluated, so
+  // only assume/ignore apply (a configured checking semantic clamps to ignore).
+  if (getLangOpts().ContractsP3100) {
+    const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+    // A checkable (side-effect-free) predicate is a distinct,
+    // separately-matchable subset of this check -- same pattern as e.g.
+    // ub:expr.unary.dereference.nullptr -- so it gets its own qualified group
+    // id.  An uncheckable one reports .nonpure.side.effects when it has a side
+    // effect of its own and .nonpure.opaque when it might have one only
+    // through a call; the bare .nonpure is never reported.
+    std::optional<unsigned> Mask;
+    if (HasSideEffects)
+      Mask = (1u << unsigned(CES::Ignore)) | (1u << unsigned(CES::Assume));
+    StringRef Group = "ub:dcl.attr.assume.false.pure";
+    if (HasSideEffects)
+      Group = assumeHasOwnSideEffect(Assumption)
+                  ? "ub:dcl.attr.assume.false.nonpure.side.effects"
+                  : "ub:dcl.attr.assume.false.nonpure.opaque";
+    CES Sem = resolveImplicitContractSemantic(CGM, Group, FD,
+                                              Assumption->getExprLoc(), Mask);
+
+    if (Sem == CES::Ignore)
+      return;
+    if (Sem != CES::Assume) {
+      EmitCXXAssumeCheck(Assumption, Sem, Assumption->getExprLoc(), FD);
+      return;
+    }
+    // assume: fall through to the status-quo llvm.assume.
+  }
+
+  // assume (status quo): only emit the hint when the predicate is side-effect-
+  // free (evaluating it for llvm.assume must be unobservable).
+  if (!HasSideEffects) {
+    llvm::Value *AssumptionVal = EmitCheckedArgForAssume(Assumption);
+    Builder.CreateAssumption(AssumptionVal);
+  }
+}
+
 llvm::Value *CodeGenFunction::EmitImplicitSignedOverflowOp(
     QualType Ty, SourceLocation Loc, StringRef GroupName, StringRef Comment,
     ImplicitOverflowOp Op, llvm::Value *LHS, llvm::Value *RHS) {
