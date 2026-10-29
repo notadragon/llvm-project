@@ -1018,6 +1018,11 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   if (LangOpts.CPlusPlus)
     InitializeCPlusPlusFeatureTestMacros(LangOpts, Builder, TI);
+  // P4299's keywords need no header, so the compiler says it has them, in C
+  // and in C++, where they are keywords too.  The date of the implemented
+  // revision until P4299 is adopted.
+  if (LangOpts.ContractsP4299)
+    Builder.defineMacro("__clang_contracts_p4299", "202610L");
 
   // darwin_constant_cfstrings controls this. This is also dependent
   // on other things like the runtime I believe.  This is set even for C code.

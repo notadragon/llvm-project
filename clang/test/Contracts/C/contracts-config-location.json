@@ -1,0 +1,3 @@
+[
+  {"match": {"location": "contracts-config-location.c"}, "output": {"semantic": "observe"}}
+]

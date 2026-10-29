@@ -1,0 +1,16 @@
+[
+  {"match": {"location": "c-p4405-premise-semantic.c:19"}, "output": {"semantic": "enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:38"}, "output": {"semantic": "enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:57"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:76"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:95"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:114"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:133"}, "output": {"semantic": "observe"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:152"}, "output": {"semantic": "observe"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:171"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:190"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:209"}, "output": {"semantic": "ignore"}},
+  {"match": {"location": "c-p4405-premise-semantic.c:228"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "contract_assert"}, "output": {"semantic": "diagnose"}},
+  {"match": {}, "output": {"semantic": "enforce"}}
+]
