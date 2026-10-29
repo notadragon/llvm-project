@@ -2453,8 +2453,20 @@ TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E) {
   // Handle references to non-type template parameters and non-type template
   // parameter packs.
   if (NonTypeTemplateParmDecl *NTTP = dyn_cast<NonTypeTemplateParmDecl>(D)) {
-    if (NTTP->getDepth() < TemplateArgs.getNumLevels())
-      return TransformTemplateParmRefExpr(E, NTTP);
+    if (NTTP->getDepth() < TemplateArgs.getNumLevels()) {
+      ExprResult R = TransformTemplateParmRefExpr(E, NTTP);
+      // A reference template parameter constified in a contract predicate
+      // (its reference has a const type that the parameter's does not) stays
+      // const once its argument is substituted.
+      bool Constified =
+          E->getType().isConstQualified() &&
+          !NTTP->getType().getNonReferenceType().isConstQualified();
+      if (!R.isInvalid() && Constified && R.get()->isLValue() &&
+          !R.get()->getType().isConstQualified())
+        R = SemaRef.ImpCastExprToType(R.get(), R.get()->getType().withConst(),
+                                      CK_NoOp, VK_LValue);
+      return R;
+    }
 
     // We have a non-type template parameter that isn't fully substituted;
     // FindInstantiatedDecl will find it in the local instantiation scope.

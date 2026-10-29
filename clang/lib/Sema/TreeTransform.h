@@ -16,6 +16,7 @@
 #include "CoroutineStmtBuilder.h"
 #include "TypeLocBuilder.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
@@ -34,6 +35,7 @@
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Sema/Designator.h"
 #include "clang/Sema/EnterExpressionEvaluationContext.h"
+#include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Ownership.h"
 #include "clang/Sema/ParsedTemplate.h"
@@ -1627,6 +1629,29 @@ public:
 
   StmtResult RebuildCoroutineBodyStmt(CoroutineBodyStmt::CtorArgs Args) {
     return getSema().BuildCoroutineBodyStmt(Args);
+  }
+
+  /// Build a new contract_assert, pre, or post statement.
+  ///
+  /// By default, performs semantic analysis to build the new statement.
+  /// Subclasses may override this routine to provide different behavior.
+  StmtResult RebuildContractStmt(ContractKind K, SourceLocation KeywordLoc,
+                                 Expr *Cond, DeclStmt *ResultName,
+                                 Expr *Message, Expr *Label, DeclStmt *Captures,
+                                 ArrayRef<const Attr *> Attrs,
+                                 Expr *RequiresClause = nullptr) {
+    return getSema().BuildContractStmt(K, KeywordLoc, Cond, ResultName, Message,
+                                       Label, Captures, Attrs, RequiresClause);
+  }
+
+  /// Build a new contract specifier sequence from its contracts.
+  ///
+  /// By default, performs semantic analysis to build the new declaration.
+  /// Subclasses may override this routine to provide different behavior.
+  ContractSpecifierDecl *
+  RebuildContractSpecifierDecl(ArrayRef<ContractStmt *> Stmts,
+                               SourceLocation Loc) {
+    return getSema().ActOnFinishContractSpecifierSequence(Stmts, Loc);
   }
 
   /// Build a new Objective-C \@try statement.
@@ -9203,6 +9228,245 @@ TreeTransform<Derived>::TransformCoyieldExpr(CoyieldExpr *E) {
   // Always rebuild; we don't know if this needs to be injected into a new
   // context or if the promise type has changed.
   return getDerived().RebuildCoyieldExpr(E->getKeywordLoc(), Result.get());
+}
+
+// C++ Contract Statements
+
+template <typename Derived>
+StmtResult TreeTransform<Derived>::TransformContractStmt(ContractStmt *S) {
+
+  SmallVector<const Attr *> NewAttrs;
+  for (auto *A : S->getAttrs())
+    NewAttrs.push_back(getDerived().TransformAttr(A));
+
+  // Not unevaluated: a contract predicate is potentially evaluated.  The
+  // context is entered only for pre/post, whose predicate is transformed
+  // outside any enclosing function body scope; contract_assert is already
+  // inside one.
+  EnterExpressionEvaluationContext PredicateContext(
+      SemaRef, Sema::ExpressionEvaluationContext::PotentiallyEvaluated, nullptr,
+      Sema::ExpressionEvaluationContextRecord::EK_Other,
+      /*ShouldEnter=*/S->getContractKind() != ContractKind::Assert);
+  std::optional<Sema::CXXThisScopeRAII> OptThisScope;
+  if (S->getContractKind() != ContractKind::Assert) {
+    OptThisScope.emplace(getSema(),
+                         dyn_cast_if_present<CXXRecordDecl>(
+                             getSema().getFunctionLevelDeclContext()),
+                         Qualifiers());
+  }
+
+  assert(getSema().getFunctionLevelDeclContext(true)->isFunctionOrMethod() &&
+         "a contract is transformed inside its function");
+
+  // P4283: the requires-clause is checked first, as constraints are, so that
+  // nothing else in an assertion it discards is substituted.  It is taken
+  // apart at && and ||, and each atomic constraint transformed in a SFINAE
+  // context: a substitution failure makes it not satisfied
+  // ([temp.constr.atomic]), and an operand that settles the result stops
+  // transformation of the other ([temp.constr.op]).  An unsatisfied clause
+  // discards the assertion (a NullStmt).
+  if (S->hasRequiresClause()) {
+    auto Satisfied = [&](auto &Self, Expr *E) -> bool {
+      E = E->IgnoreParens();
+      if (auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() == BO_LAnd)
+          return Self(Self, BO->getLHS()) && Self(Self, BO->getRHS());
+        if (BO->getOpcode() == BO_LOr)
+          return Self(Self, BO->getLHS()) || Self(Self, BO->getRHS());
+      }
+      Sema::SFINAETrap Trap(SemaRef);
+      ExprResult Sub = getDerived().TransformExpr(E);
+      if (Sub.isInvalid() || !Sub.get() || Trap.hasErrorOccurred())
+        return false;
+      if (Sub.get()->isValueDependent())
+        return true;
+      if (auto *CSE = dyn_cast<ConceptSpecializationExpr>(Sub.get()))
+        return CSE->isSatisfied();
+      bool Result = false;
+      return Sub.get()->EvaluateAsBooleanCondition(Result, SemaRef.Context) &&
+             Result;
+    };
+    if (!Satisfied(Satisfied, S->getRequiresClause()))
+      return new (SemaRef.Context) NullStmt(S->getKeywordLoc());
+  }
+
+  Sema::ContractScopeRAII ContractScope(getSema(), S->getContractKind(),
+                                        ContractScopeOffset::FunctionContext,
+                                        S->getKeywordLoc());
+
+  StmtResult NewResultName;
+  if (S->hasResultName()) {
+    NewResultName = getDerived().TransformStmt(S->getResultNameDeclStmt());
+    if (NewResultName.isInvalid())
+      return StmtError();
+  }
+
+  // Transform captures before the condition -- the condition may
+  // reference capture variables via DeclRefExpr.
+  // Pack captures need explicit expansion since TransformDeclStmt
+  // doesn't handle pack expansion of VarDecls.
+  DeclStmt *Captures = nullptr;
+  if (S->hasCaptures()) {
+    bool HasPackCapture = false;
+    for (auto *D : S->getCapturesDeclStmt()->decls()) {
+      if (cast<PostconditionCaptureDecl>(D)->isPackExpansion()) {
+        HasPackCapture = true;
+        break;
+      }
+    }
+
+    if (!HasPackCapture) {
+      StmtResult CapturesRes =
+          getDerived().TransformStmt(S->getCapturesDeclStmt());
+      if (CapturesRes.isInvalid())
+        return StmtError();
+      Captures = cast<DeclStmt>(CapturesRes.get());
+    } else {
+      SmallVector<Decl *, 8> ExpandedCaptures;
+      bool Invalid = false;
+      for (auto *D : S->getCapturesDeclStmt()->decls()) {
+        auto *Cap = cast<PostconditionCaptureDecl>(D);
+        if (!Cap->isPackExpansion()) {
+          Decl *Transformed =
+              getDerived().TransformDefinition(Cap->getLocation(), Cap);
+          if (!Transformed) {
+            Invalid = true;
+            continue;
+          }
+          ExpandedCaptures.push_back(Transformed);
+          continue;
+        }
+
+        bool ShouldExpand = false;
+        bool RetainExpansion = false;
+        UnsignedOrNone NumExpansions = std::nullopt;
+        SmallVector<UnexpandedParameterPack, 2> Unexpanded;
+        if (Cap->hasInit())
+          getSema().collectUnexpandedParameterPacks(Cap->getInit(), Unexpanded);
+        if (Unexpanded.empty())
+          getSema().collectUnexpandedParameterPacks(Cap->getType(), Unexpanded);
+
+        if (Unexpanded.empty()) {
+          Decl *Transformed =
+              getDerived().TransformDefinition(Cap->getLocation(), Cap);
+          if (Transformed)
+            ExpandedCaptures.push_back(Transformed);
+          continue;
+        }
+
+        if (getDerived().TryExpandParameterPacks(
+                Cap->getLocation(), Cap->getLocation(), Unexpanded,
+                /*FailOnPackProducingTemplates=*/true, ShouldExpand,
+                RetainExpansion, NumExpansions)) {
+          Invalid = true;
+          continue;
+        }
+
+        if (ShouldExpand && NumExpansions) {
+          getSema().CurrentInstantiationScope->MakeInstantiatedLocalArgPack(
+              Cap);
+
+          // Get the pattern type (strip PackExpansionType).
+          QualType PatternType = Cap->getType();
+          if (auto *PET = PatternType->getAs<PackExpansionType>())
+            PatternType = PET->getPattern();
+
+          for (unsigned I = 0; I != *NumExpansions; ++I) {
+            Sema::ArgPackSubstIndexRAII SubstIndex(getSema(), I);
+
+            // Substitute the initializer first: an init-capture's parse-time
+            // type is the <dependent type> placeholder whenever its
+            // initializer was type-dependent, and substitution leaves that
+            // alone, so the element type has to come from the substituted
+            // initializer, as in VisitPostconditionCaptureDecl.
+            ExprResult NewInit;
+            if (Cap->hasInit()) {
+              NewInit = getDerived().TransformExpr(Cap->getInit());
+              if (NewInit.isInvalid()) {
+                Invalid = true;
+                continue;
+              }
+            }
+
+            QualType NewType = getDerived().TransformType(PatternType);
+            if (NewType.isNull()) {
+              Invalid = true;
+              continue;
+            }
+            if (!Cap->isParameterCapture() && NewInit.isUsable() &&
+                NewType->isDependentType())
+              NewType = NewInit.get()->getType().getUnqualifiedType();
+
+            PostconditionCaptureDecl *ExpandedCap =
+                getSema().BuildExpandedPostconditionCapture(Cap, NewType,
+                                                            NewInit);
+            if (!ExpandedCap) {
+              Invalid = true;
+              continue;
+            }
+
+            getSema().CurrentInstantiationScope->InstantiatedLocalPackArg(
+                Cap, ExpandedCap);
+            ExpandedCaptures.push_back(ExpandedCap);
+          }
+        }
+      }
+
+      if (Invalid)
+        return StmtError();
+
+      if (!ExpandedCaptures.empty()) {
+        StmtResult CapturesRes = getDerived().RebuildDeclStmt(
+            ExpandedCaptures, S->getCapturesDeclStmt()->getBeginLoc(),
+            S->getCapturesDeclStmt()->getEndLoc());
+        if (CapturesRes.isInvalid())
+          return StmtError();
+        Captures = cast<DeclStmt>(CapturesRes.get());
+      }
+    }
+  }
+
+  Expr *Cond = S->getCond();
+  Sema::ConditionResult CondRes = getDerived().TransformCondition(
+      Cond->getExprLoc(), /*Var=*/nullptr, Cond, Sema::ConditionKind::Boolean);
+  if (CondRes.isInvalid())
+    return StmtError();
+
+  Cond = CondRes.get().second;
+
+  Expr *Message = nullptr;
+  if (S->hasMessage()) {
+    ExprResult MsgRes = getDerived().TransformExpr(S->getMessageExpr());
+    if (MsgRes.isInvalid())
+      return StmtError();
+    Message = MsgRes.get();
+  }
+
+  Expr *Label = nullptr;
+  if (S->hasLabel()) {
+    // The label is a compile-time facet: it is only constant-evaluated (its
+    // allowed_semantics / compute_* members are queried at compile time), never
+    // code-generated.  Transform it in a constant-evaluated context so that
+    // referencing the label object does not leave a deferred odr-use in the
+    // enclosing function's MaybeODRUseExprs -- which, at template
+    // instantiation, would trip the assert in ActOnFinishFunctionBody.
+    EnterExpressionEvaluationContext ConstCtx(
+        SemaRef, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+    ExprResult LabelRes = getDerived().TransformExpr(S->getLabelExpr());
+    if (LabelRes.isInvalid())
+      return StmtError();
+    Label = LabelRes.get();
+  }
+
+  // A satisfied requires-clause is kept as substituted, or as `true` where an
+  // operand the check never needed (one after a settled || or &&) cannot be.
+  StmtResult Result = getDerived().RebuildContractStmt(
+      S->getContractKind(), S->getKeywordLoc(), Cond,
+      cast_or_null<DeclStmt>(NewResultName.get()), Message, Label, Captures,
+      NewAttrs, RequiresClause);
+  if (auto *CS = dyn_cast_if_present<ContractStmt>(Result.get()))
+    CS->setRParenLoc(S->getRParenLoc());
+  return Result;
 }
 
 // Objective-C Statements.

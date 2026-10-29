@@ -1527,6 +1527,123 @@ void Sema::CheckFunctionContracts(FunctionDecl *FD, bool IsDefinition,
   diagnoseParamTypes(*this, FD, FD->getContracts());
 }
 
+void Sema::InstantiateFunctionContractsOnUse(
+    SourceLocation PointOfInstantiation, FunctionDecl *Function) {
+  if (!getLangOpts().Contracts)
+    return;
+
+  // Why this exists is on its declaration.  Among what a never-substituted
+  // predicate escapes is [dcl.contract.func]/7, the rule that a non-reference
+  // parameter odr-used by a postcondition be const.
+
+  // Only for template instantiations: the pattern must carry contracts, and
+  // the instantiation must not already have a substituted specifier of its own
+  // (e.g. because its definition was instantiated first), in which case there
+  // is nothing to do.
+  //
+  // Two states mean "not yet substituted".  A member of a class template
+  // instantiation is handed the pattern's own (dependent) specifier as a
+  // placeholder by VisitCXXMethodDecl -- and it may have come from any
+  // declaration on the pattern's redeclaration chain, not necessarily
+  // PatternDecl, hence holdsPatternContractSpecifier.  A function template
+  // specialization formed by deduction, on the other hand, simply has NO
+  // contracts until its definition is instantiated, so the placeholder must
+  // not be required here: requiring it makes this a no-op for a
+  // declaration-only function template, which is the [dcl.contract.func]/9
+  // case above.
+  const FunctionDecl *PatternDecl = Function->getTemplateInstantiationPattern();
+  if (!PatternDecl || !PatternDecl->hasContracts())
+    return;
+  if (Function->getContracts() &&
+      !holdsPatternContractSpecifier(Function, PatternDecl))
+    return;
+  if (Function->isInvalidDecl() || Function->isDependentContext())
+    return;
+
+  // Guard against recursive / re-entrant instantiation.
+  InstantiatingTemplate Inst(*this, PointOfInstantiation, Function);
+  if (Inst.isInvalid())
+    return;
+
+  // Break cycles between contracts.  Substituting a predicate odr-uses what it
+  // calls, so two functions whose predicates call each other ask for each
+  // other's contracts without end.  Whichever request came first is still on
+  // the stack and will set this function's contracts when it returns, so the
+  // re-entrant one has nothing to add.
+  if (!ContractInstantiationsInProgress.insert(Function).second)
+    return;
+  llvm::scope_exit LeaveInProgress(
+      [&] { ContractInstantiationsInProgress.erase(Function); });
+
+  Sema::ContextRAII SavedContext(*this, Function);
+
+  // Substitute in a function scope and an expression evaluation context of our
+  // own, rather than borrowing whatever the odr-use happened to occur in.
+  //
+  // This runs from MarkFunctionReferenced, so it is reachable while some
+  // *other* function's contract predicate is still being transformed: that
+  // predicate odr-uses a function which itself has contracts, and lands right
+  // here.  PushContractScope records its state on getCurFunction() and asserts
+  // that scope is not already inside a contract -- which the enclosing
+  // function's scope is.  The two functions are unrelated, and neither should
+  // see the other's scope, so give this substitution its own.
+  //
+  // The expression evaluation context matters for the same reason: entering
+  // Function resets the immediate-function-context tracking, so a predicate
+  // substituted from inside a consteval function's contract does not inherit
+  // that function's immediate context.
+  //
+  // A lambda's call operator gets the lambda's own scope instead, rebuilt
+  // from its closure type, as for its exception specification: a predicate
+  // may name the lambda's captures, and capturing finds them only in a
+  // lambda scope.  This path is reached for one before its body is
+  // instantiated (which would otherwise provide that scope) when the
+  // call operator's return type is not deduced, so that a call can be formed
+  // without the definition.
+  LocalInstantiationScope Scope(*this);
+
+  MultiLevelTemplateArgumentList TemplateArgs = getTemplateInstantiationArgs(
+      Function, Function->getLexicalDeclContext(), /*Final=*/false,
+      /*Innermost=*/std::nullopt, /*RelativeToPrimary=*/false, PatternDecl);
+
+  const bool IsLambda = isLambdaCallOperator(Function);
+  std::optional<LambdaScopeForCallOperatorInstantiationRAII> LambdaScope;
+  if (IsLambda)
+    LambdaScope.emplace(*this, Function, TemplateArgs, Scope,
+                        /*ShouldAddDeclsFromParentScope=*/false);
+  else
+    PushFunctionScope();
+  PushExpressionEvaluationContextForFunction(
+      ExpressionEvaluationContext::PotentiallyEvaluated, Function);
+  llvm::scope_exit LeaveFunctionScope([&] {
+    PopExpressionEvaluationContext();
+    if (!IsLambda)
+      PopFunctionScopeInfo();
+  });
+
+  // Make the instantiated parameters visible so the contract predicate's
+  // references resolve to this function's own parameters.
+  if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
+                                       TemplateArgs))
+    return;
+
+  // And a lambda's init-captures, which the predicate names as the pattern's.
+  // Their instantiations are the closure type's captures, which a closure
+  // type still being instantiated does not have yet.
+  if (IsLambda) {
+    const CXXRecordDecl *Closure = cast<CXXMethodDecl>(Function)->getParent();
+    const CXXRecordDecl *ClosurePattern =
+        cast<CXXMethodDecl>(PatternDecl)->getParent();
+    if (Closure->capture_size() || !ClosurePattern->capture_size())
+      if (addInstantiatedCapturesToScope(Function, PatternDecl, Scope,
+                                         TemplateArgs))
+        return;
+  }
+
+  InstantiateContractSpecifier(PointOfInstantiation, Function, PatternDecl,
+                               TemplateArgs);
+}
+
 bool Sema::holdsPatternContractSpecifier(const FunctionDecl *Instantiation,
                                          const FunctionDecl *Pattern) {
   const ContractSpecifierDecl *CSD = Instantiation->getContracts();
