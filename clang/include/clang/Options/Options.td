@@ -1914,6 +1914,12 @@ defm contracts_p4298 : BoolFOption<"contracts-p4298",
           "Enable P4298 noexcept_enforce and noexcept_observe evaluation semantics">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p4405 : BoolFOption<"contracts-p4405",
+  LangOpts<"ContractsP4405">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4405 prove and diagnose evaluation semantics">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contract_bypass_rethrowing_local_handler :
   BoolFOption<"contract-bypass-rethrowing-local-handler",
   LangOpts<"ContractBypassRethrowingLocalHandler">, DefaultTrue,

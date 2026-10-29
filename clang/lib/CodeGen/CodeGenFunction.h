@@ -5266,6 +5266,15 @@ public:
                             llvm::CallBase **CallOrInvoke = nullptr);
   CGCallee EmitCallee(const Expr *E);
 
+  /// P4405: diagnose, at the call \p CallSite, each analysis evaluation with
+  /// prove or diagnose of the contracts of the callee \p FD made there (D4405:
+  /// a precondition's own, and whatever the caller-side resolution moves into
+  /// it).  They have no run-time effect, so nothing else is emitted for them.
+  /// \p Object is the object of a constructor or destructor call, if known.
+  void DiagnoseCallerSideProvingContracts(const FunctionDecl *FD,
+                                          const Expr *CallSite,
+                                          llvm::Value *Object = nullptr);
+
   void checkTargetFeatures(const CallExpr *E, const FunctionDecl *TargetDecl);
   void checkTargetFeatures(SourceLocation Loc, const FunctionDecl *TargetDecl);
 

@@ -665,6 +665,15 @@ void CodeGenFunction::EmitCXXConstructExpr(const CXXConstructExpr *E,
   assert(!Dest.isIgnored() && "Must have a destination!");
   const CXXConstructorDecl *CD = E->getConstructor();
 
+  // P4405: as for a call (EmitCallExpr), with the object for `this' (for an
+  // array, one call per element: none).
+  if (getLangOpts().ContractsP4405)
+    DiagnoseCallerSideProvingContracts(
+        CD, E,
+        getContext().getAsArrayType(E->getType())
+            ? nullptr
+            : Dest.getAddress().emitRawPointer(*this));
+
   // If we require zero initialization before (or instead of) calling the
   // constructor, as can be the case with a non-user-provided default
   // constructor, emit the zero initialization now, unless destination is

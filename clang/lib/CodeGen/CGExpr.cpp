@@ -6653,6 +6653,9 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
     }
   });
 
+  // P4405: a caller-side prove or diagnose is diagnosed here, at the call.
+  DiagnoseCallerSideProvingContracts(E->getDirectCallee(), E);
+
   // Builtins never have block type.
   if (E->getCallee()->getType()->isBlockPointerType())
     return EmitBlockCallExpr(E, ReturnValue, CallOrInvoke);

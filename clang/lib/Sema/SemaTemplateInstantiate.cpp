@@ -1838,6 +1838,18 @@ namespace {
       // FIXME: This temporary fix can be removed after fully implementing
       // p0588r1.
       llvm::SaveAndRestore _(EvaluateConstraints, true);
+      // P4405: the notes of a diagnostic code generation issues in the call
+      // operator (the current context), as for an instantiated function
+      // definition.
+      if (SemaRef.getLangOpts().ContractsP4405)
+        if (auto *FD = dyn_cast<FunctionDecl>(SemaRef.CurContext)) {
+          SmallVector<PartialDiagnosticAt, 2> Notes;
+          SemaRef.PrintInstantiationStack(
+              [&](SourceLocation Loc, PartialDiagnostic PD) {
+                Notes.emplace_back(Loc, std::move(PD));
+              });
+          SemaRef.Context.setContractInstantiationNotes(FD, std::move(Notes));
+        }
       return inherited::TransformLambdaBody(E, Body);
     }
 

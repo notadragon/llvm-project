@@ -975,6 +975,12 @@ bool DiagnosticIDs::isUnrecoverable(unsigned DiagID) const {
       DiagID == diag::err_unavailable_message)
     return false;
 
+  // P4405: an evaluation with the prove semantic is diagnosed during code
+  // generation, which must go on to diagnose every other evaluation.
+  if (DiagID == diag::err_contract_unproven ||
+      DiagID == diag::err_contract_always_false)
+    return false;
+
   // All ARC errors are currently considered recoverable, with the exception of
   // the following errors:
   // - err_arc_may_not_respond: sending a message with an unknown selector could

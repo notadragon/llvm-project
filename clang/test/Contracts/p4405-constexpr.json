@@ -1,0 +1,6 @@
+[
+  {"match": {"constexpr": true, "kind": "pre"}, "output": {"semantic": "prove"}},
+  {"match": {"constexpr": true}, "output": {"semantic": "diagnose"}},
+  {"match": {"constexpr": true}, "output": {"semantic": "ignore"}},
+  {"match": {"constexpr": false}, "output": {"semantic": "ignore"}}
+]

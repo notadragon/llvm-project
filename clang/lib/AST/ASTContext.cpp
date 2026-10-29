@@ -16307,3 +16307,78 @@ ASTContext::getPaddingIntervals(QualType Ty) const {
 
   return itr->second;
 }
+
+void ASTContext::setContractInstantiationNotes(
+    const FunctionDecl *FD, SmallVectorImpl<PartialDiagnosticAt> &&Notes) {
+  if (Notes.empty())
+    return;
+  auto [It, Inserted] =
+      ContractInstantiationContexts.try_emplace(FD->getCanonicalDecl(), 0);
+  if (!Inserted)
+    return;
+  ContractInstantiationNotes.emplace_back();
+  ContractInstantiationNotes.back().Notes.append(
+      std::make_move_iterator(Notes.begin()),
+      std::make_move_iterator(Notes.end()));
+  It->second = ContractInstantiationNotes.size();
+}
+
+unsigned ASTContext::getContractDiagnosticContext(const Decl *D) const {
+  while (D) {
+    auto It = ContractInstantiationContexts.find(D->getCanonicalDecl());
+    if (It != ContractInstantiationContexts.end()) {
+      ContractInstantiationContext &C =
+          ContractInstantiationNotes[It->second - 1];
+      if (!C.IsRendered) {
+        for (const PartialDiagnosticAt &Note : C.Notes) {
+          ContractInstantiationContext::RenderedNote R;
+          R.Loc = Note.first;
+          if (Note.second.hasStorage())
+            R.Ranges.append(Note.second.getStorage()->DiagRanges.begin(),
+                            Note.second.getStorage()->DiagRanges.end());
+          SmallString<128> Text;
+          Note.second.EmitToString(getDiagnostics(), Text);
+          R.Text = std::string(Text);
+          C.Rendered.push_back(std::move(R));
+        }
+        C.Notes.clear();
+        C.IsRendered = true;
+      }
+      return It->second;
+    }
+    // A lambda's call operator, or a block, is instantiated with the
+    // function that encloses it (a generic lambda's is recorded itself).
+    const DeclContext *DC = nullptr;
+    if (const auto *MD = dyn_cast<CXXMethodDecl>(D);
+        MD && isLambdaCallOperator(MD))
+      DC = MD->getParent()->getDeclContext();
+    else if (isa<BlockDecl, CapturedDecl>(D))
+      DC = D->getDeclContext();
+    D = DC ? Decl::castFromDeclContext(DC) : nullptr;
+  }
+  return 0;
+}
+
+void ASTContext::emitContractDiagnosticContext(DiagnosticsEngine &Diags,
+                                               unsigned Handle) const {
+  if (!Handle || Handle > ContractInstantiationNotes.size() ||
+      Diags.isLastDiagnosticIgnored())
+    return;
+  // Sema prints the instantiation stack once for consecutive diagnostics in
+  // one instantiation.
+  unsigned Count = Diags.getNumErrors() + Diags.getNumWarnings();
+  bool Again =
+      Handle == LastContractContext && Count == LastContractContextCount + 1;
+  LastContractContext = Handle;
+  LastContractContextCount = Count;
+  if (Again)
+    return;
+  for (const ContractInstantiationContext::RenderedNote &Note :
+       ContractInstantiationNotes[Handle - 1].Rendered) {
+    DiagnosticBuilder Builder(
+        Diags.Report(Note.Loc, diag::note_contract_instantiation_context));
+    Builder << Note.Text;
+    for (const CharSourceRange &Range : Note.Ranges)
+      Builder << Range;
+  }
+}

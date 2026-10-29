@@ -2249,6 +2249,39 @@ private:
   /// Emit deactivation symbols for any PFP fields whose offset is taken with
   /// offsetof.
   void emitPFPFieldsWithEvaluatedOffset();
+
+public:
+  /// P4405: diagnose an evaluation of contract \p S with \p Sem, prove or
+  /// diagnose, unless a proving strategy proves its predicate
+  /// (ContractProve.h) -- an error for prove, a -Wcontract-unproven warning
+  /// for diagnose, "contract predicate is always false" if a strategy shows
+  /// it false -- once per evaluation.  \p CallSite is the call for a
+  /// caller-side evaluation, which is diagnosed there with a note at the
+  /// predicate, and null for a callee-side one; \p Callee is the function
+  /// called, for a caller-side precondition, whose arguments a strategy may
+  /// use.  The predicate is never evaluated.
+  /// \p CGF is the function being emitted, where a deferring strategy
+  /// places its marker.  \p Override: for an override pair's obligation
+  /// (D4405, CallSite its Site), the pair, diagnosed at D::f's definition
+  /// naming B::f, and \p OverrideShadow whether it is decided in the pair's
+  /// override shadow (ContractProofQuery).
+  void diagnoseUnprovenContract(
+      const ContractStmt &S, ContractEvaluationSemantic Sem,
+      const Expr *CallSite = nullptr, const FunctionDecl *Callee = nullptr,
+      CodeGenFunction *CGF = nullptr,
+      const struct ContractOverridePair *Override = nullptr,
+      bool OverrideShadow = false);
+
+private:
+  /// P4405: the evaluations with prove or diagnose already diagnosed, as
+  /// (contract, call) -- the call null for a callee-side evaluation -- so
+  /// that code emitted more than once (a constructor's complete and base
+  /// variants, say) diagnoses each evaluation once.
+  llvm::DenseSet<std::pair<const ContractStmt *, const Expr *>>
+      DiagnosedUnprovenContracts;
+  /// D4405: getContractImplicitCallSite's expressions.
+  llvm::DenseMap<const void *, const Expr *> ContractImplicitCallSites;
+
 };
 
 }  // end namespace CodeGen

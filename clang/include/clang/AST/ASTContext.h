@@ -3839,7 +3839,53 @@ public:
   /// declarations were built.
   unsigned NumImplicitDestructorsDeclared = 0;
 
+  /// P4405: the template instantiation notes of an instantiated function
+  /// definition (setContractInstantiationNotes), as Sema made them, and
+  /// rendered once code generation asks for them
+  /// (getContractDiagnosticContext): its diagnostics may be issued after the
+  /// AST is cleared (-clear-ast-before-backend).
+  struct ContractInstantiationContext {
+    struct RenderedNote {
+      SourceLocation Loc;
+      SmallVector<CharSourceRange, 1> Ranges;
+      std::string Text;
+    };
+    SmallVector<PartialDiagnosticAt, 2> Notes;
+    SmallVector<RenderedNote, 2> Rendered;
+    bool IsRendered = false;
+  };
+  /// The index plus 1 is a context handle.
+  mutable std::vector<ContractInstantiationContext> ContractInstantiationNotes;
+  /// Each instantiated function definition's context handle, by canonical
+  /// declaration.
+  llvm::DenseMap<const Decl *, unsigned> ContractInstantiationContexts;
+  /// The context of the last diagnostic emitContractDiagnosticContext
+  /// followed, and the number of warnings and errors issued then.
+  mutable unsigned LastContractContext = 0;
+  mutable unsigned LastContractContextCount = 0;
+
 public:
+  /// P4405: record \p Notes, the template instantiation notes ("in
+  /// instantiation of ... requested here") that a diagnostic in the body of
+  /// \p FD would be followed by.  Sema records them while it instantiates
+  /// the definition, for the diagnostics code generation issues once the
+  /// instantiation is over (the prove and diagnose ones).
+  void
+  setContractInstantiationNotes(const FunctionDecl *FD,
+                                SmallVectorImpl<PartialDiagnosticAt> &&Notes);
+
+  /// P4405: the context handle of a diagnostic in the code of \p D -- an
+  /// instantiated function definition, or a lambda's call operator or a
+  /// block instantiated with one -- or 0 for none.  Renders its notes, which
+  /// needs the AST.
+  unsigned getContractDiagnosticContext(const Decl *D) const;
+
+  /// P4405: follow the diagnostic just issued with the notes of context
+  /// \p Handle, as Sema follows one with the instantiation stack: not if it
+  /// was not shown, nor again for consecutive diagnostics of one context.
+  void emitContractDiagnosticContext(DiagnosticsEngine &Diags,
+                                     unsigned Handle) const;
+
   /// Initialize built-in types.
   ///
   /// This routine may only be invoked once for a given ASTContext object.

@@ -17,6 +17,7 @@
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
 #include "ConstantEmitter.h"
+#include "ContractProve.h"
 #include "TargetInfo.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
@@ -531,6 +532,112 @@ static llvm::Function *getFacetTrampoline(CodeGenModule &CGM,
 // Emit the contract expression.
 void CodeGenFunction::EmitContractStmt(const ContractStmt &S) {
   EmitContractStmtAsFullStmt(S);
+}
+
+void CodeGenModule::diagnoseUnprovenContract(
+    const ContractStmt &S, ContractEvaluationSemantic Sem, const Expr *CallSite,
+    const FunctionDecl *Callee, CodeGenFunction *CGF,
+    const ContractOverridePair *Override, bool OverrideShadow) {
+  assert(isProvingContractSemantic(Sem) && "not prove or diagnose");
+  // An invalid assertion has been diagnosed already.
+  if (S.isInvalid())
+    return;
+  // P4405 proving hook.
+  ContractProofQuery Query{getContext(), S,   Sem,      S.getCond(),   CallSite,
+                           Callee,       CGF, Override, OverrideShadow};
+  // An evaluation deferred to a strategy is placed wherever it is emitted.
+  if (placeDeferredContractProof(Query, getLangOpts(), /*Defer=*/false) ||
+      !DiagnosedUnprovenContracts.insert({&S, CallSite}).second)
+    return;
+  ContractProofResult Proof = proveContract(Query, getLangOpts());
+  if (isContractProofProven(Proof))
+    return;
+  if (Proof == ContractProofResult::Deferred &&
+      placeDeferredContractProof(Query, getLangOpts(), /*Defer=*/true))
+    return;
+  if (Proof == ContractProofResult::Deferred)
+    Proof = ContractProofResult::Unproven;
+  if (takeContractDiagnostic(Query, Proof, getLangOpts()))
+    return;
+  bool AlwaysFalse = Proof == ContractProofResult::AlwaysFalse;
+  unsigned ID = Sem == ContractEvaluationSemantic::Prove
+                    ? (AlwaysFalse ? diag::err_contract_always_false
+                                   : diag::err_contract_unproven)
+                    : (AlwaysFalse ? diag::warn_contract_always_false
+                                   : diag::warn_contract_unproven);
+  SourceRange PredRange = S.getCond()->getSourceRange();
+  // In a template instantiation, the notes Sema would give the diagnostic.
+  unsigned Context = getContext().getContractDiagnosticContext(
+      CGF ? CGF->CurCodeDecl : nullptr);
+  // D4405: an override pair's is at D::f's definition (its Site), naming
+  // B::f.
+  bool IsOverride = Override != nullptr;
+  StringRef BaseName = Override ? StringRef(Override->BaseName) : StringRef();
+  if (!CallSite) {
+    getDiags().Report(S.getKeywordLoc(), ID)
+        << PredRange << IsOverride << BaseName;
+    getContext().emitContractDiagnosticContext(getDiags(), Context);
+    return;
+  }
+  getDiags().Report(CallSite->getExprLoc(), ID)
+      << CallSite->getSourceRange() << IsOverride << BaseName;
+  getContext().emitContractDiagnosticContext(getDiags(), Context);
+  // The note follows the diagnostic, so it is dropped with a silenced warning.
+  getDiags().Report(PredRange.getBegin(),
+                    diag::note_contract_unproven_predicate)
+      << PredRange;
+}
+
+void CodeGenFunction::DiagnoseCallerSideProvingContracts(const FunctionDecl *FD,
+                                                         const Expr *CallSite,
+                                                         llvm::Value *Object) {
+  if (!FD || !getLangOpts().ContractsP4405)
+    return;
+  // A call of an inheriting constructor calls the inherited one, with the
+  // same arguments, whose contracts are the ones evaluated -- for a base
+  // subobject, so the object is not that one's `this'.
+  while (const auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
+    InheritedConstructor Inh = CD->getInheritedConstructor();
+    if (!Inh || Inh.getConstructor() == CD)
+      break;
+    FD = Inh.getConstructor();
+    Object = nullptr;
+  }
+  const FunctionDecl *WithContracts = nullptr;
+  for (const FunctionDecl *R : FD->redecls())
+    if (R->hasContracts()) {
+      WithContracts = R;
+      break;
+    }
+  if (!WithContracts)
+    return;
+  llvm::Value *SavedObject = ContractCallObject;
+  ContractCallObject = Object;
+  const DeclContext *DC = WithContracts->getDeclContext();
+  for (const ContractStmt *CS : WithContracts->getContracts()->contracts()) {
+    // D4405: the analysis evaluation at a call is a precondition's own --
+    // the first evaluation of the assertion, resolved as for the callee's
+    // definition, so independent of the caller -- taking the stronger of it
+    // and what the caller-side resolution moved into it; a postcondition
+    // has only the latter.  In C a precondition is analyzed in the
+    // function's body (notadragon_wg21 DECISIONS.md E143 (a)).
+    ContractEvaluationSemantic Sem;
+    if (CS->getContractKind() == ContractKind::Pre) {
+      Sem = CS->ensureCallerAnalysisSemantic(getContext(), DC);
+      if (getLangOpts().CPlusPlus)
+        Sem = contractAnalysisStronger(
+            Sem, CS->ensureAnalysisSemantic(getContext(), DC));
+    } else if (CS->getContractKind() == ContractKind::Post) {
+      Sem = CS->ensureCallerAnalysisSemantic(getContext(), DC);
+    } else {
+      continue;
+    }
+    if (isProvingContractSemantic(Sem))
+      CGM.diagnoseUnprovenContract(
+          *CS, Sem, CallSite,
+          CS->getContractKind() == ContractKind::Pre ? FD : nullptr, this);
+  }
+  ContractCallObject = SavedObject;
 }
 
 // Build a synthetic try/catch whose sole handler is a catch-all with an empty

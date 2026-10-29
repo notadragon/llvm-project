@@ -6408,6 +6408,16 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     if (auto *Listener = getASTMutationListener())
       Listener->FunctionDefinitionInstantiated(Function);
 
+    // P4405: code generation issues the prove and diagnose diagnostics, after
+    // the instantiation; record the notes a diagnostic here would have.
+    if (getLangOpts().ContractsP4405 && !Function->isInvalidDecl()) {
+      SmallVector<PartialDiagnosticAt, 2> Notes;
+      PrintInstantiationStack([&](SourceLocation Loc, PartialDiagnostic PD) {
+        Notes.emplace_back(Loc, std::move(PD));
+      });
+      Context.setContractInstantiationNotes(Function, std::move(Notes));
+    }
+
     savedContext.pop();
   }
 
