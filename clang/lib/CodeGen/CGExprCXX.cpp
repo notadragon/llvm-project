@@ -1967,6 +1967,7 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
   Address allocation = Address::invalid();
   CallArgList allocatorArgs;
   RValue TypeIdentityArg;
+  std::optional<SanitizerSet> P3100PlacementChecks;
   if (allocator->isReservedGlobalPlacementOperator()) {
     assert(E->getNumPlacementArgs() == 1);
     const Expr *arg = *E->placement_arguments().begin();
@@ -1979,6 +1980,10 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
     // formal alignment of the allocated type.
     if (BaseInfo.getAlignmentSource() != AlignmentSource::Decl)
       allocation.setAlignment(allocAlign);
+
+    // P3100: the pointer argument must be non-null and suitably aligned.
+    P3100PlacementChecks = EmitImplicitPlacementNewGuards(
+        E, allocation.emitRawPointer(*this), allocType);
 
     // Set up allocatorArgs for the call to operator delete if it's not
     // the reserved global operator.
@@ -2145,10 +2150,16 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
   // we'll null check the wrong pointer here.
   SanitizerSet SkippedChecks;
   SkippedChecks.set(SanitizerKind::Null, nullCheck);
+  // P3100: the placement guards above take the place of the implicit
+  // assertions here, and of the sanitizer checks they emitted.
+  P3100PlacementNewChecked = P3100PlacementChecks.has_value();
+  if (P3100PlacementChecks)
+    SkippedChecks.Mask |= P3100PlacementChecks->Mask;
   EmitTypeCheck(CodeGenFunction::TCK_ConstructorCall,
                 E->getAllocatedTypeSourceInfo()->getTypeLoc().getBeginLoc(),
                 result, allocType, result.getAlignment(), SkippedChecks,
                 numElements);
+  P3100PlacementNewChecked = false;
 
   EmitNewInitializer(*this, E, allocType, elementTy, result, numElements,
                      allocSizeWithoutCookie);

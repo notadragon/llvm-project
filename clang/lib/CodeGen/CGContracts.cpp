@@ -1774,6 +1774,82 @@ void CodeGenFunction::EmitImplicitNullMemberPointerGuard(
                             dyn_cast_or_null<FunctionDecl>(CurFuncDecl));
 }
 
+// P3100: whether the non-allocating placement new E, creating objects of type
+// AllocType, stores nothing to them: default-initialization that performs no
+// initialization, or an empty class whatever its initializer.
+static bool placementNewStoresNothing(const CXXNewExpr *E,
+                                      QualType AllocType) {
+  if (const auto *RD = AllocType->getAsCXXRecordDecl();
+      RD && RD->hasDefinition() && RD->isEmpty())
+    return true;
+  const Expr *Init = E->getInitializer();
+  if (!Init)
+    return true;
+  if (const auto *CCE = dyn_cast<CXXConstructExpr>(Init))
+    return CCE->getConstructor()->isTrivial() &&
+           CCE->getConstructor()->isDefaultConstructor() &&
+           !CCE->requiresZeroInitialization();
+  return false;
+}
+
+// P3100: the pointer argument of a non-allocating placement new, which the
+// allocation function returns, must not be null
+// ({expr.new.non.allocating.null}), and must be suitably aligned for the
+// objects created there ({basic.align.object.alignment}).  Both are checked
+// on the pointer before the objects are initialized, against the alignment
+// of the type (the pointer's own known alignment may be smaller, which is the
+// misalignment).  The alignment check is the .nostore leaf where the
+// new-expression stores nothing -- no access check could see the address --
+// and the .store leaf, the access check's, where its initialization stores.
+// A class's own placement operator new is not checked.  Execution continuing
+// past a violation goes on with the pointer.
+SanitizerSet CodeGenFunction::EmitImplicitPlacementNewGuards(
+    const CXXNewExpr *E, llvm::Value *Ptr, QualType AllocType) {
+  using CES = ContractEvaluationSemantic;
+  SanitizerSet Handled;
+  if (!getLangOpts().ContractsP3100 || !HaveInsertPoint())
+    return Handled;
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  SourceLocation Loc = E->getExprLoc();
+
+  CES NullSem = resolveImplicitSemantic("ub:expr.new.non.allocating.null", Loc);
+  if (NullSem != CES::Assume && NullSem != CES::Ignore) {
+    llvm::BasicBlock *ViolBB = createBasicBlock("placement.null.viol");
+    llvm::BasicBlock *ContBB = createBasicBlock("placement.null.ok");
+    Builder.CreateCondBr(Builder.CreateIsNull(Ptr), ViolBB, ContBB);
+    emitImplicitGuardReaction(
+        NullSem, ViolBB, ContBB, Loc,
+        "null pointer passed to a non-allocating placement new", FD);
+    Handled.set(SanitizerKind::Null, true);
+  }
+
+  if (AllocType->isIncompleteType())
+    return Handled;
+  CharUnits Align = getContext().getTypeAlignInChars(AllocType);
+  if (Align <= CharUnits::One())
+    return Handled;
+  bool NoStore = placementNewStoresNothing(E, AllocType);
+  CES AlignSem = resolveImplicitSemantic(
+      NoStore ? "ub:basic.align.object.alignment.nostore"
+              : "ub:basic.align.object.alignment.store",
+      Loc);
+  if (AlignSem != CES::Assume && AlignSem != CES::Ignore) {
+    llvm::Value *PtrInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+    llvm::Value *Masked = Builder.CreateAnd(
+        PtrInt, llvm::ConstantInt::get(IntPtrTy, Align.getQuantity() - 1));
+    llvm::BasicBlock *ViolBB = createBasicBlock("placement.misalign.viol");
+    llvm::BasicBlock *ContBB = createBasicBlock("placement.misalign.ok");
+    Builder.CreateCondBr(Builder.CreateIsNotNull(Masked), ViolBB, ContBB);
+    emitImplicitGuardReaction(
+        AlignSem, ViolBB, ContBB, Loc,
+        NoStore ? "misaligned pointer passed to a non-allocating placement new"
+                : "misaligned pointer access",
+        FD);
+    Handled.set(SanitizerKind::Alignment, true);
+  }
+  return Handled;
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.
