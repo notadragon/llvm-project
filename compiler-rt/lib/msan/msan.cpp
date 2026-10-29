@@ -20,6 +20,7 @@
 #include "msan_thread.h"
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_contract_routing.h"
 #include "sanitizer_common/sanitizer_flag_parser.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
@@ -234,11 +235,95 @@ static void InitializeFlags() {
   if (f->store_context_size < 1) f->store_context_size = 1;
 }
 
+// -------------------- P3100 contract-routing ------------------- {{{1
+//
+// The compiler emits a per-TU weak byte __msan_contract_semantic when
+// -fcontracts-p3100 routes the memory (use-of-uninitialized-value) check to the
+// C++ contract-violation handler.  Wire encoding (shared with ASan/UBSan/TSan):
+//   0 = stock         (routing off / symbol absent -> keep stock behavior)
+//   1 = observe       (call handler, then continue)
+//   2 = enforce       (call handler, then terminate)
+//   3 = quick_enforce (terminate WITHOUT calling the handler)
+// continue-vs-terminate is decided from the semantic alone: enforce and quick
+// terminate in PrintWarningWithOrigin, and observe returns into a caller whose
+// halt_on_error check (MsanHaltOnError) a routed report skips.  That covers
+// every reporting path -- the codegen entry points and the interceptors'
+// CHECK_UNPOISONED -- whatever MSAN_OPTIONS says.  The handler is invoked from this
+// implicitly-noexcept runtime leg, so only the NON-throwing realizations are
+// routed (noexcept_observe / noexcept_enforce, p4298-gated; quick terminates
+// without the handler).  Declared weak so a non-p3100 program reads 0 = stock.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __msan_contract_semantic;
+
+static unsigned char MsanContractSemantic() {
+  if (&__msan_contract_semantic == nullptr)
+    return kContractRouteStock;
+  return __msan_contract_semantic;
+}
+
+// Lazy report populator ABI (mirror of __cxa_contract_report_populator; layout
+// must match { const char* (*)(const void*), const void* }).
+
+
+// The routed sanitizer emits nothing itself; the handler owns all output and
+// gets MSan's report via report(), rendered on first request from the error's
+// stack and origin, which this context keeps for the handler call.
+struct MsanContractReportCtx {
+  StackTrace *stack;
+  u32 origin;
+  InternalScopedString rendered;
+};
+
+static const char* msan_contract_report_populate(const void* ctx_v) {
+  auto* ctx = const_cast<MsanContractReportCtx*>(
+      static_cast<const MsanContractReportCtx*>(ctx_v));
+  if (ctx->rendered.length() == 0)
+    RenderUMRForContract(&ctx->rendered, ctx->stack, ctx->origin);
+  return ctx->rendered.data();
+}
+
+bool MsanContractRouted() {
+  const unsigned char route = MsanContractSemantic();
+  if (route == kContractRouteQuick)
+    return true;
+  // Defensive: routed but the handler entry point not linked -> stock.
+  return (route == kContractRouteObserve || route == kContractRouteEnforce) &&
+         &__cxa_contract_violation_sanitizer != nullptr;
+}
+
+bool MsanHaltOnError() {
+  return !MsanContractRouted() && flags()->halt_on_error;
+}
+
 void PrintWarningWithOrigin(uptr pc, uptr bp, u32 origin) {
   if (msan_expect_umr) {
     // Printf("Expected UMR\n");
     __msan_origin_tls = origin;
     msan_expected_umr_found = 1;
+    return;
+  }
+
+  // P3100 contract routing: when the memory check is routed to the contract
+  // handler, the handler owns all output -- MSan prints nothing.  enforce
+  // terminates after the handler and quick_enforce without it, here, whatever
+  // the caller; observe returns, and the caller's MsanHaltOnError() is false.
+  // Skip ++msan_report_count so the routed path is independent of MSAN_OPTIONS
+  // report-count/exit-code logic.  Stock (routing off) behavior below is
+  // byte-for-byte unchanged.
+  if (MsanContractRouted()) {
+    const unsigned char route = MsanContractSemantic();
+    if (route == kContractRouteQuick)
+      Die();  // silent: no report, no handler
+    GET_FATAL_STACK_TRACE_PC_BP(pc, bp);
+    MsanContractReportCtx report_ctx = {
+        &stack,
+        (__msan_get_track_origins() && Origin::isValidId(origin)) ? origin : 0,
+        {}};
+    ContractReportPopulator populator = {&msan_contract_report_populate,
+                                         &report_ctx};
+    __cxa_contract_violation_sanitizer("uninitialized-value", /*file=*/"",
+                                       /*line=*/0, route, &populator);
+    if (route == kContractRouteEnforce)
+      Die();
     return;
   }
 
@@ -379,7 +464,7 @@ static void print_shadow_value(void *shadow, u64 size) {
       if (Verbosity() >= 1)                          \
         print_shadow_value((void *)(&s), sizeof(s)); \
       PrintWarningWithOrigin(pc, bp, o);             \
-      if (__msan::flags()->halt_on_error) {          \
+      if (__msan::MsanHaltOnError()) {              \
         Printf("Exiting\n");                         \
         Die();                                       \
       }                                              \
@@ -408,7 +493,7 @@ void __msan_maybe_warning_N(void *shadow, u64 size, u32 o) {
     if (Verbosity() >= 1)
       print_shadow_value(shadow, size);
     PrintWarningWithOrigin(pc, bp, o);
-    if (__msan::flags()->halt_on_error) {
+    if (__msan::MsanHaltOnError()) {
       Printf("Exiting\n");
       Die();
     }
@@ -435,7 +520,7 @@ MSAN_MAYBE_STORE_ORIGIN(u64, 8)
 void __msan_warning() {
   GET_CALLER_PC_BP;
   PrintWarningWithOrigin(pc, bp, 0);
-  if (__msan::flags()->halt_on_error) {
+  if (__msan::MsanHaltOnError()) {
     if (__msan::flags()->print_stats)
       ReportStats();
     Printf("Exiting\n");
@@ -455,7 +540,7 @@ void __msan_warning_noreturn() {
 void __msan_warning_with_origin(u32 origin) {
   GET_CALLER_PC_BP;
   PrintWarningWithOrigin(pc, bp, origin);
-  if (__msan::flags()->halt_on_error) {
+  if (__msan::MsanHaltOnError()) {
     if (__msan::flags()->print_stats)
       ReportStats();
     Printf("Exiting\n");
@@ -616,7 +701,7 @@ void __msan_check_mem_is_initialized(const void *x, uptr size) {
   ReportUMRInsideAddressRange(__func__, x, size, offset);
   __msan::PrintWarningWithOrigin(pc, bp,
                                  __msan_get_origin(((const char *)x) + offset));
-  if (__msan::flags()->halt_on_error) {
+  if (__msan::MsanHaltOnError()) {
     Printf("Exiting\n");
     Die();
   }

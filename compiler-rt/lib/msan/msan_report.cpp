@@ -36,71 +36,98 @@ class Decorator: public __sanitizer::SanitizerCommonDecorator {
   const char *Name() const { return Green(); }
 };
 
-static void DescribeStackOrigin(const char *so, uptr pc) {
-  Decorator d;
-  Printf("%s", d.Origin());
+// The colors of an origin description: the report decorator's, or none for
+// the plain text a routed report hands the contract-violation handler.
+struct OriginColors {
+  const char *origin;
+  const char *name;
+  const char *def;
+};
+
+static void DescribeStackOrigin(InternalScopedString *out,
+                                const OriginColors &d, const char *so,
+                                uptr pc) {
+  out->Append(d.origin);
   if (so) {
-    Printf(
+    out->AppendF(
         "  %sUninitialized value was created by an allocation of '%s%s%s'"
         " in the stack frame%s\n",
-        d.Origin(), d.Name(), so, d.Origin(), d.Default());
+        d.origin, d.name, so, d.origin, d.def);
   } else {
-    Printf("  %sUninitialized value was created in the stack frame%s\n",
-           d.Origin(), d.Default());
+    out->AppendF("  %sUninitialized value was created in the stack frame%s\n",
+                 d.origin, d.def);
   }
 
   if (pc)
-    StackTrace(&pc, 1).Print();
+    StackTrace(&pc, 1).PrintTo(out);
+}
+
+static void DescribeOrigin(InternalScopedString *out, const OriginColors &d,
+                           u32 id) {
+  Origin o = Origin::FromRawId(id);
+  while (o.isChainedOrigin()) {
+    StackTrace stack;
+    o = o.getNextChainedOrigin(&stack);
+    out->AppendF("  %sUninitialized value was stored to memory at%s\n",
+                 d.origin, d.def);
+    stack.PrintTo(out);
+  }
+  if (o.isStackOrigin()) {
+    uptr pc;
+    const char *so = GetStackOriginDescr(o.getStackId(), &pc);
+    DescribeStackOrigin(out, d, so, pc);
+  } else {
+    StackTrace stack = o.getStackTraceForHeapOrigin();
+    switch (stack.tag) {
+      case StackTrace::TAG_ALLOC:
+        out->AppendF(
+            "  %sUninitialized value was created by a heap allocation%s\n",
+            d.origin, d.def);
+        break;
+      case StackTrace::TAG_DEALLOC:
+        out->AppendF(
+            "  %sUninitialized value was created by a heap deallocation%s\n",
+            d.origin, d.def);
+        break;
+      case STACK_TRACE_TAG_POISON:
+        out->AppendF("  %sMemory was marked as uninitialized%s\n", d.origin,
+                     d.def);
+        break;
+      case STACK_TRACE_TAG_FIELDS:
+        out->AppendF("  %sMember fields were destroyed%s\n", d.origin, d.def);
+        break;
+      case STACK_TRACE_TAG_VPTR:
+        out->AppendF("  %sVirtual table ptr was destroyed%s\n", d.origin,
+                     d.def);
+        break;
+      case STACK_TRACE_TAG_ALLOC_PADDING:
+        out->AppendF(
+            "  %sUninitialized value is outside of heap allocation%s\n",
+            d.origin, d.def);
+        break;
+      default:
+        out->AppendF("  %sUninitialized value was created%s\n", d.origin,
+                     d.def);
+        break;
+    }
+    stack.PrintTo(out);
+  }
 }
 
 static void DescribeOrigin(u32 id) {
   VPrintf(1, "  raw origin id: %d\n", id);
   Decorator d;
-  Origin o = Origin::FromRawId(id);
-  while (o.isChainedOrigin()) {
-    StackTrace stack;
-    o = o.getNextChainedOrigin(&stack);
-    Printf("  %sUninitialized value was stored to memory at%s\n", d.Origin(),
-           d.Default());
-    stack.Print();
-  }
-  if (o.isStackOrigin()) {
-    uptr pc;
-    const char *so = GetStackOriginDescr(o.getStackId(), &pc);
-    DescribeStackOrigin(so, pc);
-  } else {
-    StackTrace stack = o.getStackTraceForHeapOrigin();
-    switch (stack.tag) {
-      case StackTrace::TAG_ALLOC:
-        Printf("  %sUninitialized value was created by a heap allocation%s\n",
-               d.Origin(), d.Default());
-        break;
-      case StackTrace::TAG_DEALLOC:
-        Printf("  %sUninitialized value was created by a heap deallocation%s\n",
-               d.Origin(), d.Default());
-        break;
-      case STACK_TRACE_TAG_POISON:
-        Printf("  %sMemory was marked as uninitialized%s\n", d.Origin(),
-               d.Default());
-        break;
-      case STACK_TRACE_TAG_FIELDS:
-        Printf("  %sMember fields were destroyed%s\n", d.Origin(), d.Default());
-        break;
-      case STACK_TRACE_TAG_VPTR:
-        Printf("  %sVirtual table ptr was destroyed%s\n", d.Origin(),
-               d.Default());
-        break;
-      case STACK_TRACE_TAG_ALLOC_PADDING:
-        Printf("  %sUninitialized value is outside of heap allocation%s\n",
-               d.Origin(), d.Default());
-        break;
-      default:
-        Printf("  %sUninitialized value was created%s\n", d.Origin(),
-               d.Default());
-        break;
-    }
-    stack.Print();
-  }
+  InternalScopedString out;
+  DescribeOrigin(&out, {d.Origin(), d.Name(), d.Default()}, id);
+  Printf("%s", out.data());
+}
+
+void RenderUMRForContract(InternalScopedString *out, StackTrace *stack,
+                          u32 origin) {
+  out->Append("MemorySanitizer: use-of-uninitialized-value\n");
+  stack->PrintTo(out);
+  if (origin)
+    DescribeOrigin(out, {"", "", ""}, origin);
 }
 
 void ReportUMR(StackTrace *stack, u32 origin) {
@@ -273,6 +300,8 @@ void DescribeMemoryRange(const void *x, uptr size) {
 
 void ReportUMRInsideAddressRange(const char *function, const void *start,
                                  uptr size, uptr offset) {
+  if (MsanContractRouted())
+    return;  // the routed handler owns all output
   function = StackTracePrinter::GetOrInit()->StripFunctionName(function);
   Decorator d;
   Printf("%s", d.Warning());

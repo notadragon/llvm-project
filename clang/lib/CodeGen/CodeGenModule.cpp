@@ -4102,6 +4102,19 @@ void CodeGenModule::emitTsanContractSemanticDescriptor() {
                            "__tsan_contract_semantic");
 }
 
+// MemorySanitizer routing descriptor (Clang-only): a single whole-program check
+// (use-of-uninitialized-value) with its own weak wire byte
+// __msan_contract_semantic, read by compiler-rt's __msan_warning* leg.  Same
+// wire encoding and emit-nothing-for-stock rule as the ASan descriptor.
+void CodeGenModule::emitMsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+  emitContractRouteByteFor(*this, SanitizerKind::Memory,
+                           "__msan_contract_semantic");
+}
+
 // The routed UBSan runtime checks, each with its slot in the weak
 // __ubsan_contract_semantic array.  The slots MUST stay in sync with the RUC_*
 // enum in compiler-rt's ubsan_diag.cpp.

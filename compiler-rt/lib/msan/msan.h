@@ -315,6 +315,13 @@ bool IsInSymbolizerOrUnwider();
 
 void PrintWarning(uptr pc, uptr bp);
 void PrintWarningWithOrigin(uptr pc, uptr bp, u32 origin);
+// Whether reports are routed to the contract-violation handler (or, under
+// quick_enforce, to silent termination).  A routed report prints nothing of
+// MSan's own and decides continue-vs-terminate from the semantic alone.
+bool MsanContractRouted();
+// Whether a warning halts the program: flags()->halt_on_error, which a routed
+// report does not consult.
+bool MsanHaltOnError();
 
 // Unpoison first n function arguments.
 void UnpoisonParam(uptr n);
