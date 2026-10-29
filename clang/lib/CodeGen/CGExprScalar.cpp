@@ -302,6 +302,10 @@ class ScalarExprEmitter
   CGBuilderTy &Builder;
   bool IgnoreResultAssign;
   llvm::LLVMContext &VMContext;
+  /// P3100: set while a floating-point -> enumeration conversion converts the
+  /// underlying-type value to the enumeration, so its range check reports the
+  /// .floating leaf of ub:expr.static.cast.enum.outside.range.
+  bool P3100EnumFromFloating = false;
 public:
 
   ScalarExprEmitter(CodeGenFunction &cgf, bool ira=false)
@@ -384,6 +388,24 @@ public:
   /// EmitConversionToBool - Convert the specified expression value to a
   /// boolean (i1) truth value.  This is equivalent to "Val != 0".
   Value *EmitConversionToBool(Value *Src, QualType DstTy);
+
+  /// Build the boolean predicate that is true when converting the
+  /// floating-point value \p Src to the integer \p DstType is *in range* --
+  /// i.e. the truncated-toward-zero value is representable.  Returns nullptr if
+  /// \p DstTy is not an integer type.  Shared by the UBSan float-cast check and
+  /// the P3100 implicit-contract-assertion guard.
+  llvm::Value *EmitFloatCastInRangePredicate(Value *Src, QualType OrigSrcType,
+                                             QualType SrcType, QualType DstType,
+                                             llvm::Type *DstTy);
+
+  /// P3100: emit the predicate "the integer/enumeration value \p Src is outside
+  /// the target enumeration \p DstType's [dcl.enum] value range", for a
+  /// non-fixed-underlying-type enum ({expr.static.cast.enum.outside.range}).
+  /// Returns nullptr when \p DstType is not such an enum or is
+  /// sanitizer-ignored.  Companion to the P3100 guard in EmitScalarConversion.
+  llvm::Value *EmitEnumCastInRangePredicate(Value *Src, QualType SrcType,
+                                            QualType DstType,
+                                            llvm::Type *SrcTy);
 
   /// Emit a check that a conversion from a floating-point type does not
   /// overflow.
@@ -698,20 +720,27 @@ public:
   Value *VisitStmtExpr(const StmtExpr *E);
 
   // Unary Operators.
+  /// The operand of an increment or decrement is accessed (read and
+  /// written), so an array subscript in it may not be one past the end: take
+  /// it as a checked store, as for the left operand of an assignment.
+  LValue EmitIncDecLValue(const UnaryOperator *E) {
+    return CGF.EmitCheckedLValue(E->getSubExpr(), CodeGenFunction::TCK_Store);
+  }
+
   Value *VisitUnaryPostDec(const UnaryOperator *E) {
-    LValue LV = EmitLValue(E->getSubExpr());
+    LValue LV = EmitIncDecLValue(E);
     return EmitScalarPrePostIncDec(E, LV, false, false);
   }
   Value *VisitUnaryPostInc(const UnaryOperator *E) {
-    LValue LV = EmitLValue(E->getSubExpr());
+    LValue LV = EmitIncDecLValue(E);
     return EmitScalarPrePostIncDec(E, LV, true, false);
   }
   Value *VisitUnaryPreDec(const UnaryOperator *E) {
-    LValue LV = EmitLValue(E->getSubExpr());
+    LValue LV = EmitIncDecLValue(E);
     return EmitScalarPrePostIncDec(E, LV, false, true);
   }
   Value *VisitUnaryPreInc(const UnaryOperator *E) {
-    LValue LV = EmitLValue(E->getSubExpr());
+    LValue LV = EmitIncDecLValue(E);
     return EmitScalarPrePostIncDec(E, LV, true, true);
   }
 
@@ -727,7 +756,8 @@ public:
     if (isa<MemberPointerType>(E->getType())) // never sugared
       return CGF.CGM.getMemberPointerConstant(E);
 
-    return EmitLValue(E->getSubExpr()).getPointer(CGF);
+    // P3100: `&*p` is an indirection through p.
+    return CGF.EmitUnaccessedLValue(E->getSubExpr()).getPointer(CGF);
   }
   Value *VisitUnaryDeref(const UnaryOperator *E) {
     if (E->getType()->isVoidType())
@@ -837,6 +867,38 @@ public:
   }
 
   // Binary Operators.
+  /// P3100: the leaves of ub:expr.expr.eval.signed.integer the signed-overflow
+  /// check reports, by operation: an addition (an increment too), a
+  /// subtraction (a decrement too), a multiplication, a unary minus.
+  static constexpr StringRef SignedOverflowAdd =
+      "ub:expr.expr.eval.signed.integer.add";
+  static constexpr StringRef SignedOverflowSub =
+      "ub:expr.expr.eval.signed.integer.sub";
+  static constexpr StringRef SignedOverflowMul =
+      "ub:expr.expr.eval.signed.integer.mul";
+  static constexpr StringRef SignedOverflowNegate =
+      "ub:expr.expr.eval.signed.integer.negate";
+
+  /// P3100: whether an implicit ub:expr.expr.eval.signed.integer contract
+  /// assertion, reporting the leaf Group (one of the four above), guards the
+  /// signed arithmetic at Loc.  It takes precedence over the overflow-behavior
+  /// and sanitizer handling, per leaf.
+  bool implicitSignedOverflowContractApplies(SourceLocation Loc,
+                                             StringRef Group) {
+    return CGF.getLangOpts().ContractsP3100 &&
+           (!CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow) ||
+            CGF.implicitContractApplies(Group, Loc));
+  }
+
+  /// P3100: emit Op on LHS and RHS behind that assertion.
+  Value *EmitImplicitSignedOverflow(QualType Ty, SourceLocation Loc,
+                                    StringRef Group,
+                                    CodeGenFunction::ImplicitOverflowOp Op,
+                                    Value *LHS, Value *RHS) {
+    return CGF.EmitImplicitSignedOverflowOp(
+        Ty, Loc, Group, "signed integer overflow", Op, LHS, RHS);
+  }
+
   Value *EmitMul(const BinOpInfo &Ops) {
     if (Ops.Ty->isSignedIntegerOrEnumerationType() ||
         Ops.Ty->isUnsignedIntegerType()) {
@@ -844,6 +906,11 @@ public:
       const bool hasSan =
           isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                    : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+      if (isSigned && implicitSignedOverflowContractApplies(
+                          Ops.E->getExprLoc(), SignedOverflowMul))
+        return EmitImplicitSignedOverflow(
+            Ops.Ty, Ops.E->getExprLoc(), SignedOverflowMul,
+            CodeGenFunction::ImplicitOverflowOp::Mul, Ops.LHS, Ops.RHS);
       switch (getOverflowBehaviorConsideringType(CGF, Ops.Ty)) {
       case LangOptions::OB_Wrap:
         return Builder.CreateMul(Ops.LHS, Ops.RHS, "mul");
@@ -906,10 +973,15 @@ public:
 
   Value *EmitDiv(const BinOpInfo &Ops);
   Value *EmitRem(const BinOpInfo &Ops);
+  Value *EmitP3100GuardedDivRem(const BinOpInfo &Ops, StringRef Name,
+                                StringRef What,
+                                llvm::function_ref<Value *()> EmitRaw);
   Value *EmitAdd(const BinOpInfo &Ops);
   Value *EmitSub(const BinOpInfo &Ops);
   Value *EmitShl(const BinOpInfo &Ops);
   Value *EmitShr(const BinOpInfo &Ops);
+  Value *EmitP3100GuardedShift(const BinOpInfo &Ops, bool IsLeft,
+                               llvm::function_ref<Value *()> EmitRaw);
   Value *EmitAnd(const BinOpInfo &Ops) {
     return Builder.CreateAnd(Ops.LHS, Ops.RHS, "and");
   }
@@ -1064,20 +1136,41 @@ Value *ScalarExprEmitter::EmitConversionToBool(Value *Src, QualType SrcType) {
   return EmitPointerToBoolConversion(Src, SrcType);
 }
 
-void ScalarExprEmitter::EmitFloatConversionCheck(
-    Value *OrigSrc, QualType OrigSrcType, Value *Src, QualType SrcType,
-    QualType DstType, llvm::Type *DstTy, SourceLocation Loc) {
-  assert(SrcType->isFloatingType() && "not a conversion from floating point");
-  if (!isa<llvm::IntegerType>(DstTy))
-    return;
+llvm::Value *ScalarExprEmitter::EmitEnumCastInRangePredicate(
+    Value *Src, QualType SrcType, QualType DstType, llvm::Type *SrcTy) {
+  // Enumeration value range [Min, End); a value outside it is UB.  Compare
+  // using the unsigned-offset trick, so a below-Min value wraps and is caught
+  // too, at a width one bit wider than both the source and the range: the
+  // span of a signed range does not fit the range's own width, and an
+  // unsigned source's large values (4294967295u is not -1) must not wrap
+  // into it.
+  llvm::APInt Min, End;
+  if (!CGF.getStrictEnumRange(DstType, Min, End))
+    return nullptr;
+  unsigned CmpBits =
+      std::max(cast<llvm::IntegerType>(SrcTy)->getBitWidth(),
+               End.getBitWidth()) +
+      1;
+  llvm::Type *CmpTy = Builder.getIntNTy(CmpBits);
+  llvm::Value *SrcExt = Builder.CreateIntCast(
+      Src, CmpTy, SrcType->isSignedIntegerOrEnumerationType());
+  llvm::APInt MinExt = Min.sext(CmpBits);
+  llvm::APInt Span = (End - 1).sext(CmpBits) - MinExt;
+  llvm::Value *Offset = Builder.CreateSub(
+      SrcExt, llvm::ConstantInt::get(CGF.getLLVMContext(), MinExt));
+  return Builder.CreateICmpUGT(
+      Offset, llvm::ConstantInt::get(CGF.getLLVMContext(), Span), "enum.oor");
+}
 
-  auto CheckOrdinal = SanitizerKind::SO_FloatCastOverflow;
-  auto CheckHandler = SanitizerHandler::FloatCastOverflow;
-  SanitizerDebugLocation SanScope(&CGF, {CheckOrdinal}, CheckHandler);
+llvm::Value *ScalarExprEmitter::EmitFloatCastInRangePredicate(
+    Value *Src, QualType OrigSrcType, QualType SrcType, QualType DstType,
+    llvm::Type *DstTy) {
+  if (!isa<llvm::IntegerType>(DstTy))
+    return nullptr;
+
   using llvm::APFloat;
   using llvm::APSInt;
 
-  llvm::Value *Check = nullptr;
   const llvm::fltSemantics &SrcSema =
     CGF.getContext().getFloatTypeSemantics(OrigSrcType);
 
@@ -1125,7 +1218,22 @@ void ScalarExprEmitter::EmitFloatConversionCheck(
     Builder.CreateFCmpOGT(Src, llvm::ConstantFP::get(VMContext, MinSrc));
   llvm::Value *LE =
     Builder.CreateFCmpOLT(Src, llvm::ConstantFP::get(VMContext, MaxSrc));
-  Check = Builder.CreateAnd(GE, LE);
+  return Builder.CreateAnd(GE, LE);
+}
+
+void ScalarExprEmitter::EmitFloatConversionCheck(
+    Value *OrigSrc, QualType OrigSrcType, Value *Src, QualType SrcType,
+    QualType DstType, llvm::Type *DstTy, SourceLocation Loc) {
+  assert(SrcType->isFloatingType() && "not a conversion from floating point");
+  if (!isa<llvm::IntegerType>(DstTy))
+    return;
+
+  auto CheckOrdinal = SanitizerKind::SO_FloatCastOverflow;
+  auto CheckHandler = SanitizerHandler::FloatCastOverflow;
+  SanitizerDebugLocation SanScope(&CGF, {CheckOrdinal}, CheckHandler);
+
+  llvm::Value *Check =
+      EmitFloatCastInRangePredicate(Src, OrigSrcType, SrcType, DstType, DstTy);
 
   llvm::Constant *StaticArgs[] = {CGF.EmitCheckSourceLocation(Loc),
                                   CGF.EmitCheckTypeDescriptor(OrigSrcType),
@@ -1682,7 +1790,51 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
   if (DstType->isBooleanType())
     return EmitConversionToBool(Src, SrcType);
 
+  // P3100: a floating-point -> enumeration conversion is a conversion to the
+  // underlying type and then to the enumeration ([expr.static.cast]/8), so
+  // each step takes its own check: {conv.fpint} against the underlying type,
+  // then the enumeration's value range.
+  if (CGF.getLangOpts().ContractsP3100 && SrcType->isRealFloatingType()) {
+    if (const EnumDecl *ED = DstType->getAsEnumDecl()) {
+      QualType IntTy = ED->getIntegerType();
+      if (!IntTy.isNull()) {
+        Value *Int =
+            EmitScalarConversion(Src, NoncanonicalSrcType, IntTy, Loc, Opts);
+        bool Saved = std::exchange(P3100EnumFromFloating, true);
+        Value *Res = EmitScalarConversion(Int, IntTy, NoncanonicalDstType, Loc,
+                                          Opts);
+        P3100EnumFromFloating = Saved;
+        return Res;
+      }
+    }
+  }
+
   llvm::Type *DstTy = ConvertType(DstType);
+
+  // P3100: guard an integer/enumeration -> enumeration conversion whose value
+  // may be outside the target enumeration's value range, for a non-fixed
+  // underlying enum ({expr.static.cast.enum.outside.range}:
+  // [expr.static.cast]/8). Placed before the SrcTy==DstTy fast path below,
+  // since an int->enum cast often shares the underlying LLVM integer type.
+  // UBSan's enum check instruments loads, not casts, so there is no sanitizer
+  // to defer to at the cast site.  The group's .integral leaf is an integral
+  // or enumeration source, its .floating leaf a floating-point one (converted
+  // to the underlying type first, above).
+  if (CGF.getLangOpts().ContractsP3100 && DstType->isEnumeralType() &&
+      isa<llvm::IntegerType>(SrcTy) && isa<llvm::IntegerType>(DstTy)) {
+    bool FromFloating = std::exchange(P3100EnumFromFloating, false);
+    if (llvm::Value *IsViol =
+            EmitEnumCastInRangePredicate(Src, SrcType, DstType, SrcTy))
+      return CGF.EmitImplicitIntOpGuard(
+          DstType, IsViol, Loc,
+          FromFloating ? "ub:expr.static.cast.enum.outside.range.floating"
+                       : "ub:expr.static.cast.enum.outside.range.integral",
+          "enumeration value out of range", [&] {
+            return SrcTy == DstTy ? Src
+                                  : EmitScalarCast(Src, SrcType, DstType, SrcTy,
+                                                   DstTy, Opts);
+          });
+  }
 
   // Determine whether an overflow behavior of 'trap' has been specified for
   // either the destination or the source types. If so, we can elide sanitizer
@@ -1812,6 +1964,26 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
       OrigSrcType->isFloatingType())
     EmitFloatConversionCheck(OrigSrc, OrigSrcType, Src, SrcType, DstType, DstTy,
                              Loc);
+
+  // P3100: guard a floating-point -> integer conversion whose truncated value
+  // may not be representable in the destination integer type ({conv.fpint}).
+  // The guard replaces the conversion, so the trapping fptosi/fptoui executes
+  // only on the in-range path; ignore/observe substitute a defined 0.  Scope
+  // matches GCC's: plain integer destinations only (not bool; an enumeration
+  // destination was converted through its underlying type above).
+  if (CGF.getLangOpts().ContractsP3100 && OrigSrcType->isFloatingType() &&
+      isa<llvm::IntegerType>(DstTy) && !DstType->isBooleanType() &&
+      !DstType->isEnumeralType()) {
+    if (llvm::Value *InRange = EmitFloatCastInRangePredicate(
+            Src, OrigSrcType, SrcType, DstType, DstTy)) {
+      llvm::Value *IsViol = Builder.CreateNot(InRange, "fpint.oor");
+      return CGF.EmitImplicitIntOpGuard(
+          DstType, IsViol, Loc, "ub:conv.fpint.float.not.represented",
+          "floating-point to integer conversion out of range", [&] {
+            return EmitScalarCast(Src, SrcType, DstType, SrcTy, DstTy, Opts);
+          });
+    }
+  }
 
   // Cast to half from float if half isn't a native type. When __fp16 isn't
   // native, arithmetic is evaluated as float.
@@ -2148,13 +2320,13 @@ Value *ScalarExprEmitter::VisitConvertVectorExpr(ConvertVectorExpr *E) {
 
 Value *ScalarExprEmitter::VisitMemberExpr(MemberExpr *E) {
   if (CodeGenFunction::ConstantEmission Constant = CGF.tryEmitAsConstant(E)) {
-    CGF.EmitIgnoredExpr(E->getBase());
+    CGF.EmitIgnoredMemberBase(E->getBase(), E->isArrow(), E->getExprLoc());
     return CGF.emitScalarConstant(Constant, E);
   } else {
     Expr::EvalResult Result;
     if (E->EvaluateAsInt(Result, CGF.getContext(), Expr::SE_AllowSideEffects)) {
       llvm::APSInt Value = Result.Val.getInt();
-      CGF.EmitIgnoredExpr(E->getBase());
+      CGF.EmitIgnoredMemberBase(E->getBase(), E->isArrow(), E->getExprLoc());
       return Builder.getInt(Value);
     }
   }
@@ -2630,6 +2802,9 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   llvm::scope_exit RestoreCurCast(
       [this, Prev = CGF.CurCast] { CGF.CurCast = Prev; });
   CGF.CurCast = CE;
+  // P3100: a dynamic_cast of *this, whatever its cast kind.
+  if (const auto *DCE = dyn_cast<CXXDynamicCastExpr>(CE))
+    CGF.EmitImplicitDynamicCastThisCheck(DCE);
 
   Expr *E = CE->getSubExpr();
   QualType DestTy = CE->getType();
@@ -3289,6 +3464,17 @@ llvm::Value *ScalarExprEmitter::EmitIncDecConsiderOverflowBehavior(
   const bool hasSan =
       isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+
+  // P3100: the signed-overflow assertion also covers ++/-- on a signed
+  // operand (expressed as an add of +/-1); instrumenting the induction
+  // variable is what makes the codegen difference visible in loops.  An
+  // increment reports the .add leaf and a decrement the .sub leaf.
+  StringRef OvfGroup = IsInc ? SignedOverflowAdd : SignedOverflowSub;
+  if (E->getType()->isSignedIntegerOrEnumerationType() && E->canOverflow() &&
+      implicitSignedOverflowContractApplies(E->getExprLoc(), OvfGroup))
+    return EmitImplicitSignedOverflow(E->getType(), E->getExprLoc(), OvfGroup,
+                                      CodeGenFunction::ImplicitOverflowOp::Add,
+                                      InVal, Amount);
 
   switch (getOverflowBehaviorConsideringType(CGF, Ty)) {
   case LangOptions::OB_Wrap:
@@ -4334,7 +4520,9 @@ Value *ScalarExprEmitter::EmitDiv(const BinOpInfo &Ops) {
       EmitUndefinedBehaviorIntegerDivAndRemCheck(Ops, Zero, true);
     } else if (CGF.SanOpts.has(SanitizerKind::FloatDivideByZero) &&
                Ops.Ty->isRealFloatingType() &&
-               Ops.mayHaveFloatDivisionByZero()) {
+               Ops.mayHaveFloatDivisionByZero() &&
+               !CGF.implicitContractApplies("ub:expr.mul.div.by.zero.fp.div",
+                                            Ops.E->getExprLoc())) {
       llvm::Value *Zero = llvm::Constant::getNullValue(ConvertType(Ops.Ty));
       llvm::Value *NonZero = Builder.CreateFCmpUNE(Ops.RHS, Zero);
       EmitBinOpCheck(
@@ -4359,18 +4547,83 @@ Value *ScalarExprEmitter::EmitDiv(const BinOpInfo &Ops) {
   }
 
   if (Ops.LHS->getType()->isFPOrFPVectorTy()) {
-    llvm::Value *Val;
-    CodeGenFunction::CGFPOptionsRAII FPOptsRAII(CGF, Ops.FPFeatures);
-    Val = Builder.CreateFDiv(Ops.LHS, Ops.RHS, "div");
-    CGF.SetDivFPAccuracy(Val);
-    return Val;
+    auto emitFDiv = [&]() -> llvm::Value * {
+      CodeGenFunction::CGFPOptionsRAII FPOptsRAII(CGF, Ops.FPFeatures);
+      llvm::Value *Val = Builder.CreateFDiv(Ops.LHS, Ops.RHS, "div");
+      CGF.SetDivFPAccuracy(Val);
+      return Val;
+    };
+    // P3100: [expr.mul] makes a division by zero undefined whatever the type
+    // of its operands, though IEEE arithmetic would yield an infinity or a NaN
+    // (ub:expr.mul.div.by.zero.fp.div, beside the integer leaf).  The divisor
+    // is compared ordered-equal to zero, which -0.0 is and a NaN is not;
+    // execution that continues past a violation yields 0.  It takes
+    // precedence over the float-divide-by-zero sanitizer, above.
+    if (CGF.getLangOpts().ContractsP3100 && Ops.Ty->isRealFloatingType() &&
+        Ops.mayHaveFloatDivisionByZero()) {
+      llvm::Value *IsZero = Builder.CreateFCmpOEQ(
+          Ops.RHS, llvm::Constant::getNullValue(Ops.RHS->getType()),
+          "div.zero");
+      return CGF.EmitImplicitIntOpGuard(
+          Ops.Ty, IsZero, Ops.E->getExprLoc(), "ub:expr.mul.div.by.zero.fp.div",
+          "floating-point division by zero", emitFDiv);
+    }
+    return emitFDiv();
   }
   else if (Ops.isFixedPointOp())
     return EmitFixedPointBinOp(Ops);
-  else if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateUDiv(Ops.LHS, Ops.RHS, "div");
-  else
+
+  auto emitRawIntDiv = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateUDiv(Ops.LHS, Ops.RHS, "div");
     return Builder.CreateSDiv(Ops.LHS, Ops.RHS, "div");
+  };
+  return EmitP3100GuardedDivRem(Ops, "div", "division", emitRawIntDiv);
+}
+
+/// P3100: emit EmitRaw -- the integer division or remainder of Ops, whose
+/// value names start with Name and whose diagnostics call it What -- behind
+/// the guards for division by zero and for signed overflow (INT_MIN / -1).
+/// The divide-by-zero guard is outermost, so it is tested first; the
+/// overflow guard wraps the raw operation.  Each guard reports the .int.div
+/// leaf of its group for a division (Name "div") and .int.mod for a
+/// remainder.
+Value *ScalarExprEmitter::EmitP3100GuardedDivRem(
+    const BinOpInfo &Ops, StringRef Name, StringRef What,
+    llvm::function_ref<Value *()> EmitRaw) {
+  bool P3100 = CGF.getLangOpts().ContractsP3100 && Ops.Ty->isIntegerType();
+  bool IsDiv = Name == "div";
+  bool DoZero = P3100 && Ops.mayHaveIntegerDivisionByZero();
+  bool DoOvf = P3100 && Ops.Ty->hasSignedIntegerRepresentation() &&
+               Ops.mayHaveIntegerOverflow();
+  std::string OvfComment = ("signed " + What + " overflow").str();
+  std::string ZeroComment = ("integer " + What + " by zero").str();
+  auto withOverflow = [&]() -> llvm::Value * {
+    if (!DoOvf)
+      return EmitRaw();
+    llvm::Type *ITy = Ops.LHS->getType();
+    llvm::Value *IsMin = Builder.CreateICmpEQ(
+        Ops.LHS, llvm::ConstantInt::get(ITy, llvm::APInt::getSignedMinValue(
+                                                 ITy->getScalarSizeInBits())));
+    llvm::Value *IsNegOne =
+        Builder.CreateICmpEQ(Ops.RHS, llvm::ConstantInt::getSigned(ITy, -1));
+    llvm::Value *IsOvf = Builder.CreateAnd(IsMin, IsNegOne, Name + ".ovf");
+    return CGF.EmitImplicitIntOpGuard(
+        Ops.Ty, IsOvf, Ops.E->getExprLoc(),
+        IsDiv ? "ub:expr.mul.representable.type.result.int.div"
+              : "ub:expr.mul.representable.type.result.int.mod",
+        OvfComment, EmitRaw);
+  };
+  if (DoZero) {
+    llvm::Value *IsZero = Builder.CreateICmpEQ(
+        Ops.RHS, llvm::Constant::getNullValue(Ops.RHS->getType()),
+        Name + ".zero");
+    return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsZero, Ops.E->getExprLoc(),
+                                      IsDiv ? "ub:expr.mul.div.by.zero.int.div"
+                                            : "ub:expr.mul.div.by.zero.int.mod",
+                                      ZeroComment, withOverflow);
+  }
+  return withOverflow();
 }
 
 Value *ScalarExprEmitter::EmitRem(const BinOpInfo &Ops) {
@@ -4387,13 +4640,14 @@ Value *ScalarExprEmitter::EmitRem(const BinOpInfo &Ops) {
     EmitUndefinedBehaviorIntegerDivAndRemCheck(Ops, Zero, false);
   }
 
-  if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateURem(Ops.LHS, Ops.RHS, "rem");
-
-  if (CGF.getLangOpts().HLSL && Ops.Ty->hasFloatingRepresentation())
-    return Builder.CreateFRem(Ops.LHS, Ops.RHS, "rem");
-
-  return Builder.CreateSRem(Ops.LHS, Ops.RHS, "rem");
+  auto emitRawRem = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateURem(Ops.LHS, Ops.RHS, "rem");
+    if (CGF.getLangOpts().HLSL && Ops.Ty->hasFloatingRepresentation())
+      return Builder.CreateFRem(Ops.LHS, Ops.RHS, "rem");
+    return Builder.CreateSRem(Ops.LHS, Ops.RHS, "rem");
+  };
+  return EmitP3100GuardedDivRem(Ops, "rem", "remainder", emitRawRem);
 }
 
 Value *ScalarExprEmitter::EmitOverflowCheckedBinOp(const BinOpInfo &Ops) {
@@ -4604,7 +4858,71 @@ llvm::Value *CodeGenFunction::EmitPointerArithmetic(
   if (isSubtraction)
     index = Builder.CreateNeg(index, "idx.neg");
 
-  if (SanOpts.has(SanitizerKind::ArrayBounds))
+  // P3100: a + i, i + a or a - i, where a is an array of statically-known
+  // bound N decayed to a pointer to its first element, must stay within
+  // [0, N] (ub:expr.add.out.of.bounds.known.arithmetic); execution that
+  // continues past a violation keeps the unmoved pointer (the offset 0).  The
+  // operand of an indirection, *(a + i) or (a + i)->m, must also be below N
+  // (ub:expr.unary.dereference.invalid.known), checked after the arithmetic
+  // guard has redirected the offset, so that an offset it reported is not
+  // reported twice.  A constant offset in range is not guarded.  Both take
+  // precedence over the array-bounds sanitizer.  The offset, already widened
+  // to the index type and negated for a subtraction, is compared unsigned, so
+  // a negative one (or an unsigned one standing for -1) is caught.
+  //
+  // Arithmetic on known-bound arithmetic, (a + i) + j or *(a + i + j), is
+  // checked the same way at the position i + j in a; execution that
+  // continues past a violation gets a pointer to a's first element.  The
+  // position of each result is recorded for the arithmetic or subscript
+  // applied to it.
+  llvm::Value *UnguardedIndex = index;
+  llvm::ConstantInt *KnownBound = nullptr;
+  llvm::Value *KnownPosition = nullptr;
+  if (getLangOpts().ContractsP3100) {
+    bool Indirected = BO == P3100IndirectedArith;
+    llvm::ConstantInt *Bound = getP3100KnownArrayBound(pointerOperand);
+    llvm::Value *Base = nullptr;
+    if (!Bound)
+      if (const P3100KnownArithInfo *Known =
+              getP3100KnownArith(pointerOperand, pointer)) {
+        Bound = Known->Bound;
+        Base = Known->Position;
+      }
+    if (Bound) {
+      llvm::Value *Pos =
+          Base ? EmitP3100NestedPosition(Base, index, isSigned || isSubtraction,
+                                         Bound)
+               : index;
+      llvm::Value *UnguardedPos = Pos;
+      auto *CI = dyn_cast<llvm::ConstantInt>(Pos);
+      auto InRange = [&](bool AllowEnd) {
+        return CI && Bound->getValue().getActiveBits() <= 64 &&
+               (AllowEnd ? CI->getValue().ule(Bound->getZExtValue())
+                         : CI->getValue().ult(Bound->getZExtValue()));
+      };
+      if (!InRange(/*AllowEnd=*/true))
+        Pos = EmitImplicitArrayBoundsGuard(
+            Pos, /*IdxSigned=*/true, Bound, /*AllowEnd=*/true,
+            "ub:expr.add.out.of.bounds.known.arithmetic",
+            "pointer arithmetic out of bounds", BO->getExprLoc());
+      if (Indirected && !InRange(/*AllowEnd=*/false))
+        Pos = EmitImplicitArrayBoundsGuard(
+            Pos, /*IdxSigned=*/true, Bound, /*AllowEnd=*/false,
+            "ub:expr.unary.dereference.invalid.known",
+            "indirection past the end of an array", BO->getExprLoc());
+      if (!Base) {
+        index = Pos;
+      } else if (Pos != UnguardedPos) {
+        // The substitute moves the pointer back to the first element.
+        index = Builder.CreateSub(Pos, Base);
+        isSigned = true;
+      }
+      KnownBound = Bound;
+      KnownPosition = Pos;
+    }
+  }
+
+  if (SanOpts.has(SanitizerKind::ArrayBounds) && index == UnguardedIndex)
     EmitBoundsCheck(BO, pointerOperand, index, indexOperand->getType(),
                     /*Accessed*/ false);
 
@@ -4655,11 +4973,53 @@ llvm::Value *CodeGenFunction::EmitPointerArithmetic(
   else
     elemTy = ConvertTypeForMem(elementType);
 
-  if (getLangOpts().PointerOverflowDefined)
-    return Builder.CreateGEP(elemTy, pointer, index, "add.ptr");
+  llvm::Value *Result =
+      getLangOpts().PointerOverflowDefined
+          ? Builder.CreateGEP(elemTy, pointer, index, "add.ptr")
+          : EmitCheckedInBoundsGEP(elemTy, pointer, index, isSigned,
+                                   isSubtraction, BO->getExprLoc(), "add.ptr");
+  // P3100: where in its array of known bound the result points.
+  if (KnownBound)
+    P3100KnownArith[BO] = {Result, KnownPosition, KnownBound};
+  // P3100: an indirection through pointer arithmetic, p + i (p - i, i + p),
+  // constant or not, is checked for null on p itself, as p[i] is; so is one
+  // through a chain, *(p + 1 + 2) or (p + 1)[i], each sum mapped to the one
+  // it was formed from (DECISIONS.md E99 (a), E103 (a); see
+  // P3100ElementBase).  A chain whose innermost pointer is not null (an
+  // array, &x) is not mapped.
+  if (getLangOpts().ContractsP3100 && isa<llvm::Instruction>(Result) &&
+      (isP3100NullCheckedArith(BO, P3100IndirectedArith) ||
+       isP3100NullCheckedArith(BO, P3100SubscriptBaseArith))) {
+    const Expr *Inner = pointerOperand->IgnoreParens();
+    const auto *InnerBO = dyn_cast<BinaryOperator>(Inner);
+    if (InnerBO && InnerBO->isAdditiveOp() &&
+        InnerBO->getType()->isPointerType()) {
+      if (auto It = P3100ElementBase.find(pointer);
+          It != P3100ElementBase.end() && It->second.Element == pointer)
+        P3100ElementBase[Result] = {Result, pointer};
+    } else if (!isP3100NonNullPointerOperand(pointerOperand) &&
+               !isa<llvm::AllocaInst>(pointer->stripPointerCasts())) {
+      P3100ElementBase[Result] = {Result, pointer};
+    }
+  }
+  return Result;
+}
 
-  return EmitCheckedInBoundsGEP(elemTy, pointer, index, isSigned, isSubtraction,
-                                BO->getExprLoc(), "add.ptr");
+/// P3100: whether BO is Root, the operand of an indirection or the pointer of
+/// a subscript, or a sum in the chain of pointer operands under it, the
+/// p + 1 of (p + 1) + 2 (see P3100ElementBase).
+bool CodeGenFunction::isP3100NullCheckedArith(const BinaryOperator *BO,
+                                              const BinaryOperator *Root) {
+  for (const Expr *E = Root; E;) {
+    const auto *Sum = dyn_cast<BinaryOperator>(E->IgnoreParens());
+    if (!Sum || !Sum->isAdditiveOp() || !Sum->getType()->isPointerType())
+      return false;
+    if (Sum == BO)
+      return true;
+    E = Sum->getLHS()->getType()->isPointerType() ? Sum->getLHS()
+                                                   : Sum->getRHS();
+  }
+  return false;
 }
 
 // Construct an fmuladd intrinsic to represent a fused mul-add of MulOp and
@@ -4794,6 +5154,11 @@ Value *ScalarExprEmitter::EmitAdd(const BinOpInfo &op) {
     const bool hasSan =
         isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                  : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+    if (isSigned && implicitSignedOverflowContractApplies(op.E->getExprLoc(),
+                                                          SignedOverflowAdd))
+      return EmitImplicitSignedOverflow(
+          op.Ty, op.E->getExprLoc(), SignedOverflowAdd,
+          CodeGenFunction::ImplicitOverflowOp::Add, op.LHS, op.RHS);
     switch (getOverflowBehaviorConsideringType(CGF, op.Ty)) {
     case LangOptions::OB_Wrap:
       return Builder.CreateAdd(op.LHS, op.RHS, "add");
@@ -4954,6 +5319,17 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
       const bool hasSan =
           isSigned ? CGF.SanOpts.has(SanitizerKind::SignedIntegerOverflow)
                    : CGF.SanOpts.has(SanitizerKind::UnsignedIntegerOverflow);
+      // P3100: this also covers unary minus, emitted as 0 - x through EmitSub,
+      // which reports the .negate leaf.
+      const auto *UO = dyn_cast<UnaryOperator>(op.E);
+      StringRef OvfGroup = UO && UO->getOpcode() == UO_Minus
+                               ? SignedOverflowNegate
+                               : SignedOverflowSub;
+      if (isSigned &&
+          implicitSignedOverflowContractApplies(op.E->getExprLoc(), OvfGroup))
+        return EmitImplicitSignedOverflow(
+            op.Ty, op.E->getExprLoc(), OvfGroup,
+            CodeGenFunction::ImplicitOverflowOp::Sub, op.LHS, op.RHS);
       switch (getOverflowBehaviorConsideringType(CGF, op.Ty)) {
       case LangOptions::OB_Wrap:
         return Builder.CreateSub(op.LHS, op.RHS, "sub");
@@ -5189,7 +5565,10 @@ Value *ScalarExprEmitter::EmitShl(const BinOpInfo &Ops) {
     EmitBinOpCheck(Checks, Ops);
   }
 
-  return Builder.CreateShl(Ops.LHS, RHS, "shl");
+  auto emitRawShl = [&]() -> llvm::Value * {
+    return Builder.CreateShl(Ops.LHS, RHS, "shl");
+  };
+  return EmitP3100GuardedShift(Ops, /*IsLeft=*/true, emitRawShl);
 }
 
 Value *ScalarExprEmitter::EmitShr(const BinOpInfo &Ops) {
@@ -5216,9 +5595,31 @@ Value *ScalarExprEmitter::EmitShr(const BinOpInfo &Ops) {
     EmitBinOpCheck(std::make_pair(Valid, SanitizerKind::SO_ShiftExponent), Ops);
   }
 
-  if (Ops.Ty->hasUnsignedIntegerRepresentation())
-    return Builder.CreateLShr(Ops.LHS, RHS, "shr");
-  return Builder.CreateAShr(Ops.LHS, RHS, "shr");
+  auto emitRawShr = [&]() -> llvm::Value * {
+    if (Ops.Ty->hasUnsignedIntegerRepresentation())
+      return Builder.CreateLShr(Ops.LHS, RHS, "shr");
+    return Builder.CreateAShr(Ops.LHS, RHS, "shr");
+  };
+  return EmitP3100GuardedShift(Ops, /*IsLeft=*/false, emitRawShr);
+}
+
+/// P3100: emit EmitRaw, the shift of Ops, behind the guard for a shift amount
+/// that is negative or >= the promoted left operand's width
+/// ({expr.shift.neg.and.width}), which reports the .shl leaf for a left shift
+/// (IsLeft) and .shr for a right shift.
+Value *ScalarExprEmitter::EmitP3100GuardedShift(
+    const BinOpInfo &Ops, bool IsLeft, llvm::function_ref<Value *()> EmitRaw) {
+  if (!CGF.getLangOpts().ContractsP3100 || CGF.getLangOpts().OpenCL ||
+      CGF.getLangOpts().HLSL || !isa<llvm::IntegerType>(Ops.LHS->getType()))
+    return EmitRaw();
+  bool RHSIsSigned = Ops.rhsHasSignedIntegerRepresentation();
+  llvm::Value *WidthMinusOne =
+      GetMaximumShiftAmount(Ops.LHS, Ops.RHS, RHSIsSigned);
+  llvm::Value *IsViol = Builder.CreateICmpUGT(Ops.RHS, WidthMinusOne);
+  return CGF.EmitImplicitIntOpGuard(Ops.Ty, IsViol, Ops.E->getExprLoc(),
+                                    IsLeft ? "ub:expr.shift.neg.and.width.shl"
+                                           : "ub:expr.shift.neg.and.width.shr",
+                                    "shift count out of range", EmitRaw);
 }
 
 enum IntrinsicType { VCMPEQ, VCMPGT };
@@ -5504,6 +5905,8 @@ Value *ScalarExprEmitter::VisitBinAssign(const BinaryOperator *E) {
     // this should improve codegen just a little.
     Value *Previous = nullptr;
     QualType SrcType = E->getRHS()->getType();
+    // P3100: an assignment from an object overlapping the destination.
+    CodeGenFunction::P3100AssignOverlapScope Overlap(CGF, E);
     // Check if LHS is a bitfield, if RHS contains an implicit cast expression
     // we want to extract that value and potentially (if the bitfield sanitizer
     // is enabled) use it to check for an implicit conversion.
@@ -5528,6 +5931,7 @@ Value *ScalarExprEmitter::VisitBinAssign(const BinaryOperator *E) {
                                       LHS.getBitFieldInfo(), E->getExprLoc());
     } else {
       CGF.EmitNullabilityCheck(LHS, RHS, E->getExprLoc());
+      Overlap.check(LHS);
       CGF.EmitStoreThroughLValue(RValue::get(RHS), LHS);
     }
   }
@@ -6438,6 +6842,51 @@ CodeGenFunction::EmitCheckedInBoundsGEP(llvm::Type *ElemTy, Value *Ptr,
 
   Value *GEPVal = Builder.CreateGEP(ElemTy, Ptr, IdxList, Name, NWFlags);
 
+  // P3100: pointer arithmetic whose result wraps around the address space is
+  // undefined like any result outside an array
+  // (ub:expr.add.out.of.bounds.pointer.arithmetic).  The test is the overflow
+  // half of the pointer-overflow sanitizer's below -- the byte offset must
+  // not overflow, and a negative one must move the address down, any other
+  // up -- with the configured reaction; execution that continues past a
+  // violation keeps the unmoved pointer.  A GEP that folded to a constant (an
+  // address constant plus a constant offset) is not guarded, so it stays a
+  // constant initializer.  The contract takes precedence over the
+  // sanitizer's overflow check, which is then skipped.
+  bool P3100Wrap = false;
+  if (getLangOpts().ContractsP3100 && !isa<llvm::Constant>(GEPVal) &&
+      PtrTy->getPointerAddressSpace() == 0) {
+    ContractEvaluationSemantic Sem = resolveImplicitSemantic(
+        "ub:expr.add.out.of.bounds.pointer.arithmetic", Loc);
+    if (Sem != ContractEvaluationSemantic::Assume) {
+      GEPOffsetAndOverflow EvaluatedGEP = EmitGEPOffsetInBytes(
+          Ptr, ElemTy, IdxList, getLLVMContext(), CGM, Builder);
+      llvm::Type *IntPtrTy = CGM.getDataLayout().getAddressType(PtrTy);
+      auto *Zero = llvm::ConstantInt::getNullValue(IntPtrTy);
+      if (EvaluatedGEP.TotalOffset != Zero ||
+          EvaluatedGEP.OffsetOverflows != Builder.getFalse()) {
+        auto *IntPtr = Builder.CreatePtrToAddr(Ptr);
+        auto *ComputedGEP = Builder.CreateAdd(IntPtr, EvaluatedGEP.TotalOffset);
+        llvm::Value *Wraps;
+        if (SignedIndices) {
+          auto *PosOrZeroOffset =
+              Builder.CreateICmpSGE(EvaluatedGEP.TotalOffset, Zero);
+          Wraps = Builder.CreateSelect(
+              PosOrZeroOffset, Builder.CreateICmpULT(ComputedGEP, IntPtr),
+              Builder.CreateICmpUGE(ComputedGEP, IntPtr));
+        } else if (!IsSubtraction) {
+          Wraps = Builder.CreateICmpULT(ComputedGEP, IntPtr);
+        } else {
+          Wraps = Builder.CreateICmpUGT(ComputedGEP, IntPtr);
+        }
+        Wraps = Builder.CreateOr(Wraps, EvaluatedGEP.OffsetOverflows,
+                                 "ptr.wrap");
+        GEPVal = EmitImplicitSubstitutingGuard(Sem, Wraps, GEPVal, Ptr, Loc,
+                                               "pointer arithmetic overflow");
+      }
+      P3100Wrap = true;
+    }
+  }
+
   // If the pointer overflow sanitizer isn't enabled, do nothing.
   if (!SanOpts.has(SanitizerKind::PointerOverflow))
     return GEPVal;
@@ -6447,8 +6896,8 @@ CodeGenFunction::EmitCheckedInBoundsGEP(llvm::Type *ElemTy, Value *Ptr,
       Builder.GetInsertBlock()->getParent(), PtrTy->getPointerAddressSpace());
   // Check for overflows unless the GEP got constant-folded,
   // and only in the default address space
-  bool PerformOverflowCheck =
-      !isa<llvm::Constant>(GEPVal) && PtrTy->getPointerAddressSpace() == 0;
+  bool PerformOverflowCheck = !P3100Wrap && !isa<llvm::Constant>(GEPVal) &&
+                              PtrTy->getPointerAddressSpace() == 0;
 
   if (!(PerformNullCheck || PerformOverflowCheck))
     return GEPVal;
@@ -6544,7 +6993,10 @@ Address CodeGenFunction::EmitCheckedInBoundsGEP(
     Address Addr, ArrayRef<Value *> IdxList, llvm::Type *elementType,
     bool SignedIndices, bool IsSubtraction, SourceLocation Loc, CharUnits Align,
     const Twine &Name) {
-  if (!SanOpts.has(SanitizerKind::PointerOverflow)) {
+  // P3100: the pointer-wrap guard needs the checked form too.
+  if (!SanOpts.has(SanitizerKind::PointerOverflow) &&
+      resolveImplicitSemantic("ub:expr.add.out.of.bounds.pointer.arithmetic",
+                              Loc) == ContractEvaluationSemantic::Assume) {
     llvm::GEPNoWrapFlags NWFlags =
         inBoundsGEPFlags(*this, Addr.getBasePointer(), Addr.getElementType(),
                          SignedIndices, IsSubtraction);

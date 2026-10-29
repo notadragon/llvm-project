@@ -1421,6 +1421,34 @@ static SmallVector<StringRef, 4> serializeSanitizerKinds(SanitizerSet S) {
   return Values;
 }
 
+/// P3100: parse the driver-resolved -fsanitize-semantic=<check>:<semantic>
+/// pairs into a per-bit store on CodeGenOptions.  The driver has already
+/// validated names and the allowed set, so any malformed entry here is
+/// internal and reported with err_drv_invalid_value.
+static void parseSanitizerSemantics(
+    const std::vector<std::string> &Values, DiagnosticsEngine &Diags,
+    std::vector<std::pair<SanitizerMask, ContractEvaluationSemantic>> &Out) {
+  for (const auto &Value : Values) {
+    StringRef Pair(Value);
+    auto Colon = Pair.find(':');
+    if (Colon == StringRef::npos) {
+      Diags.Report(diag::err_drv_invalid_value)
+          << "-fsanitize-semantic=" << Value;
+      continue;
+    }
+    SanitizerMask K =
+        parseSanitizerValue(Pair.substr(0, Colon), /*AllowGroups=*/false);
+    ContractEvaluationSemantic Sem;
+    if (K == SanitizerMask() ||
+        !contractSemanticFromName(Pair.substr(Colon + 1), Sem)) {
+      Diags.Report(diag::err_drv_invalid_value)
+          << "-fsanitize-semantic=" << Value;
+      continue;
+    }
+    Out.emplace_back(K, Sem);
+  }
+}
+
 static SanitizerMaskCutoffs
 parseSanitizerWeightedKinds(StringRef FlagName,
                             const std::vector<std::string> &Sanitizers,
@@ -1802,6 +1830,21 @@ void CompilerInvocationBase::GenerateCodeGenArgs(const CodeGenOptions &Opts,
 
   for (StringRef Sanitizer : serializeSanitizerKinds(Opts.SanitizeTrap))
     GenerateArg(Consumer, OPT_fsanitize_trap_EQ, Sanitizer);
+
+  // P3100: round-trip the driver-resolved per-check semantics.
+  for (const auto &Entry : Opts.SanitizeSemantics) {
+    SanitizerSet Set;
+    Set.Mask |= Entry.first;
+    for (StringRef Sanitizer : serializeSanitizerKinds(Set))
+      GenerateArg(Consumer, OPT_fsanitize_semantic_EQ,
+                  (Sanitizer + ":" + contractSemanticName(Entry.second)).str());
+  }
+  if (Opts.SanitizeSemanticPrint)
+    GenerateArg(Consumer, OPT_fsanitize_semantic_print);
+
+  // P3100: round-trip the global opt-out.
+  if (Opts.SanitizeNoncontractCallbacks)
+    GenerateArg(Consumer, OPT_fsanitize_noncontract_callbacks);
 
   for (StringRef Sanitizer :
        serializeSanitizerKinds(Opts.SanitizeMergeHandlers))
@@ -2297,6 +2340,14 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
   parseSanitizerKinds("-fsanitize-trap=",
                       Args.getAllArgValues(OPT_fsanitize_trap_EQ), Diags,
                       Opts.SanitizeTrap);
+  // P3100: driver-resolved per-check contract evaluation semantics.
+  parseSanitizerSemantics(Args.getAllArgValues(OPT_fsanitize_semantic_EQ),
+                          Diags, Opts.SanitizeSemantics);
+  Opts.SanitizeSemanticPrint = Args.hasArg(OPT_fsanitize_semantic_print);
+  // P3100: the global opt-out; gates descriptor emission in CodeGen
+  // (CodeGenModule::emitAsanContractSemanticDescriptor).
+  Opts.SanitizeNoncontractCallbacks =
+      Args.hasArg(OPT_fsanitize_noncontract_callbacks);
   parseSanitizerKinds("-fsanitize-merge=",
                       Args.getAllArgValues(OPT_fsanitize_merge_handlers_EQ),
                       Diags, Opts.SanitizeMergeHandlers);
@@ -5469,13 +5520,27 @@ bool CompilerInvocation::CreateFromArgsImpl(
   return Diags.getNumErrors() == NumErrorsBefore;
 }
 
+/// Print each recorded check's resolved semantic to stderr as
+/// "<check>: <semantic>" lines, for -fsanitize-semantic-print (a debug seam;
+/// mirrors GCC's).  Called once the arguments are parsed, not while parsing
+/// them: a round trip parses them twice (CLANG-139).
+static void printSanitizeSemantics(const CodeGenOptions &Opts) {
+  for (const auto &Entry : Opts.SanitizeSemantics) {
+    SanitizerSet Set;
+    Set.Mask |= Entry.first;
+    for (StringRef Name : serializeSanitizerKinds(Set))
+      llvm::errs() << Name << ": " << contractSemanticName(Entry.second)
+                   << "\n";
+  }
+}
+
 bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Invocation,
                                         ArrayRef<const char *> CommandLineArgs,
                                         DiagnosticsEngine &Diags,
                                         const char *Argv0) {
   CompilerInvocation DummyInvocation;
 
-  return RoundTrip(
+  bool Success = RoundTrip(
       [](CompilerInvocation &Invocation, ArrayRef<const char *> CommandLineArgs,
          DiagnosticsEngine &Diags, const char *Argv0) {
         return CreateFromArgsImpl(Invocation, CommandLineArgs, Diags, Argv0);
@@ -5486,6 +5551,9 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Invocation,
         Invocation.generateCC1CommandLine(Args, SA);
       },
       Invocation, DummyInvocation, CommandLineArgs, Diags, Argv0);
+  if (Invocation.getCodeGenOpts().SanitizeSemanticPrint)
+    printSanitizeSemantics(Invocation.getCodeGenOpts());
+  return Success;
 }
 
 std::string CompilerInvocation::computeContextHash() const {

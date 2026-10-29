@@ -3957,6 +3957,106 @@ void CodeGenModule::emitLLVMUsed() {
   emitUsed(*this, "llvm.compiler.used", LLVMCompilerUsed);
 }
 
+// P3100 sanitizer contract routing.
+//
+// Under -fcontracts-p3100 the resolved contract-evaluation semantic of a
+// routed sanitizer check controls how the runtime handles an error the check
+// detects:
+//
+//   noexcept_observe -> the runtime reports via the contract-violation handler
+//                       and the program continues;
+//   noexcept_enforce -> the runtime reports via the handler and then
+//                       terminates;
+//   quick_enforce    -> the runtime terminates without calling the handler.
+//
+// assume is realized separately, per function, by clearing the sanitizer's
+// function attribute in StartFunction (see CodeGenFunction.cpp); plain throwing
+// enforce/observe and ignore are hard-errored during option processing,
+// so they never reach here.
+//
+// The instrumentation itself is semantic-INDEPENDENT: every realization emits
+// identical report calls, and the run-time behavior is decided by the
+// compiler-rt report path reading the descriptor emitted here.  So the
+// resolved semantic is conveyed to compiler-rt with a per-TU weak byte (an
+// array of them for UBSan) whose wire encoding is decoupled from the internal
+// ContractEvaluationSemantic values (byte-identical to GCC):
+//
+//   0 = stock  (symbol absent / routing off -> runtime keeps stock behavior)
+//   1 = observe        (noexcept_observe: call handler, then continue)
+//   2 = enforce        (noexcept_enforce: call handler, then terminate)
+//   3 = quick_enforce  (terminate WITHOUT calling the handler)
+//
+// Every translation unit emits its own, but being weak they resolve to one
+// definition program-wide, and which translation unit's survives is
+// unspecified: a program whose translation units were compiled with different
+// routing flags gets one of their semantics for all of them.
+//
+// The descriptor is emitted here in the per-TU compile, where -fcontracts-p3100
+// and the resolved -fsanitize-semantic= flags are live.  It is a preserved
+// (used) weak global, so under (Thin)LTO it streams into the final image like a
+// user global -- the LTO and non-LTO paths are identical and no LTO-time flag
+// state is needed.
+//
+// -fsanitize-noncontract-callbacks is the global opt-out: when set,
+// we emit no descriptor, so the runtime reads stock (0) and takes its stock
+// report path -- and, because the runtime guardrail keys off the
+// same descriptor, the guardrail disengages too.  The opt-out is orthogonal to
+// the instrument/allowed-set decisions: assume is still realized per function
+// via clearing the sanitizer's attribute (StartFunction), and the
+// -fsanitize-semantic= allowed-set validation still applies during
+// option processing.  It affects only the runtime report routing and the
+// guardrail.
+
+// The wire byte of a routed check's semantic, or none for the stock behavior:
+// assume is realized per function (by clearing the sanitizer's attribute), and
+// ignore and the throwing enforce/observe are hard errors.
+static std::optional<uint8_t>
+getContractRouteWire(ContractEvaluationSemantic Semantic) {
+  enum : uint8_t {
+    ContractRouteObserve = 1,
+    ContractRouteEnforce = 2,
+    ContractRouteQuick = 3,
+  };
+  switch (Semantic) {
+  case ContractEvaluationSemantic::NoexceptObserve:
+    // Call the handler, then continue.
+    return ContractRouteObserve;
+  case ContractEvaluationSemantic::NoexceptEnforce:
+    // Call the handler, then terminate.
+    return ContractRouteEnforce;
+  case ContractEvaluationSemantic::QuickEnforce:
+    // Terminate WITHOUT calling the handler.
+    return ContractRouteQuick;
+  default:
+    return std::nullopt;
+  }
+}
+
+// Emit the preserved weak byte NAME holding WIRE.
+static void emitContractRouteByte(CodeGenModule &CGM, StringRef Name,
+                                  uint8_t Wire) {
+  auto *GV =
+      new llvm::GlobalVariable(CGM.getModule(), CGM.Int8Ty, /*isConstant=*/true,
+                               llvm::GlobalValue::WeakAnyLinkage,
+                               llvm::ConstantInt::get(CGM.Int8Ty, Wire), Name);
+  // The descriptor has no in-TU references -- only the sanitizer runtime
+  // reads it -- so force it used.  Otherwise whole-program analysis would
+  // eliminate it as unreferenced and routing would silently fall back to
+  // stock behavior, in particular under (Thin)LTO.
+  CGM.addUsedGlobal(GV);
+}
+
+// Emit the wire byte NAME for the routed check KIND, or nothing when the check
+// is not enabled or keeps its stock behavior.
+static void emitContractRouteByteFor(CodeGenModule &CGM, SanitizerMask Kind,
+                                     StringRef Name) {
+  if (!CGM.getLangOpts().Sanitize.has(Kind))
+    return;
+  if (std::optional<uint8_t> Wire =
+          getContractRouteWire(CGM.getCodeGenOpts().getSanitizerSemantic(Kind)))
+    emitContractRouteByte(CGM, Name, *Wire);
+}
+
 void CodeGenModule::AppendLinkerOptions(StringRef Opts) {
   auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opts);
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));

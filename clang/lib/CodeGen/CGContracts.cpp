@@ -803,6 +803,206 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
                &S, dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl)));
 }
 
+// P3100: resolve the evaluation semantic of an implicit contract assertion for
+// the core-language UB named by GROUP, as configured for FNCONTEXT at LOC.  All
+// implicit checks share this query: kind Implicit, callee-side, and an allowed
+// set of the four C++26 semantics + "assume" ALWAYS (implicit-assume introduces
+// no new UB, so it is not gated on -fcontracts-allow-assume) + the P4298
+// noexcept variants when -fcontracts-p4298 is in effect -- unless the check
+// supplies its own ALLOWEDMASK.  Never the P4405 prove and diagnose: no
+// implicit allowed set holds them, so a configuration naming one is adjusted
+// to ignore.
+static ContractEvaluationSemantic resolveImplicitContractSemantic(
+    CodeGenModule &CGM, StringRef Group, const DeclContext *FnContext,
+    SourceLocation Loc, std::optional<unsigned> AllowedMask = {}) {
+  using CES = ContractEvaluationSemantic;
+  std::string GroupStr(Group);
+  ContractQuery Q;
+  Q.Kind = ContractKind::Implicit;
+  Q.CallerSide = false;
+  Q.InConstantEvaluation = false;
+  Q.Groups = ArrayRef<std::string>(GroupStr);
+  Q.FnContext = FnContext;
+  Q.Loc = Loc;
+  Q.SM = &CGM.getContext().getSourceManager();
+  if (AllowedMask) {
+    Q.AllowedMask = *AllowedMask;
+  } else {
+    Q.AllowedMask = AllContractSemanticsMask | (1u << unsigned(CES::Assume));
+    if (CGM.getLangOpts().ContractsP4298)
+      Q.AllowedMask |= (1u << unsigned(CES::NoexceptEnforce)) |
+                       (1u << unsigned(CES::NoexceptObserve));
+  }
+  assert(!(Q.AllowedMask & ProvingContractSemanticsMask) &&
+         "an implicit contract assertion allows prove or diagnose");
+  CES Sem = CGM.getLangOpts().ContractOpts.resolveContractSemantic(Q);
+  // Every implicit allowed set holds ignore or assume, which the best fit
+  // reaches from any semantic.
+  assert(Sem != InvalidContractEvaluationSemantic &&
+         "no valid semantic for an implicit contract assertion");
+  return Sem;
+}
+
+llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
+    QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
+    StringRef GroupName, StringRef Comment,
+    llvm::function_ref<llvm::Value *()> EmitOp) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for the core-language UB named by GroupName (e.g.
+  // ub:expr.mul.div.by.zero.int.div, ub:expr.shift.neg.and.width.shl).  See
+  // EmitImplicitFlowOffReaction for the allowed-set rationale.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(CGM, GroupName, FD, Loc);
+
+  // assume: today's behaviour -- emit the operation unguarded (UB preserved).
+  if (Sem == CES::Assume)
+    return EmitOp();
+
+  llvm::Type *ResTy = ConvertType(Ty);
+  llvm::BasicBlock *ViolBB = createBasicBlock("ub.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("ub.ok");
+  Builder.CreateCondBr(IsViolation, ViolBB, ContBB);
+
+  // Whether the violation path produces a value and continues (ignore /
+  // observe / noexcept_observe) versus not returning (enforce / quick_enforce).
+  bool ViolContinues = (Sem == CES::Ignore || Sem == CES::Observe ||
+                        Sem == CES::NoexceptObserve);
+  llvm::BasicBlock *EndBB =
+      ViolContinues ? createBasicBlock("ub.end") : nullptr;
+
+  // Violation path: run the reaction *without* executing the UB operation.
+  EmitBlock(ViolBB);
+  llvm::Value *ViolVal = nullptr;
+  llvm::BasicBlock *ViolExit = nullptr;
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else if (Sem == CES::Ignore) {
+    ViolVal = llvm::Constant::getNullValue(ResTy); // defined (erroneous) 0
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this,
+        getContext().BuildViolationObject(Loc, Comment, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    if (IsEnforce)
+      Builder.CreateUnreachable();
+    else
+      ViolVal = llvm::Constant::getNullValue(ResTy); // continue with 0
+  }
+  if (ViolContinues) {
+    ViolExit = Builder.GetInsertBlock();
+    Builder.CreateBr(EndBB);
+  }
+
+  // Continue path: the real operation; the predicate is known false here.
+  EmitBlock(ContBB);
+  llvm::Value *OpVal = EmitOp();
+  if (!ViolContinues)
+    return OpVal; // enforce / quick_enforce: no merge, flow continues here
+
+  llvm::BasicBlock *ContExit = Builder.GetInsertBlock();
+  Builder.CreateBr(EndBB);
+  EmitBlock(EndBB);
+  llvm::PHINode *Phi = Builder.CreatePHI(ResTy, 2, "ub.val");
+  Phi->addIncoming(ViolVal, ViolExit);
+  Phi->addIncoming(OpVal, ContExit);
+  return Phi;
+}
+
+// Shared reaction tail for an implicit guard that has already branched to
+// ViolBB on its violating condition and continues at ContBB (null-dereference,
+// misaligned access).  See the declaration in CodeGenFunction.h.
+void CodeGenFunction::emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
+                                                llvm::BasicBlock *ViolBB,
+                                                llvm::BasicBlock *ContBB,
+                                                SourceLocation Loc,
+                                                StringRef Msg,
+                                                const FunctionDecl *FD) {
+  using CES = ContractEvaluationSemantic;
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    // Trap before the guarded access; CreateTrap terminates the block.
+    CreateTrap(*this);
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(Loc, Msg, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce: the entry point is noreturn (block already terminated). observe:
+    // the handler returned -- branch to ContBB to continue.
+    if (!IsEnforce)
+      Builder.CreateBr(ContBB);
+  }
+  // Continue at the post-guard path; the caller performs the real access here.
+  EmitBlock(ContBB);
+}
+
+ContractEvaluationSemantic
+CodeGenFunction::resolveImplicitSemantic(StringRef Group, SourceLocation Loc) {
+  if (!getLangOpts().ContractsP3100)
+    return ContractEvaluationSemantic::Assume;
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  return resolveImplicitContractSemantic(CGM, Group, FD, Loc);
+}
+
+llvm::Value *CodeGenFunction::EmitImplicitSubstitutingGuard(
+    ContractEvaluationSemantic Sem, llvm::Value *IsViolation,
+    llvm::Value *Value, llvm::Value *Substitute, SourceLocation Loc,
+    StringRef Comment) {
+  using CES = ContractEvaluationSemantic;
+  if (Sem == CES::Assume)
+    return Value;
+  // A condition that folded to false (a constant position in range) can
+  // never be a violation: emit no guard, as the checks that test a constant
+  // position first do.
+  if (const auto *C = dyn_cast<llvm::ConstantInt>(IsViolation);
+      C && C->isZero())
+    return Value;
+
+  // value = IsViolation ? Substitute : Value, computed unconditionally (it
+  // dominates the continuation, so no PHI is needed).
+  llvm::Value *Result =
+      Builder.CreateSelect(IsViolation, Substitute, Value, "ub.subst");
+  if (Sem == CES::Ignore)
+    return Result;
+
+  llvm::BasicBlock *ViolBB = createBasicBlock("ub.subst.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("ub.subst.ok");
+  Builder.CreateCondBr(IsViolation, ViolBB, ContBB);
+
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this,
+        getContext().BuildViolationObject(Loc, Comment, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    if (IsEnforce)
+      Builder.CreateUnreachable();
+    else
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  return Result;
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.

@@ -10404,6 +10404,65 @@ ASTContext::BuildViolationObject(const ContractStmt *CS,
                               CurDecl);
 }
 
+// P3100: build a violation object for a compiler-synthesized implicit contract
+// assertion (no ContractStmt), from a raw source location and comment.
+UnnamedGlobalConstantDecl *
+ASTContext::BuildViolationObject(SourceLocation Loc, StringRef Comment,
+                                 std::optional<StringRef> Message,
+                                 const FunctionDecl *CurDecl) {
+  auto &Ctx = *this;
+
+  PresumedLoc PLoc = Ctx.getSourceManager().getPresumedLoc(
+      Ctx.getSourceManager().getExpansionRange(Loc).getEnd());
+
+  auto MakeStringLiteral = [&](StringRef Tmp) {
+    using LValuePathEntry = APValue::LValuePathEntry;
+    StringLiteral *Res = Ctx.getPredefinedStringLiteralFromCache(Tmp);
+    // Decay the string to a pointer to the first character.
+    LValuePathEntry Path[1] = {LValuePathEntry::ArrayIndex(0)};
+    return APValue(Res, CharUnits::Zero(), Path, /*OnePastTheEnd=*/false);
+  };
+
+  auto MakeNullPtr = [&]() {
+    return APValue((const Expr *)nullptr, CharUnits::Zero(),
+                   ArrayRef<APValue::LValuePathEntry>(),
+                   /*OnePastTheEnd=*/false);
+  };
+
+  assert(std::distance(getBuiltinContractViolationRecordDecl()->field_begin(),
+                       getBuiltinContractViolationRecordDecl()->field_end()) ==
+             VIF_Count &&
+         "violation info fields out of sync with ViolationInfoField");
+
+  APValue Value(APValue::UninitStruct(), 0, VIF_Count);
+  // The descriptor is patched by CodeGen; the chain is a single block.
+  Value.getStructField(VIF_Descriptor) = MakeNullPtr();
+  Value.getStructField(VIF_Next) = MakeNullPtr();
+  SmallString<256> Path(PLoc.getFilename());
+  clang::Preprocessor::processPathForFileMacro(Path, Ctx.getLangOpts(),
+                                               Ctx.getTargetInfo());
+  Value.getStructField(VIF_File) = MakeStringLiteral(Path);
+  // PrettyFunction name, matching GCC's cxx_printable_name.
+  Value.getStructField(VIF_Function) = MakeStringLiteral(
+      CurDecl && !isa<TranslationUnitDecl>(CurDecl)
+          ? StringRef(PredefinedExpr::ComputeName(
+                PredefinedIdentKind::PrettyFunction, CurDecl))
+          : "");
+  Value.getStructField(VIF_Line) =
+      APValue(Ctx.MakeIntValue(PLoc.getLine(), Ctx.UnsignedIntTy));
+  Value.getStructField(VIF_Column) =
+      APValue(Ctx.MakeIntValue(PLoc.getColumn(), Ctx.UnsignedIntTy));
+  Value.getStructField(VIF_Comment) = MakeStringLiteral(Comment);
+  // Null for no message (see above).
+  Value.getStructField(VIF_Message) =
+      Message ? MakeStringLiteral(*Message) : MakeNullPtr();
+  QualType QT =
+      Ctx.getBuiltinContractViolationRecordType().getUnqualifiedType();
+  UnnamedGlobalConstantDecl *GV = Ctx.getUnnamedGlobalConstantDecl(QT, Value);
+
+  return GV;
+}
+
 static TypedefDecl *CreateHexagonBuiltinVaListDecl(const ASTContext *Context) {
   // typedef struct __va_list_tag {
   RecordDecl *VaListTagDecl;

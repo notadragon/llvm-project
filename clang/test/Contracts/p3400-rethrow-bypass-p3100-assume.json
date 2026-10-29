@@ -1,0 +1,2 @@
+[{"match": {"kind": "implicit", "group": "ub:dcl.attr.assume.false.pure"},
+  "output": {"semantic": "observe"}}]

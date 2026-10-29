@@ -8,6 +8,7 @@
 #ifndef LLVM_CLANG_DRIVER_SANITIZERARGS_H
 #define LLVM_CLANG_DRIVER_SANITIZERARGS_H
 
+#include "clang/Basic/ContractOptions.h"
 #include "clang/Basic/OffloadArch.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Driver/Action.h"
@@ -17,12 +18,14 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace clang {
 namespace driver {
 
 class ToolChain;
+class Driver;
 
 class SanitizerArgs {
   SanitizerSet Sanitizers;
@@ -86,6 +89,44 @@ class SanitizerArgs {
   std::string MemtagMode;
   bool AllocTokenFastABI = false;
   bool AllocTokenExtended = false;
+
+  /// P3100: contract evaluation semantics explicitly requested per sanitizer
+  /// check via -fsanitize-semantic=.  Each entry's mask is a single sanitizer
+  /// bit; a check with no explicit request has no entry (its semantic is
+  /// derived, see resolvedSanitizerSemantic).  A validated request is never
+  /// out of the check's allowed set, so this store never holds an illegal
+  /// semantic for any bit.
+  std::vector<std::pair<SanitizerMask, ContractEvaluationSemantic>>
+      ExplicitSemantics;
+  /// Whether -fsanitize-semantic-print was requested (debug testing seam).
+  bool SanitizeSemanticPrint = false;
+  /// P3100: whether -fsanitize-noncontract-callbacks was requested --
+  /// the global opt-out that restores the sanitizer's stock reporting and
+  /// callback behavior instead of contract routing.
+  bool SanitizeNoncontractCallbacks = false;
+  /// Whether -fcontracts-p4298 is in effect (gates the noexcept semantics for
+  /// a routed sanitizer check; see isRoutedSanitizerCheck).
+  bool ContractsP4298 = false;
+  /// Whether -fcontracts-p3100 is in effect (routing to the contract-violation
+  /// handler is only active under it).
+  bool ContractsP3100 = false;
+
+  /// P3100: parse every -fsanitize-semantic= argument, validate each request,
+  /// and record accepted per-bit semantics into ExplicitSemantics.
+  void parseSanitizeSemanticArgs(const Driver &D,
+                                 const llvm::opt::ArgList &Args,
+                                 bool DiagnoseErrors);
+
+  /// P3100: record an accepted explicit per-bit semantic (later overrides win).
+  void storeExplicitSemantic(SanitizerMask Bit,
+                             ContractEvaluationSemantic Semantic);
+
+  /// P3100: without -fcontracts-p4298, a routed check that resolves to
+  /// a noexcept_* semantic -- explicit or derived from -fsanitize-recover= --
+  /// is a hard error (a throwing handler cannot propagate).  Applied after all
+  /// masks and explicit semantics are known, so the derived case is covered.
+  void applyRoutedSemanticP4298Gate(const Driver &D,
+                                    bool DiagnoseErrors);
 
 public:
   /// Parses the sanitizer arguments from an argument list.
@@ -151,6 +192,28 @@ public:
   bool hasShadowCallStack() const {
     return Sanitizers.has(SanitizerKind::ShadowCallStack);
   }
+
+  /// P3100: TRUE iff a check whose flag mask includes Bit is ROUTED
+  /// to the C++ contract-violation handler at run time (today only the address
+  /// check).  A routed check's handler runs inside libasan's
+  /// implicitly-noexcept error-report path, so a throwing handler can never
+  /// propagate; its allowed set is the non-throwing one (assume / quick_enforce
+  /// / the P4298 noexcept_* semantics).
+  static bool isRoutedSanitizerCheck(SanitizerMask Bit);
+
+  /// P3100: the contract evaluation semantic explicitly requested for
+  /// the single-bit check Bit via -fsanitize-semantic=, or Ignore (used as the
+  /// "no explicit request" sentinel; Ignore itself is never a legal stored
+  /// value) if none.  Returns true and sets Out when an explicit entry exists.
+  bool explicitSanitizerSemantic(SanitizerMask Bit,
+                                 ContractEvaluationSemantic &Out) const;
+
+  /// P3100: the final resolved contract evaluation semantic for
+  /// the single-bit check Bit -- the explicit -fsanitize-semantic= value if
+  /// set, else derived from -fsanitize/-fsanitize-recover/-fsanitize-trap
+  /// (routed checks use the p4298-gated non-throwing derivation).  This is the
+  /// value CodeGen consumes; the driver re-renders it to cc1.
+  ContractEvaluationSemantic resolvedSanitizerSemantic(SanitizerMask Bit) const;
 
   bool requiresPIE() const;
   bool needsUnwindTables() const;
