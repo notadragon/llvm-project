@@ -1,0 +1,4 @@
+[
+  {"output": {"semantic": "noexcept_observe",
+              "dynamic": {"linkage": "C", "name": "configured_weak_sel"}}}
+]

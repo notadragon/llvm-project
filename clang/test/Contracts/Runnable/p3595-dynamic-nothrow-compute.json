@@ -1,0 +1,4 @@
+[
+  {"output": {"semantic": "noexcept_observe",
+              "dynamic": {"linkage": "C++", "name": "p3595_nothrow_compute_sel"}}}
+]
