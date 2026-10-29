@@ -1345,6 +1345,21 @@ void CodeGenModule::Release() {
     getSanitizerMetadata()->disableSanitizerForGlobal(GV);
     addCompilerUsedGlobal(GV);
   }
+  // P3100: emit the per-TU AddressSanitizer contract-routing
+  // descriptor while the front-end flags are still live, so it streams through
+  // LTO like any preserved global.  Emitted before emitLLVMUsed() so it can be
+  // added to llvm.used and survive whole-program elimination.
+  emitAsanContractSemanticDescriptor();
+  // P3100: likewise the per-check UBSan runtime-routing descriptor
+  // table (vptr, ...).
+  emitUbsanContractSemanticDescriptor();
+  // Likewise the ThreadSanitizer routing descriptor (its own single wire byte,
+  // like ASan's; see compiler-rt/lib/tsan/rtl/tsan_rtl_report.cpp).
+  emitTsanContractSemanticDescriptor();
+  // Likewise the MemorySanitizer routing descriptor (Clang-only; see
+  // compiler-rt/lib/msan/msan.cpp).
+  emitMsanContractSemanticDescriptor();
+
   emitLLVMUsed();
   if (SanStats)
     SanStats->finish();
@@ -4055,6 +4070,23 @@ static void emitContractRouteByteFor(CodeGenModule &CGM, SanitizerMask Kind,
   if (std::optional<uint8_t> Wire =
           getContractRouteWire(CGM.getCodeGenOpts().getSanitizerSemantic(Kind)))
     emitContractRouteByte(CGM, Name, *Wire);
+}
+
+void CodeGenModule::emitAsanContractSemanticDescriptor() {
+  if (!LangOpts.ContractsP3100)
+    return;
+  if (CodeGenOpts.SanitizeNoncontractCallbacks)
+    return;
+
+  // The ASan address check and the two pointer-pair checks each get their own
+  // byte so the address routing scope is independent of the pointer-pair checks
+  // (see compiler-rt/lib/asan/asan_report.cpp).
+  emitContractRouteByteFor(*this, SanitizerKind::Address,
+                           "__asan_contract_semantic");
+  emitContractRouteByteFor(*this, SanitizerKind::PointerCompare,
+                           "__asan_contract_semantic_pointer_compare");
+  emitContractRouteByteFor(*this, SanitizerKind::PointerSubtract,
+                           "__asan_contract_semantic_pointer_subtract");
 }
 
 // The routed UBSan runtime checks, each with its slot in the weak
