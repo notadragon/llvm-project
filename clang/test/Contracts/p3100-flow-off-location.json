@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:stmt.return.flow.off", "location": "p3100-flow-off-location.cpp:25-25"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:stmt.return.flow.off"}, "output": {"semantic": "observe"}}
+]
