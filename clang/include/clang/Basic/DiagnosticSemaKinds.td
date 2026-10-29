@@ -13199,6 +13199,8 @@ def err_contract_violation_handler_invalid : Error<
 
 def err_contract_result_name_shadows_param : Error<
   "declaration of result name %0 shadows parameter">;
+def err_contract_result_name_shadows_capture : Error<
+  "declaration of result name %0 shadows lambda capture">;
 def err_contract_result_name_void_return : Error<
   "result name %0 cannot appear in a postcondition for a function with a "
   "void return type">;
@@ -13245,6 +13247,16 @@ def note_contract_coroutine_postcondition_param : Note<
     "body, so a postcondition cannot name one; consider a reference "
     "parameter">;
 
+def err_contract_lambda_implicit_capture_only : Error<
+  "%select{local entity %1|'this'}0 is used only in contract assertions and "
+  "must be captured explicitly">;
+
+def note_contract_lambda_implicit_capture_usage : Note<"capture of %select{local entity %1|'this'}0 is "
+  "required here">;
+
+def note_contract_lambda_implicit_capture_explicit : Note<
+  "add %select{%1|'this'}0 to the capture list">;
+
 def err_contract_result_name_deduced_non_definition : Error<
   "result name %0 cannot appear in a postcondition for a function "
   "declaration with a deduced return type unless it is a definition">;
@@ -13259,6 +13271,9 @@ def err_keyword_not_allowed_in_contract : Error<
     "'%0' cannot be used inside a contract">;
 
 
+def err_contract_lambda_decl_ref_not_modifiable_lvalue : Error<
+  "cannot assign to a variable captured by %select{reference|copy}0 which was "
+  "captured as const because it is inside a contract">;
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"

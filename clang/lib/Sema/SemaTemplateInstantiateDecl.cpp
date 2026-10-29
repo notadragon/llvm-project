@@ -5650,7 +5650,8 @@ void Sema::addInstantiatedLocalVarsToScope(FunctionDecl *Function,
     Scope.InstantiatedLocal(VD, *it);
     LSI->addCapture(cast<VarDecl>(*it), /*isBlock=*/false, /*isByref=*/false,
                     /*isNested=*/false, VD->getLocation(), SourceLocation(),
-                    VD->getType(), /*Invalid=*/false);
+                    VD->getType(), /*AcrossContract=*/false,
+                    /*Invalid=*/false);
   }
 }
 

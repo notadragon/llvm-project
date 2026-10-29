@@ -1223,7 +1223,8 @@ void ASTDeclWriter::VisitFieldDecl(FieldDecl *D) {
   VisitDeclaratorDecl(D);
   Record.push_back(D->isMutable());
 
-  Record.push_back((D->StorageKind << 1) | D->BitField);
+  Record.push_back((D->StorageKind << 2) | (D->isConstifiedCapture() << 1) |
+                   D->BitField);
   if (D->StorageKind == FieldDecl::ISK_CapturedVLAType)
     Record.AddTypeRef(QualType(D->getCapturedVLAType(), 0));
   else if (D->BitField)
@@ -1242,6 +1243,7 @@ void ASTDeclWriter::VisitFieldDecl(FieldDecl *D) {
       !D->isTopLevelDeclInObjCContainer() &&
       !D->isModulePrivate() &&
       !D->getBitWidth() &&
+      !D->isConstifiedCapture() &&
       !D->hasInClassInitializer() &&
       !D->hasCapturedVLAType() &&
       !D->hasExtInfo() &&

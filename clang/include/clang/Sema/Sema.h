@@ -7543,6 +7543,14 @@ public:
   ExprResult CheckLValueToRValueConversionOperand(Expr *E);
   void CleanupVarDeclMarking();
 
+  /// Whether tryCaptureVariable is rebuilding a capture that a use inside a
+  /// contract assertion made, which is therefore const.
+  enum class CaptureContractContext { Ordinary, AcrossContract };
+
+  /// The type of a capture by reference made across a contract assertion: an
+  /// lvalue reference to the const-qualified type \p T refers to.
+  QualType getCapturedAcrossContractReferenceType(QualType T);
+
   /// Try to capture the given variable.
   ///
   /// \param Var The variable to capture.
@@ -7576,16 +7584,18 @@ public:
   ///
   /// \returns true if an error occurred (i.e., the variable cannot be
   /// captured) and false if the capture succeeded.
-  bool tryCaptureVariable(ValueDecl *Var, SourceLocation Loc,
-                          TryCaptureKind Kind, SourceLocation EllipsisLoc,
-                          bool BuildAndDiagnose, QualType &CaptureType,
-                          QualType &DeclRefType,
-                          const unsigned *const FunctionScopeIndexToStopAt);
+  bool tryCaptureVariable(
+      ValueDecl *Var, SourceLocation Loc, TryCaptureKind Kind,
+      SourceLocation EllipsisLoc, bool BuildAndDiagnose, QualType &CaptureType,
+      QualType &DeclRefType, const unsigned *const FunctionScopeIndexToStopAt,
+      CaptureContractContext CaptureContext = CaptureContractContext::Ordinary);
 
   /// Try to capture the given variable.
-  bool tryCaptureVariable(ValueDecl *Var, SourceLocation Loc,
-                          TryCaptureKind Kind = TryCaptureKind::Implicit,
-                          SourceLocation EllipsisLoc = SourceLocation());
+  bool tryCaptureVariable(
+      ValueDecl *Var, SourceLocation Loc,
+      TryCaptureKind Kind = TryCaptureKind::Implicit,
+      SourceLocation EllipsisLoc = SourceLocation(),
+      CaptureContractContext CaptureContext = CaptureContractContext::Ordinary);
 
   /// Checks if the variable must be captured.
   bool NeedToCaptureVariable(ValueDecl *Var, SourceLocation Loc);

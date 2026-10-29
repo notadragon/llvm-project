@@ -1839,6 +1839,13 @@ defm contract_constification : BoolFOption<"contract-constification",
   NegFlag<SetFalse, [], [ClangOption, CC1Option],
     "Disable contract constification">>;
 
+defm contract_lambda_capture_restrictions : BoolFOption<"contract-lambda-capture-restrictions",
+  LangOpts<"ContractLambdaCaptureRestrictions">, DefaultTrue,
+  PosFlag<SetTrue, [], [ClangOption],
+          "Enable restrictions on lambda captures caused exclusively by contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option],
+    "Disable restrictions on lambda captures caused exclusively by contracts">>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,

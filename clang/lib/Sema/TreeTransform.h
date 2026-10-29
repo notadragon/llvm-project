@@ -16768,7 +16768,11 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
           }
 
           // Capture the transformed variable.
-          getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind);
+          getSema().tryCaptureVariable(
+              CapturedVar, C->getLocation(), Kind, SourceLocation(),
+              C->isCapturedAcrossContract()
+                  ? Sema::CaptureContractContext::AcrossContract
+                  : Sema::CaptureContractContext::Ordinary);
         }
 
         // FIXME: Retain a pack expansion if RetainExpansion is true.
@@ -16793,8 +16797,11 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
       LSI->ContainsUnexpandedParameterPack |= VD->isParameterPack();
 
     // Capture the transformed variable.
-    getSema().tryCaptureVariable(CapturedVar, C->getLocation(), Kind,
-                                 EllipsisLoc);
+    getSema().tryCaptureVariable(
+        CapturedVar, C->getLocation(), Kind, EllipsisLoc,
+        C->isCapturedAcrossContract()
+            ? Sema::CaptureContractContext::AcrossContract
+            : Sema::CaptureContractContext::Ordinary);
   }
   getSema().finishLambdaExplicitCaptures(LSI);
 
@@ -16846,6 +16853,43 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
   getDerived().transformedLocalDecl(E->getCallOperator(), {NewCallOperator});
+
+  // Carry the contracts over to the new call operator, which
+  // CreateLambdaCallOperator builds fresh without them.  This has to happen
+  // after CompleteLambdaCallOperator above, so the
+  // parameters the predicates name have been transformed and registered, and
+  // before the body below, which is where the checks are emitted from.
+  if (ContractSpecifierDecl *OldCSD = E->getCallOperator()->getContracts()) {
+    SmallVector<ContractStmt *, 4> NewContracts;
+    for (ContractStmt *CS : OldCSD->contracts()) {
+      StmtResult NewCS = getDerived().TransformContractStmt(CS);
+      if (NewCS.isInvalid()) {
+        NewContracts.push_back(getSema().BuildInvalidContractStmt(
+            CS->getContractKind(), CS->getKeywordLoc()));
+        continue;
+      }
+      // A contract whose P4283 requires-clause is not satisfied transforms
+      // away; there is simply nothing to carry over for it.  An invalid one
+      // stays invalid.
+      if (auto *CStmt = dyn_cast_or_null<ContractStmt>(NewCS.get())) {
+        if (CS->isInvalid())
+          CStmt->setInvalid();
+        NewContracts.push_back(CStmt);
+      }
+    }
+
+    // When every contract was discarded so, the call operator has none: an
+    // empty specifier sequence is not one, as on the other paths that
+    // instantiate contracts.
+    if (!NewContracts.empty()) {
+      if (ContractSpecifierDecl *NewCSD =
+              getDerived().RebuildContractSpecifierDecl(NewContracts,
+                                                        OldCSD->getLocation()))
+        NewCallOperator->setContracts(NewCSD);
+      else
+        Invalid = true;
+    }
+  }
 
   {
     // Number the lambda for linkage purposes if necessary.
@@ -16975,7 +17019,12 @@ TreeTransform<Derived>::SkipLambdaBody(LambdaExpr *E, Stmt *S) {
       return StmtError();
 
     // Capture the transformed variable.
-    getSema().tryCaptureVariable(CapturedVar, C->getLocation());
+    getSema().tryCaptureVariable(
+        CapturedVar, C->getLocation(), TryCaptureKind::Implicit,
+        SourceLocation(),
+        C->isCapturedAcrossContract()
+            ? Sema::CaptureContractContext::AcrossContract
+            : Sema::CaptureContractContext::Ordinary);
   }
 
   return S;

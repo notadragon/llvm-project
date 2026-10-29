@@ -14379,10 +14379,26 @@ static bool IsReadonlyMessage(Expr *E, Sema &S) {
   return Base->getMethodDecl() != nullptr;
 }
 
+/// Whether \p E names a variable through a by-copy capture of the innermost
+/// lambda that captures it (an init-capture is one), rather than by reference.
+static bool isCopyCapturedInInnermostLambda(Sema &S, Expr *E) {
+  auto *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParens());
+  if (!DRE)
+    return false;
+  ValueDecl *Value = DRE->getDecl();
+  if (auto *Var = dyn_cast<VarDecl>(Value); Var && Var->isInitCapture())
+    return true;
+  for (sema::FunctionScopeInfo *FSI : llvm::reverse(S.FunctionScopes))
+    if (auto *LSI = dyn_cast<sema::LambdaScopeInfo>(FSI);
+        LSI && LSI->isCaptured(Value))
+      return LSI->getCapture(Value).isCopyCapture();
+  return false;
+}
+
 /// Is the given expression (which must be 'const') a reference to a
 /// variable which was originally non-const, but which has become
 /// 'const' due to being captured within a block?
-enum NonConstCaptureKind { NCCK_None, NCCK_Block, NCCK_Lambda };
+enum NonConstCaptureKind { NCCK_None, NCCK_Block, NCCK_Lambda, NCCK_Contract };
 static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
   assert(E->isLValue() && E->getType().isConstQualified());
   E = E->IgnoreParens();
@@ -14412,6 +14428,11 @@ static NonConstCaptureKind isReferenceToNonConstCapture(Sema &S, Expr *E) {
     return NCCK_None;
 
   assert(Var->hasLocalStorage() && "capture added 'const' to non-local?");
+
+  // A variable a contract predicate names across the contract boundary is
+  // const there whatever captured it.
+  if (S.getContractConstification(Var) == CC_ApplyConst)
+    return NCCK_Contract;
 
   // Decide whether the first capture was for a block or a lambda.
   DeclContext *DC = S.CurContext, *Prev = nullptr;
@@ -14549,6 +14570,10 @@ static void DiagnoseConstAssignment(Sema &S, const Expr *E,
         }
         S.Diag(VD->getLocation(), diag::note_typecheck_assign_const)
             << ConstVariable << VD << VD->getType() << VD->getSourceRange();
+      } else if (S.getContractConstification(VD) == CC_ApplyConst) {
+        S.Diag(Loc, diag::err_typecheck_assign_constified)
+            << ExprRange << /*IsMemberExpr=*/false << VD;
+        DiagnosticEmitted = true;
       }
     }
   } else if (isa<CXXThisExpr>(E)) {
@@ -14562,6 +14587,10 @@ static void DiagnoseConstAssignment(Sema &S, const Expr *E,
           }
           S.Diag(MD->getLocation(), diag::note_typecheck_assign_const_method)
               << MD << MD->getSourceRange();
+        } else if (S.getCurrentContractEntry()) {
+          S.Diag(Loc, diag::err_typecheck_assign_constified)
+              << ExprRange << /*IsMemberExpr*/ true;
+          DiagnosticEmitted = true;
         }
       }
     }
@@ -14572,6 +14601,12 @@ static void DiagnoseConstAssignment(Sema &S, const Expr *E,
 
   // Can't determine a more specific message, so display the generic error.
   S.Diag(Loc, diag::err_typecheck_assign_const) << ExprRange << ConstUnknown;
+
+  // If we're inside a contract statement, note that in case it's helpful. Maybe
+  // the variable was constified?
+  if (S.isDirectlyInContractPredicate() &&
+      !S.getCurrentContractKeywordLoc().isInvalid())
+    S.Diag(S.getCurrentContractKeywordLoc(), diag::note_contract_context);
 }
 
 enum OriginalExprKind {
@@ -17904,6 +17939,7 @@ ExprResult Sema::ActOnSourceLocExpr(SourceLocIdentKind Kind,
         Context.getCanonicalTagType(StdSourceLocationImplDecl).withConst());
     break;
   }
+  }
 
   return BuildSourceLocExpr(Kind, ResultTy, BuiltinLoc, RPLoc, CurContext);
 }
@@ -19842,9 +19878,13 @@ static DeclContext *getParentOfCapturingContextOrNull(DeclContext *DC,
   if (isa<BlockDecl>(DC) || isa<CapturedDecl>(DC) || isLambdaCallOperator(DC))
     return getLambdaAwareParentOfDeclContext(DC);
 
-  VarDecl *Underlying = Var->getPotentiallyDecomposedVarDecl();
-  if (Underlying) {
-    if (Underlying->hasLocalStorage() && Diagnose)
+  // A result name is always local.
+  VarDecl *Underlying = isa<ResultNameDecl>(Var)
+                            ? nullptr
+                            : Var->getPotentiallyDecomposedVarDecl();
+  if ((Underlying && Underlying->hasLocalStorage()) ||
+      isa<ResultNameDecl>(Var)) {
+    if (Diagnose)
       diagnoseUncapturableValueReferenceOrBinding(S, Loc, Var);
   }
   return nullptr;
@@ -19857,8 +19897,9 @@ static bool isVariableCapturable(CapturingScopeInfo *CSI, ValueDecl *Var,
                                  SourceLocation Loc, const bool Diagnose,
                                  Sema &S) {
 
-  assert((isa<VarDecl, BindingDecl>(Var)) &&
-         "Only variables and structured bindings can be captured");
+  assert((isa<VarDecl, BindingDecl, ResultNameDecl>(Var)) &&
+         "Only variables, structured bindings and result names can be "
+         "captured");
 
   bool IsBlock = isa<BlockScopeInfo>(CSI);
   bool IsLambda = isa<LambdaScopeInfo>(CSI);
@@ -19876,7 +19917,9 @@ static bool isVariableCapturable(CapturingScopeInfo *CSI, ValueDecl *Var,
   // (e.g. anonymous unions).
   // FIXME: The C++11 rule don't actually state this explicitly, but I'm
   // assuming that's the intent.
-  if (IsLambda && !Var->getDeclName()) {
+  // A parameter is exempt: a contract on an earlier declaration is rebuilt
+  // against the parameters of the definition, which may be unnamed.
+  if (IsLambda && !Var->getDeclName() && !isa<ParmVarDecl>(Var)) {
     if (Diagnose) {
       S.Diag(Loc, diag::err_lambda_capture_anonymous_var);
       S.Diag(Var->getLocation(), diag::note_declared_at);
@@ -20016,7 +20059,7 @@ static bool captureInBlock(BlockScopeInfo *BSI, ValueDecl *Var,
   // Actually capture the variable.
   if (BuildAndDiagnose)
     BSI->addCapture(Var, HasBlocksAttr, ByRef, Nested, Loc, SourceLocation(),
-                    CaptureType, Invalid);
+                    CaptureType, /*AcrossContract=*/false, Invalid);
 
   return !Invalid;
 }
@@ -20079,7 +20122,8 @@ static bool captureInCapturedRegion(
   // Actually capture the variable.
   if (BuildAndDiagnose)
     RSI->addCapture(Var, /*isBlock*/ false, ByRef, RefersToCapturedVariable,
-                    Loc, SourceLocation(), CaptureType, Invalid);
+                    Loc, SourceLocation(), CaptureType,
+                    /*AcrossContract=*/false, Invalid);
 
   if (BuildAndDiagnose && IsBindingDecl)
     // Key the binding to its own capture entry so repeated uses hit the
@@ -20089,6 +20133,24 @@ static bool captureInCapturedRegion(
   return !Invalid;
 }
 
+namespace {
+/// Whether a variable captured on the way out to where it is declared has to
+/// be captured as const: a use inside a contract assertion makes a capture by
+/// reference const until a capture by copy intervenes.
+struct ConstificationInfo {
+  bool NeedsConstification = false;
+
+  ConstificationInfo() = default;
+  ConstificationInfo(ConstificationInfo const &) = delete;
+  ConstificationInfo &operator=(ConstificationInfo const &) = delete;
+
+  void disableDueToCopyCapture() { NeedsConstification = false; }
+  bool isRefCaptureThroughContract() const { return NeedsConstification; }
+
+  void enableDueToContract() { NeedsConstification = true; }
+};
+} // namespace
+
 /// Capture the given variable in the lambda.
 static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
                             SourceLocation Loc, const bool BuildAndDiagnose,
@@ -20096,13 +20158,26 @@ static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
                             const bool RefersToCapturedVariable,
                             const TryCaptureKind Kind,
                             SourceLocation EllipsisLoc, const bool IsTopScope,
-                            Sema &S, bool Invalid) {
+                            Sema &S, ConstificationInfo &ConstInfo,
+                            bool Invalid) {
   // Determine whether we are capturing by reference or by value.
   bool ByRef = false;
   if (IsTopScope && Kind != TryCaptureKind::Implicit) {
     ByRef = (Kind == TryCaptureKind::ExplicitByRef);
   } else {
     ByRef = (LSI->ImpCaptureStyle == LambdaScopeInfo::ImpCap_LambdaByref);
+  }
+
+  bool ShouldConstify = false;
+  bool CopiesConstifiedReference = false;
+  if (ByRef) {
+    if (ConstInfo.isRefCaptureThroughContract())
+      ShouldConstify = true;
+  } else {
+    if (ConstInfo.isRefCaptureThroughContract()) {
+      ConstInfo.disableDueToCopyCapture();
+      CopiesConstifiedReference = true;
+    }
   }
 
   if (BuildAndDiagnose && S.Context.getTargetInfo().getTriple().isWasm() &&
@@ -20125,7 +20200,12 @@ static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
     // to do the former, while EDG does the latter. Core issue 1249 will
     // clarify, but for now we follow GCC because it's a more permissive and
     // easily defensible position.
-    CaptureType = S.Context.getLValueReferenceType(DeclRefType);
+    QualType DRET = DeclRefType.getNonReferenceType();
+
+    if (ShouldConstify)
+      DRET.addConst();
+
+    CaptureType = S.Context.getLValueReferenceType(DRET);
   } else {
     // C++11 [expr.prim.lambda]p14:
     //   For each entity captured by copy, an unnamed non-static
@@ -20138,9 +20218,20 @@ static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
     //   corresponding data member is also a reference to a
     //   function. - end note ]
     if (const ReferenceType *RefType = CaptureType->getAs<ReferenceType>()){
-      if (!RefType->getPointeeType()->isFunctionType())
+      if (!RefType->getPointeeType()->isFunctionType()) {
         CaptureType = RefType->getPointeeType();
+      }
     }
+
+    // The member's type is that of the captured entity.  When the copy is
+    // taken from an enclosing lambda's by-reference capture that a contract
+    // predicate constified, the const on that reference belongs to the
+    // enclosing capture, not to the entity: a mutable lambda created inside
+    // the predicate may modify its own copy ([expr.prim.id.unqual] applies
+    // the by-copy rule before constification).
+    if (CopiesConstifiedReference && !CaptureType->isFunctionType() &&
+        !Var->getType().getNonReferenceType().isConstQualified())
+      CaptureType.removeLocalConst();
 
     // Forbid the lambda copy-capture of autoreleasing variables.
     if (!Invalid &&
@@ -20170,9 +20261,9 @@ static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
   }
 
   // Compute the type of a reference to this captured variable.
-  if (ByRef)
+  if (ByRef) {
     DeclRefType = CaptureType.getNonReferenceType();
-  else {
+  } else {
     // C++ [expr.prim.lambda]p5:
     //   The closure type for a lambda-expression has a public inline
     //   function call operator [...]. This function call operator is
@@ -20192,7 +20283,7 @@ static bool captureInLambda(LambdaScopeInfo *LSI, ValueDecl *Var,
   // Add the capture.
   if (BuildAndDiagnose)
     LSI->addCapture(Var, /*isBlock=*/false, ByRef, RefersToCapturedVariable,
-                    Loc, EllipsisLoc, CaptureType, Invalid);
+                    Loc, EllipsisLoc, CaptureType, ShouldConstify, Invalid);
 
   return !Invalid;
 }
@@ -20299,10 +20390,13 @@ static void buildLambdaCaptureFixit(Sema &Sema, LambdaScopeInfo *LSI,
   }
 }
 
-bool Sema::tryCaptureVariable(
-    ValueDecl *Var, SourceLocation ExprLoc, TryCaptureKind Kind,
-    SourceLocation EllipsisLoc, bool BuildAndDiagnose, QualType &CaptureType,
-    QualType &DeclRefType, const unsigned *const FunctionScopeIndexToStopAt) {
+bool Sema::tryCaptureVariable(ValueDecl *Var, SourceLocation ExprLoc,
+                              TryCaptureKind Kind, SourceLocation EllipsisLoc,
+                              bool BuildAndDiagnose, QualType &CaptureType,
+                              QualType &DeclRefType,
+                              const unsigned *const FunctionScopeIndexToStopAt,
+                              CaptureContractContext CaptureContext) {
+
   // An init-capture is notionally from the context surrounding its
   // declaration, but its parent DC is the lambda class.
   DeclContext *VarDC =
@@ -20323,17 +20417,36 @@ bool Sema::tryCaptureVariable(
   // Exception: Function parameters are not tied to the function's DeclContext
   // until we enter the function definition. Capturing them anyway would result
   // in an out-of-bounds error while traversing DC and its parents.
-  if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod())
+  //
+  // ...except inside a contract assertion. [expr.prim.lambda.capture]/3.3
+  // permits a capture-default or simple-capture in a lambda whose innermost
+  // enclosing scope is a contract-assertion scope, so a lambda written in a
+  // pre/post predicate may capture the enclosing function's parameters. A
+  // free function's predicate is parsed off the declarator, before the
+  // parameters are reparented onto the function, so this early return is
+  // exactly what such a capture hits -- and because it returns "nothing to
+  // capture" rather than diagnosing, Sema accepted the reference with no
+  // capture recorded and CodeGen then died on a DeclRefExpr that is not in
+  // LocalDeclMap. (A member function's contract is late-parsed once the class
+  // is complete, so its parameters already have a function DeclContext, which
+  // is why only free functions were affected.)
+  //
+  // Let the scope walk below run instead: it terminates on the enclosing
+  // context the parameter does belong to, and it is what produces the
+  // err_lambda_impcap diagnostic a bare [] must get.
+  if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod() &&
+      !getFirstEnclosingContractScopeForContext(CurContext))
     return true;
 
+  // A result name has no underlying variable; it is always local.
   const auto *VD = dyn_cast<VarDecl>(Var);
   if (VD) {
     if (VD->isInitCapture())
       VarDC = VarDC->getParent();
-  } else {
+  } else if (!isa<ResultNameDecl>(Var)) {
     VD = Var->getPotentiallyDecomposedVarDecl();
+    assert(VD && "Cannot capture a null variable");
   }
-  assert(VD && "Cannot capture a null variable");
 
   const unsigned MaxFunctionScopesIndex = FunctionScopeIndexToStopAt
       ? *FunctionScopeIndexToStopAt : FunctionScopes.size() - 1;
@@ -20359,7 +20472,7 @@ bool Sema::tryCaptureVariable(
 
   // Capture global variables if it is required to use private copy of this
   // variable.
-  bool IsGlobal = !VD->hasLocalStorage();
+  bool IsGlobal = VD && !VD->hasLocalStorage();
   if (IsGlobal && !(LangOpts.OpenMP &&
                     OpenMP().isOpenMPCapturedDecl(Var, /*CheckScopeInfo=*/true,
                                                   MaxFunctionScopesIndex)))
@@ -20394,7 +20507,17 @@ bool Sema::tryCaptureVariable(
     if (LSI && !LSI->AfterParameterList) {
       // This allows capturing parameters from a default value which does not
       // seems correct
-      if (isa<ParmVarDecl>(Var) && !Var->getDeclContext()->isFunctionOrMethod())
+      //
+      // A simple-capture in a lambda inside a contract assertion is resolved
+      // from ActOnLambdaExpressionAfterIntroducer, before the lambda's own
+      // parameter list is parsed, so it arrives here; and the enclosing
+      // function's parameters are not reparented onto it yet, so
+      // isFunctionOrMethod() is false. That combination is well-formed under
+      // [expr.prim.lambda.capture]/3.3 -- let the walk continue, as the early
+      // return at the top of this function does.
+      if (isa<ParmVarDecl>(Var) &&
+          !Var->getDeclContext()->isFunctionOrMethod() &&
+          !getFirstEnclosingContractScopeForContext(CurContext))
         return true;
     }
     // If the variable is declared in the current context, there is no need to
@@ -20553,7 +20676,47 @@ bool Sema::tryCaptureVariable(
     FunctionScopesIndex--;
     if (IsInScopeDeclarationContext)
       DC = ParentDC;
+    // A parameter of the declarator whose contract is being parsed is not
+    // yet reparented onto its function (see the contract exception above),
+    // so its DeclContext need not be the one the walk ends on: for a
+    // qualified declarator (S<T>::f, N::h) the lambda's parent is the named
+    // scope.  Once the walk has left every capturing context, it has reached
+    // the declarator's function.
+    if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod() &&
+        !DC->isFunctionOrMethod())
+      break;
   } while (!VarDC->Equals(DC));
+
+  ConstificationInfo ConstTracker;
+
+  // A postcondition capture (P3098) is declared inside its contract assertion
+  // and is not constified, and neither is a lambda's copy of it: every scope
+  // the capture crosses is inside the assertion (CLANG-643).
+  const bool DeclaredInContract = isa<PostconditionCaptureDecl>(Var);
+
+  // That the use is constified does not make the capture const: a use in a
+  // lambda's own contract assertion is const by [expr.prim.id.unqual], but
+  // the lambda's by-reference capture is not, and its body may modify the
+  // entity through it.  A capture is const where it crosses into a contract
+  // predicate: the variable's own scope is inside one (below), or a lambda
+  // the walk passes is (in the walk).
+  // If the scope that declares the variable is itself inside a contract
+  // predicate, an implicit by-reference capture crosses the contract boundary
+  // and must be const-qualified ([basic.contract.general]).  This decision has
+  // to be re-derived when a dependent lambda is instantiated: the const-ness of
+  // an implicit '[&]' capture is only computed here (there is no explicit
+  // capture to carry it), and the enclosing predicate's mutation of the
+  // captured entity is not checked until instantiation.  We must therefore not
+  // gate this on FunctionScopesStart: during template instantiation
+  // Sema::ContextRAII raises FunctionScopesStart past the function's own scope,
+  // which would otherwise drop the const and wrongly accept the mutation.
+  if (!DeclaredInContract && FunctionScopesIndex < FunctionScopes.size() &&
+      FunctionScopes[FunctionScopesIndex]->isInContract())
+    ConstTracker.enableDueToContract();
+
+  if (!DeclaredInContract &&
+      CaptureContext == CaptureContractContext::AcrossContract)
+    ConstTracker.enableDueToContract();
 
   // Walk back down the scope stack, (e.g. from outer lambda to inner lambda)
   // computing the type of the capture at each step, checking type-specific
@@ -20588,10 +20751,13 @@ bool Sema::tryCaptureVariable(
       Nested = true;
     } else {
       LambdaScopeInfo *LSI = cast<LambdaScopeInfo>(CSI);
-      Invalid =
-          !captureInLambda(LSI, Var, ExprLoc, BuildAndDiagnose, CaptureType,
-                           DeclRefType, Nested, Kind, EllipsisLoc,
-                           /*IsTopScope*/ I == N - 1, *this, Invalid);
+
+      Invalid = !captureInLambda(
+          LSI, Var, ExprLoc, BuildAndDiagnose, CaptureType, DeclRefType, Nested,
+          Kind, EllipsisLoc,
+          /*IsTopScope*/ I == N - 1, *this, ConstTracker, Invalid);
+      if (!DeclaredInContract && LSI->isInContract())
+        ConstTracker.enableDueToContract();
       Nested = true;
     }
 
@@ -20602,12 +20768,13 @@ bool Sema::tryCaptureVariable(
 }
 
 bool Sema::tryCaptureVariable(ValueDecl *Var, SourceLocation Loc,
-                              TryCaptureKind Kind, SourceLocation EllipsisLoc) {
+                              TryCaptureKind Kind, SourceLocation EllipsisLoc,
+                              CaptureContractContext CaptureContext) {
   QualType CaptureType;
   QualType DeclRefType;
   return tryCaptureVariable(Var, Loc, Kind, EllipsisLoc,
-                            /*BuildAndDiagnose=*/true, CaptureType,
-                            DeclRefType, nullptr);
+                            /*BuildAndDiagnose=*/true, CaptureType, DeclRefType,
+                            nullptr, CaptureContext);
 }
 
 bool Sema::NeedToCaptureVariable(ValueDecl *Var, SourceLocation Loc) {
@@ -21065,13 +21232,38 @@ void Sema::CleanupVarDeclMarking() {
 
 static void DoMarkPotentialCapture(Sema &SemaRef, SourceLocation Loc,
                                    ValueDecl *Var, Expr *E) {
+  // A result name referenced from a lambda in its postcondition is a
+  // potential capture, under the same condition as a parameter.
+  // A free function's contract is parsed off the declarator, before its
+  // parameters and result name are reparented onto it: their DeclContext is
+  // then not a function, but a lambda in the contract refers to them in the
+  // enclosing function all the same.
+  const bool DeclaratorEntityInContract =
+      (isa<ParmVarDecl>(Var) || isa<ResultNameDecl>(Var)) &&
+      !Var->getDeclContext()->isFunctionOrMethod() &&
+      SemaRef.getFirstEnclosingContractScopeForContext(SemaRef.CurContext);
+  if (isa<ResultNameDecl>(Var)) {
+    if (SemaRef.CurContext == Var->getDeclContext() ||
+        (!Var->getDeclContext()->isFunctionOrMethod() &&
+         !DeclaratorEntityInContract))
+      return;
+    LambdaScopeInfo *const LSI =
+        SemaRef.getCurLambda(/*IgnoreNonLambdaCapturingScope=*/true);
+    if (LSI && (!LSI->CallOperator ||
+                !LSI->CallOperator->Encloses(Var->getDeclContext())))
+      LSI->addPotentialCapture(E->IgnoreParens());
+    return;
+  }
+
   VarDecl *VD = Var->getPotentiallyDecomposedVarDecl();
   if (!VD)
     return;
 
   const bool RefersToEnclosingScope =
       (SemaRef.CurContext != VD->getDeclContext() &&
-       VD->getDeclContext()->isFunctionOrMethod() && VD->hasLocalStorage());
+       (VD->getDeclContext()->isFunctionOrMethod() ||
+        DeclaratorEntityInContract) &&
+       VD->hasLocalStorage());
   if (RefersToEnclosingScope) {
     LambdaScopeInfo *const LSI =
         SemaRef.getCurLambda(/*IgnoreNonLambdaCapturingScope=*/true);
@@ -21282,8 +21474,9 @@ static void DoMarkVarDeclReferenced(
   }
 }
 
+// Also used for a result name, which is captured the same way.
 static void DoMarkBindingDeclReferenced(Sema &SemaRef, SourceLocation Loc,
-                                        BindingDecl *BD, Expr *E) {
+                                        ValueDecl *BD, Expr *E) {
   BD->setReferenced();
 
   if (BD->isInvalidDecl())
@@ -21379,6 +21572,11 @@ MarkExprReferenced(Sema &SemaRef, SourceLocation Loc, Decl *D, Expr *E,
     if (SemaRef.getLangOpts().CPlusPlus)
       FixDependencyOfIdExpressionsInLambdaWithDependentObjectParameter(SemaRef,
                                                                        Decl, E);
+    return;
+  }
+
+  if (auto *RND = dyn_cast<ResultNameDecl>(D)) {
+    DoMarkBindingDeclReferenced(SemaRef, Loc, RND, E);
     return;
   }
   SemaRef.MarkAnyDeclReferenced(Loc, D, MightBeOdrUse);

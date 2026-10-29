@@ -1111,9 +1111,20 @@ bool Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc,
 
 static QualType adjustCVQualifiersForCXXThisWithinLambda(
     ArrayRef<FunctionScopeInfo *> FunctionScopes, QualType ThisTy,
-    DeclContext *CurSemaContext, ASTContext &ASTCtx) {
+    QualType UncontractedThisTy, DeclContext *CurSemaContext,
+    ASTContext &ASTCtx) {
 
-  QualType ClassType = ThisTy->getPointeeType();
+  // A by-copy '*this' capture is initialized from the enclosing object but
+  // yields a fresh one owned by the closure, so its constness is decided by
+  // the capturing lambda's own call operator -- not by any const the contract
+  // predicate imposed on the enclosing 'this'.  Start that path from the
+  // uncontracted type; [expr.prim.id.unqual]/3 marks `++this->z` and `++z`
+  // OK inside `pre([=,&i,*this] mutable { ... })` for exactly this reason.
+  //
+  // Outside a contract the two types are the same, so nothing changes there,
+  // and a by-reference 'this' capture keeps the contract's const because it
+  // reaches the original object -- which Contracts/lambda.cpp pins.
+  QualType ClassType = UncontractedThisTy->getPointeeType();
   LambdaScopeInfo *CurLSI = nullptr;
   DeclContext *CurDC = CurSemaContext;
 
@@ -1256,8 +1267,8 @@ QualType Sema::getCurrentThisType() {
   // might need to be adjusted if the lambda or any of its enclosing lambda's
   // captures '*this' by copy.
   if (!ThisTy.isNull() && isLambdaCallOperator(CurContext))
-    return adjustCVQualifiersForCXXThisWithinLambda(FunctionScopes, ThisTy,
-                                                    CurContext, Context);
+    return adjustCVQualifiersForCXXThisWithinLambda(
+        FunctionScopes, ThisTy, UncontractedThisTy, CurContext, Context);
   return ThisTy;
 }
 
@@ -1392,6 +1403,10 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
   }
   if (!BuildAndDiagnose) return false;
 
+  std::optional<unsigned> MinConstificationContext;
+  if (!getContractScopes().empty())
+    MinConstificationContext = getContractScopes().front().FunctionIndex;
+
   // If we got here, then the closure at MaxFunctionScopesIndex on the
   // FunctionScopes stack, can capture the *enclosing object*, so capture it
   // (including implicit by-reference captures in any enclosing closures).
@@ -1413,6 +1428,15 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
     // The type of the corresponding data member (not a 'this' pointer if 'by
     // copy').
     QualType CaptureType = ByCopy ? ThisTy->getPointeeType() : ThisTy;
+
+    // Or if we're capturing this by reference and there's an intervening
+    // contract, we need to capture the constified version of the 'this' object.
+    if (!ByCopy && MinConstificationContext &&
+        static_cast<unsigned>(idx) > *MinConstificationContext) {
+      assert(!ThisTy.isNull());
+      CaptureType =
+          Context.getPointerType(CaptureType->getPointeeType().withConst());
+    }
 
     bool isNested = NumCapturingClosures > 1;
     CSI->addThisCapture(isNested, Loc, CaptureType, ByCopy);
@@ -7814,8 +7838,12 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
         !IsFullExprInstantiationDependent)
       return;
 
-    VarDecl *UnderlyingVar = Var->getPotentiallyDecomposedVarDecl();
-    if (!UnderlyingVar)
+    // A result name has no underlying variable and is never a constant
+    // expression.
+    VarDecl *UnderlyingVar = isa<ResultNameDecl>(Var)
+                                 ? nullptr
+                                 : Var->getPotentiallyDecomposedVarDecl();
+    if (!UnderlyingVar && !isa<ResultNameDecl>(Var))
       return;
 
     // If we have a capture-capable lambda for the variable, go ahead and
@@ -7825,6 +7853,7 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
                 S.FunctionScopes, Var, S))
       S.MarkCaptureUsedInEnclosingContext(Var, VarExpr->getExprLoc(), *Index);
     const bool IsVarNeverAConstantExpression =
+        !UnderlyingVar ||
         VariableCanNeverBeAConstantExpression(UnderlyingVar, S.Context);
     if (!IsFullExprInstantiationDependent || IsVarNeverAConstantExpression) {
       // This full expression is not instantiation dependent or the variable

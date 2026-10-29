@@ -1374,7 +1374,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     HasParentheses = true;
   }
 
-  HasSpecifiers = isLambdaSpecifier();
+  HasSpecifiers = isLambdaSpecifier() || isFunctionContractKeyword(Tok);
 
   if (HasSpecifiers && !HasParentheses && !getLangOpts().CPlusPlus23) {
     // It's common to forget that one needs '()' before 'mutable', an
@@ -1494,6 +1494,33 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   ParseScope BodyScope(this, ScopeFlags);
 
   Actions.ActOnStartOfLambdaDefinition(Intro, D, DS);
+  if (isFunctionContractKeyword(Tok)) {
+    ParseContractSpecifierSequence(D, /*EnterScope=*/false);
+    assert(D.getContracts() && "a lambda's contracts are parsed eagerly");
+  }
+  assert(Actions.CurContext->isFunctionOrMethod() &&
+         "a lambda's contracts are parsed in its call operator");
+  auto *CallOp = cast<FunctionDecl>(Actions.CurContext);
+  CallOp->setContracts(D.getContracts());
+  D.setContracts(nullptr);
+
+  // [dcl.contract.func]'s restrictions on a parameter odr-used by a
+  // postcondition -- it must be const, and must not have array or function
+  // type -- apply to a lambda's call operator like any other function, but
+  // nothing ran them for one: they hang off ActOnFunctionDeclarator, which a
+  // lambda never reaches.  A *generic* lambda was diagnosed anyway, because
+  // the instantiation path runs the same checks, so only the non-generic case
+  // went unchecked.
+  //
+  // This has to come after the contracts are attached just above, not from
+  // ActOnStartOfLambdaDefinition: the specifier sequence is parsed after that
+  // action returns, so the call operator has no contracts yet while it runs.
+  // For a generic lambda the check is a no-op here -- the parameter types are
+  // still dependent, so nothing is diagnosable, and the instantiation keeps
+  // doing the work.
+  if (CallOp->hasContracts())
+    Actions.CheckFunctionContracts(CallOp, /*IsDefinition=*/true,
+                                   /*IsInstantiation=*/false);
 
   // Parse compound-statement.
   if (!Tok.is(tok::l_brace)) {
@@ -1506,6 +1533,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   BodyScope.Exit();
   TemplateParamScope.Exit();
   LambdaScope.Exit();
+
+  // A lambda's contracts are parsed where they appear (above), never cached.
+  assert(D.getLateParsedContracts().empty() &&
+         "late-parsed contracts on a lambda declarator");
 
   if (!Stmt.isInvalid() && !TrailingReturnType.isInvalid() &&
       !D.isInvalidType())
