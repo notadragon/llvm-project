@@ -1745,6 +1745,62 @@ llvm::Value *CodeGenFunction::EmitP3100NestedPosition(llvm::Value *Pos,
       Builder.CreateAdd(BoundW, llvm::ConstantInt::get(Ty, 1)), Sum);
 }
 
+// P3100: a function declared [[noreturn]] (or noreturn by any other means)
+// that returns to its caller -- by a return statement or by flowing off its
+// end -- has undefined behavior ({dcl.attr.noreturn.eventually.returns}).  The
+// check is made in the function, at its return block, so it covers calls
+// through a pointer as well as direct calls; every return reaches it after the
+// function's locals are destroyed, and an exception or a longjmp leaving the
+// function does not.  FinishFunction calls it after the return block, or, when
+// the postconditions are evaluated in the epilogue, EmitPostContracts after
+// them.  assume and ignore keep today's behaviour.
+void CodeGenFunction::EmitImplicitNoreturnCheck() {
+  using CES = ContractEvaluationSemantic;
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl);
+  if (!FD || !HaveInsertPoint())
+    return;
+  // A return block nothing branches to is not a normal exit.
+  llvm::BasicBlock *BB = Builder.GetInsertBlock();
+  if (BB != &CurFn->getEntryBlock() && BB->hasNPredecessors(0))
+    return;
+
+  SourceLocation Loc = FD->getLocation();
+  CES Sem =
+      resolveImplicitSemantic("ub:dcl.attr.noreturn.eventually.returns", Loc);
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return;
+
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    // The caller was compiled assuming the call does not return, so there is
+    // no valid continuation, as for a pure-virtual call: when an observing
+    // handler returns, the program aborts.  A throwing handler unwinds into
+    // the caller as an exception from the call.
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this, getContext().BuildViolationObject(
+                   Loc, "a [[noreturn]] function returned", std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce: the entry point does not return (the insertion point is
+    // cleared).
+    if (!IsEnforce) {
+      llvm::FunctionCallee Abort = CGM.CreateRuntimeFunction(
+          llvm::FunctionType::get(VoidTy, /*isVarArg=*/false), "abort");
+      llvm::CallInst *Call = EmitNounwindRuntimeCall(Abort);
+      Call->setDoesNotReturn();
+      Builder.CreateUnreachable();
+      Builder.ClearInsertionPoint();
+    }
+  }
+  // The epilogue that follows is unreachable.
+  EmitBlock(createBasicBlock("noreturn.returned"));
+}
+
 // P3100: applying a null pointer to member with .* or ->* is undefined
 // ({expr.mptr.oper.member.func.null}).  The ABI's null test is the
 // representation's: a data member offset of -1, a zero function pointer (with

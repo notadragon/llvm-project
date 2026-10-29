@@ -4719,6 +4719,11 @@ llvm::Value *CodeGenFunction::EmitPostContracts(llvm::Value *RV) {
       RV->getType() == ReturnValue.getElementType())
     RV = Builder.CreateLoad(ReturnValue, "contract.post.retval");
 
+  // P3100: a [[noreturn]] function's return is checked after its
+  // postconditions (see FinishFunction).
+  if (std::exchange(P3100NoreturnCheckAfterPosts, false))
+    EmitImplicitNoreturnCheck();
+
   return RV;
 }
 
