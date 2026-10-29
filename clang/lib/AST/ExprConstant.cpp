@@ -2043,6 +2043,25 @@ static bool EvaluateIgnoredValue(EvalInfo &Info, const Expr *E) {
   return true;
 }
 
+/// P3100: E is an indirection through the pointer Ptr (`*p`, `p->m`, `p[i]`).
+/// An evaluation that is not manifestly constant-evaluated -- one that only
+/// folds the expression, whose result may replace it at run time -- gives up
+/// on a null Ptr, so the run-time check of the indirection
+/// (ub:expr.unary.dereference.nullptr) is not folded away.  Records undefined
+/// behaviour, which no fold accepts, so the refusal holds even where the
+/// caller discards the failure (the object expression of a static member, a
+/// discarded `*p;`).  Manifestly constant evaluation is unchanged.
+/// \return \c true if the evaluation must give up.
+static bool refuseP3100NullIndirection(EvalInfo &Info, const Expr *E,
+                                       const LValue &Ptr) {
+  if (!Info.getLangOpts().ContractsP3100 || Info.InConstantContext ||
+      !Ptr.isNullPointer())
+    return false;
+  Info.FFDiag(E, diag::note_constexpr_dereferencing_null);
+  Info.noteUndefinedBehavior();
+  return true;
+}
+
 static bool IsOpaqueConstantCall(const LValue &LVal) {
   const auto *BaseExpr =
       llvm::dyn_cast_if_present<CallExpr>(LVal.Base.dyn_cast<const Expr *>());
@@ -10053,13 +10072,33 @@ public:
     EvaluateIgnoredValue(Info, E);
   }
 
-  /// Potentially visit a MemberExpr's base expression.
-  void VisitIgnoredBaseExpression(const Expr *E) {
+  /// Potentially visit a MemberExpr's base expression.  Returns false if the
+  /// evaluation must give up (refuseP3100NullIndirection: the base is `*p`,
+  /// or IsArrow and it is p, with p null).
+  bool VisitIgnoredBaseExpression(const Expr *E, bool IsArrow = false) {
     // While MSVC doesn't evaluate the base expression, it does diagnose the
     // presence of side-effecting behavior.
     if (Info.getLangOpts().MSVCCompat && !E->HasSideEffects(Info.Ctx))
-      return;
+      return true;
+    // P3100: the pointer that `p->m` or `(*p).m` is an indirection through.
+    const Expr *PtrE = nullptr;
+    if (Info.getLangOpts().ContractsP3100 && !Info.InConstantContext) {
+      if (IsArrow)
+        PtrE = E;
+      else if (const auto *UO = dyn_cast<UnaryOperator>(E->IgnoreParens());
+               UO && UO->getOpcode() == UO_Deref)
+        PtrE = UO->getSubExpr();
+    }
+    if (PtrE) {
+      LValue Ptr;
+      if (!EvaluatePointer(PtrE, Ptr, Info)) {
+        Info.noteSideEffect();
+        return true;
+      }
+      return !refuseP3100NullIndirection(Info, E, Ptr);
+    }
     VisitIgnoredValue(E);
+    return true;
   }
 };
 
@@ -10103,6 +10142,9 @@ public:
     bool EvalOK;
     if (E->isArrow()) {
       EvalOK = evaluatePointer(E->getBase(), Result);
+      // P3100: `p->m` is an indirection through p.
+      if (EvalOK && refuseP3100NullIndirection(this->Info, E, Result))
+        return false;
       BaseTy = E->getBase()->getType()->castAs<PointerType>()->getPointeeType();
     } else if (E->getBase()->isPRValue()) {
       assert(E->getBase()->getType()->isRecordType());
@@ -10614,14 +10656,16 @@ bool LValueExprEvaluator::VisitCXXUuidofExpr(const CXXUuidofExpr *E) {
 bool LValueExprEvaluator::VisitMemberExpr(const MemberExpr *E) {
   // Handle static data members.
   if (const VarDecl *VD = dyn_cast<VarDecl>(E->getMemberDecl())) {
-    VisitIgnoredBaseExpression(E->getBase());
+    if (!VisitIgnoredBaseExpression(E->getBase(), E->isArrow()))
+      return false;
     return VisitVarDecl(E, VD);
   }
 
   // Handle static member functions.
   if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(E->getMemberDecl())) {
     if (MD->isStatic()) {
-      VisitIgnoredBaseExpression(E->getBase());
+      if (!VisitIgnoredBaseExpression(E->getBase(), E->isArrow()))
+        return false;
       return Success(MD);
     }
   }
@@ -10701,12 +10745,18 @@ bool LValueExprEvaluator::VisitArraySubscriptExpr(const ArraySubscriptExpr *E) {
     }
   }
 
+  // P3100: `p[i]` is an indirection through p.
+  if (Success && refuseP3100NullIndirection(Info, E, Result))
+    return false;
   return Success &&
          HandleLValueArrayAdjustment(Info, E, Result, E->getType(), Index);
 }
 
 bool LValueExprEvaluator::VisitUnaryDeref(const UnaryOperator *E) {
   bool Success = evaluatePointer(E->getSubExpr(), Result);
+  // P3100: `*p` is an indirection through p, whatever its type.
+  if (Success && refuseP3100NullIndirection(Info, E, Result))
+    return false;
   // [C++26][expr.unary.op]
   // If the operand points to an object or function, the result
   // denotes that object or function; otherwise, the behavior is undefined.
@@ -16934,10 +16984,8 @@ public:
     return ExprEvaluatorBaseTy::VisitDeclRefExpr(E);
   }
   bool VisitMemberExpr(const MemberExpr *E) {
-    if (CheckReferencedDecl(E, E->getMemberDecl())) {
-      VisitIgnoredBaseExpression(E->getBase());
-      return true;
-    }
+    if (CheckReferencedDecl(E, E->getMemberDecl()))
+      return VisitIgnoredBaseExpression(E->getBase(), E->isArrow());
 
     return ExprEvaluatorBaseTy::VisitMemberExpr(E);
   }

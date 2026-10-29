@@ -99,6 +99,22 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
                   CE ? CE->getExprLoc() : SourceLocation());
 }
 
+RValue CodeGenFunction::EmitCXXMemberCallWithCallSiteContracts(
+    const CXXMethodDecl *MD, const CGCallee &Callee, ReturnValueSlot Slot,
+    llvm::Value *This, llvm::Value *ContractThis, const CallExpr *CE,
+    llvm::CallBase **CallOrInvoke) {
+  const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
+  CallArgList Args;
+  MemberCallInfo CallInfo = commonEmitCXXMemberOrOperatorCall(
+      *this, MD, This, /*ImplicitParam=*/nullptr, QualType(), CE, Args,
+      /*RtlArgs=*/nullptr);
+  auto &FnInfo = CGM.getTypes().arrangeCXXMethodCall(
+      Args, FPT, CallInfo.ReqArgs, CallInfo.PrefixSize,
+      getCurrentFunctionDecl());
+  return EmitCallWithCallSiteContracts(MD, FnInfo, Callee, Slot, Args,
+                                       ContractThis, CE, CallOrInvoke);
+}
+
 RValue CodeGenFunction::EmitCXXDestructorCall(
     GlobalDecl Dtor, const CGCallee &Callee, llvm::Value *This, QualType ThisTy,
     llvm::Value *ImplicitParam, QualType ImplicitParamTy, const CallExpr *CE,
@@ -171,7 +187,7 @@ CodeGenFunction::EmitCXXPseudoDestructorExpr(const CXXPseudoDestructorExpr *E) {
     //   operator (), and the result of such a call has type void. The only
     //   effect is the evaluation of the postfix-expression before the dot or
     //   arrow.
-    EmitIgnoredExpr(E->getBase());
+    EmitIgnoredMemberBase(E->getBase(), E->isArrow(), E->getExprLoc());
   }
 
   return RValue::get(nullptr);
@@ -326,6 +342,14 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
 
   if (TrivialForCodegen) {
     if (isa<CXXDestructorDecl>(MD)) {
+      // P3100: the call evaluates the object expression and accesses
+      // nothing, as a pseudo-destructor call does
+      // (EmitCXXPseudoDestructorExpr): p->~S() and (*p).~S() are
+      // indirections through p.
+      if (getLangOpts().ContractsP3100) {
+        EmitIgnoredMemberBase(Base, IsArrow, CE->getExprLoc());
+        return RValue::get(nullptr);
+      }
       (void)getLValueForThis(); // Emit LHS for side effects.
       return RValue::get(nullptr);
     }
@@ -333,7 +357,35 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
     if (TrivialAssignment) {
       // We don't like to generate the trivial copy/move assignment operator
       // when it isn't necessary; just produce the proper effect here.
+      // P3100: called through a pointer, p->operator=(x) stores through p, as
+      // *p = x does: p is checked as EmitCheckedLValue checks *p, before a
+      // conversion to a base class (see P3100BaseConversionUse).
+      bool P3100Store = IsArrow && getLangOpts().ContractsP3100;
+      P3100BaseConversionUse BaseUse;
+      if (P3100Store)
+        if (const CastExpr *BaseCE = getP3100BaseConversion(Base)) {
+          BaseUse = {BaseCE, TCK_Store, Base->getExprLoc()};
+          P3100BaseConversion = &BaseUse;
+        }
+      // P3100: (a + i)->operator=(x) is an indirection through a + i.
+      const BinaryOperator *SavedIndirected = std::exchange(
+          P3100IndirectedArith,
+          P3100Store ? dyn_cast<BinaryOperator>(
+                           (BaseUse.Cast ? BaseUse.Cast->getSubExpr() : Base)
+                               ->IgnoreParens())
+                     : nullptr);
       LValue This = getLValueForThis(/*EmitCheckedForStore=*/true);
+      P3100BaseConversion = nullptr;
+      P3100IndirectedArith = SavedIndirected;
+      if (P3100Store) {
+        SanitizerSet SkippedChecks;
+        if (IsWrappedCXXThis(Base))
+          SkippedChecks.set(SanitizerKind::Alignment, true);
+        if (BaseUse.Checked || isP3100NonNullPointerOperand(Base))
+          SkippedChecks.set(SanitizerKind::Null, true);
+        EmitTypeCheck(TCK_Store, Base->getExprLoc(), This, This.getType(),
+                      SkippedChecks);
+      }
 
       // It's important that we use the result of EmitCheckedLValue here rather
       // than emitting call arguments, in order to preserve TBAA information
@@ -379,12 +431,91 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
       SkippedChecks.set(SanitizerKind::Null, true);
   }
 
+  // P3100: the null guard for a member call belongs here, on the object
+  // expression, before a virtual call loads the vptr through it -- unless the
+  // object is a member subobject, whose object pointer the member access
+  // already checked (p->s.f()), or such a member array's first element
+  // (p->arr->f()).
+  if (getLangOpts().ContractsP3100) {
+    const Expr *Obj = Base;
+    if (IsArrow)
+      if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Base->IgnoreParens());
+          ICE && ICE->getCastKind() == CK_ArrayToPointerDecay)
+        Obj = ICE->getSubExpr();
+    if ((!IsArrow || Obj != Base) && isP3100CheckedMemberSubobject(Obj))
+      SkippedChecks.set(SanitizerKind::Null, true);
+  }
+  // P3100: a member function of a base class: the object is checked before
+  // its conversion to the base (see P3100BaseConversionUse), as it would be
+  // unconverted.
+  P3100BaseConversionUse BaseUse;
+  if (getLangOpts().ContractsP3100)
+    if (const CastExpr *BaseCE = getP3100BaseConversion(Base)) {
+      const Expr *Obj = BaseCE->getSubExpr();
+      if (IsArrow)
+        if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Obj->IgnoreParens());
+            ICE && ICE->getCastKind() == CK_ArrayToPointerDecay)
+          Obj = ICE->getSubExpr();
+      BaseUse = {BaseCE, TCK_MemberCall, CallLoc};
+      BaseUse.SkipNull =
+          (!IsArrow && isa<DeclRefExpr>(Obj->IgnoreParens())) ||
+          (!IsArrow && isP3100ReferenceGLValue(Obj)) ||
+          ((!IsArrow || Obj != BaseCE->getSubExpr()) &&
+           isP3100CheckedMemberSubobject(Obj));
+      P3100BaseConversion = &BaseUse;
+    }
+  // P3100: a virtual call reads the vtable pointer through the object
+  // pointer, so the object's null check is the .access leaf (DECISIONS.md
+  // E102 (a)): the member call's own, the base conversion's, or that of the
+  // member access whose subobject the object is (p->s.f(), p->arr[i].f(),
+  // p->arr->f()).  The leaf follows the source, not the optimizer: a call
+  // to a virtual function that is not qualified is .access even where it is
+  // devirtualized (a final class or overrider, a member subobject's known
+  // dynamic type; DECISIONS.md E110 (a)).
+  bool P3100VTableCall = getLangOpts().ContractsP3100 && CanUseVirtualCall;
+  if (P3100VTableCall) {
+    BaseUse.Accessed = true;
+    const Expr *Unconverted = BaseUse.Cast ? BaseUse.Cast->getSubExpr() : Base;
+    const Expr *Obj = Unconverted;
+    if (IsArrow)
+      if (const auto *ICE = dyn_cast<ImplicitCastExpr>(Obj->IgnoreParens());
+          ICE && ICE->getCastKind() == CK_ArrayToPointerDecay)
+        Obj = ICE->getSubExpr();
+    if ((!IsArrow || Obj != Unconverted) &&
+        isP3100CheckedMemberSubobject(Obj)) {
+      if (isa<ArraySubscriptExpr>(Obj->IgnoreParenNoopCasts(getContext())))
+        P3100SubscriptUse = P3100SubscriptUseKind::NullAccessed;
+      else
+        P3100MemberAccessed = true;
+    }
+  }
+  // P3100: (a + i)->f() is an indirection through a + i, before a conversion
+  // to the base whose member f is (see P3100IndirectedArith).
+  const BinaryOperator *SavedIndirected = std::exchange(
+      P3100IndirectedArith,
+      IsArrow && getLangOpts().ContractsP3100
+          ? dyn_cast<BinaryOperator>(
+                (BaseUse.Cast ? BaseUse.Cast->getSubExpr() : Base)
+                    ->IgnoreParens())
+          : nullptr);
   LValue This = getLValueForThis();
+  P3100BaseConversion = nullptr;
+  P3100IndirectedArith = SavedIndirected;
+  P3100MemberAccessed = false;
+  if (BaseUse.Checked)
+    SkippedChecks.set(SanitizerKind::Null, true);
+  // P3100: a member function called on a reference (a call returning one)
+  // indirects through nothing (see isP3100ReferenceGLValue).
+  P3100SkipNullGuard = getLangOpts().ContractsP3100 && !IsArrow &&
+                       isP3100ReferenceGLValue(Base);
+  P3100VTableRead = P3100VTableCall;
   if (sanitizePerformTypeCheck() || getLangOpts().ContractsP3100)
     EmitTypeCheck(CodeGenFunction::TCK_MemberCall, CallLoc,
                   This.emitRawPointer(*this),
                   C.getCanonicalTagType(CalleeDecl->getParent()),
                   /*Alignment=*/CharUnits::Zero(), SkippedChecks);
+  P3100VTableRead = false;
+  P3100SkipNullGuard = false;
 
   // C++ [class.virtual]p12:
   //   Explicit qualification with the scope operator (5.1) suppresses the
@@ -517,14 +648,109 @@ CodeGenFunction::EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
 
   // Emit the 'this' pointer.
   Address This = Address::invalid();
+  // P3100: (o.*pmf)(), pmf a member of a base of o's class: o is checked
+  // before its conversion to the base (see P3100BaseConversionUse).
+  P3100BaseConversionUse BaseUse;
+  if (getLangOpts().ContractsP3100 && BO->getOpcode() == BO_PtrMemD)
+    if (const CastExpr *BaseCE = getP3100BaseConversion(BaseExpr)) {
+      BaseUse = {BaseCE, TCK_MemberCall, E->getExprLoc()};
+      BaseUse.SkipNull = isP3100CheckedMemberSubobject(BaseCE->getSubExpr());
+      P3100BaseConversion = &BaseUse;
+    }
+  // P3100: (p->m.*pmf)(), m a member subobject of a polymorphic class (an
+  // element of a member array, p->arr[i]; through a pointer to data member,
+  // p->*pm; of *p, (*p).m): only pmf's value says whether the call reads
+  // the vtable pointer of m through p, so the member access's null check of
+  // p waits until pmf is evaluated (see P3100DeferNull), with its leaf
+  // passed down as for a virtual call on m (EmitP3100VTableReadLValue).  So
+  // does the null check of o by its conversion to the base whose member pmf
+  // is, ((*p).*pmf)(), (p[1].*pmf)().  A conversion to a virtual base reads
+  // through its operand first, .access.
+  P3100DeferredNullCheck DeferredNull;
+  if (getLangOpts().ContractsP3100 && BO->getOpcode() == BO_PtrMemD &&
+      (!RD->hasDefinition() || RD->isPolymorphic()) &&
+      !isP3100VirtualBaseConversion(BaseExpr)) {
+    const Expr *Obj = BaseUse.Cast ? BaseUse.Cast->getSubExpr() : BaseExpr;
+    if (isP3100CheckedMemberSubobject(Obj)) {
+      if (isa<ArraySubscriptExpr>(Obj->IgnoreParenNoopCasts(getContext())))
+        P3100SubscriptUse = P3100SubscriptUseKind::NullAccessed;
+      else
+        P3100MemberAccessed = true;
+      P3100DeferNull = &DeferredNull;
+    } else if (BaseUse.Cast && !BaseUse.SkipNull) {
+      BaseUse.DeferNull = &DeferredNull;
+    }
+  }
+  // P3100: ((a + i)->*pmf)() is an indirection through a + i, converted to
+  // the base whose member pmf is or not (see P3100IndirectedArith).
+  const Expr *ArithExpr = BaseExpr->IgnoreParens();
+  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(ArithExpr);
+      ICE && ICE->getCastKind() == CK_DerivedToBase)
+    ArithExpr = ICE->getSubExpr()->IgnoreParens();
+  const BinaryOperator *SavedIndirected = std::exchange(
+      P3100IndirectedArith,
+      BO->getOpcode() == BO_PtrMemI && getLangOpts().ContractsP3100
+          ? dyn_cast<BinaryOperator>(ArithExpr)
+          : nullptr);
   if (BO->getOpcode() == BO_PtrMemI)
     This = EmitPointerWithAlignment(BaseExpr, nullptr, nullptr, KnownNonNull);
   else
     This = EmitLValue(BaseExpr, KnownNonNull).getAddress();
 
   CanQualType ClassType = CGM.getContext().getCanonicalTagType(RD);
-  EmitTypeCheck(TCK_MemberCall, E->getExprLoc(), This.emitRawPointer(*this),
-                ClassType);
+  P3100BaseConversion = nullptr;
+  P3100IndirectedArith = SavedIndirected;
+  P3100DeferNull = nullptr;
+  P3100MemberAccessed = false;
+  P3100SubscriptUse = P3100SubscriptUseKind::None;
+  // P3100: a member subobject's object pointer was checked by its member
+  // access (see isP3100CheckedMemberSubobject), and the operand of a
+  // conversion to a base class by the conversion.
+  SanitizerSet SkippedChecks;
+  if (getLangOpts().ContractsP3100 && BO->getOpcode() == BO_PtrMemD &&
+      (isP3100CheckedMemberSubobject(BaseExpr) || BaseUse.Checked))
+    SkippedChecks.set(SanitizerKind::Null, true);
+  // P3100: (p->*pmf)() with a virtual base's member loads the base's offset
+  // through p, an access of *p.
+  bool P3100VirtualBase = getLangOpts().ContractsP3100 &&
+                          BO->getOpcode() == BO_PtrMemI &&
+                          isP3100VirtualBaseConversion(BaseExpr);
+  // P3100: a call through a pointer to a virtual member function reads the
+  // vtable pointer through the object pointer, .access (DECISIONS.md E102
+  // (a)); through a non-virtual one it reads nothing, .indirection.  Which
+  // it is, for a polymorphic class, only the pointer to member's value says,
+  // so the object pointer's null check is made once that is evaluated, under
+  // the leaf its virtual bit selects; so is a member access's deferred one
+  // (DeferredNull).  The other sanitizer checks stay here; the
+  // -fsanitize=null one moves with the P3100 check, made in an arm only if
+  // that is not (its leaf resolves to assume or ignore), so the null
+  // dereference is reported once (DECISIONS.md E111 (a)).
+  llvm::Value *ThisPtr = This.emitRawPointer(*this);
+  bool P3100LeafByValue =
+      getLangOpts().ContractsP3100 && !P3100VirtualBase &&
+      !SkippedChecks.has(SanitizerKind::Null) &&
+      (!RD->hasDefinition() || RD->isPolymorphic()) &&
+      ThisPtr != CXXABIThisValue &&
+      !isa<llvm::AllocaInst>(ThisPtr->stripPointerCasts());
+  P3100DeferredNullCheck MovedSanitizerNull;
+  // P3100: the vptr check of a member subobject whose member access's null
+  // check is deferred (DeferredNull) loads through p, so it is made after
+  // that check, once the pointer to member function is evaluated (it
+  // faulted before any report).
+  bool P3100DeferVptr = DeferredNull.Ptr && SanOpts.has(SanitizerKind::Vptr) &&
+                        !SkippedChecks.has(SanitizerKind::Vptr) &&
+                        SkippedChecks.has(SanitizerKind::Null);
+  if (P3100DeferVptr)
+    SkippedChecks.set(SanitizerKind::Vptr, true);
+  P3100MemberAccessed = P3100VirtualBase;
+  P3100SkipNullGuard = P3100LeafByValue;
+  P3100MoveSanitizerNull = P3100LeafByValue ? &MovedSanitizerNull : nullptr;
+  EmitTypeCheck(P3100VirtualBase ? TCK_MemberAccess : TCK_MemberCall,
+                E->getExprLoc(), ThisPtr, ClassType,
+                /*Alignment=*/CharUnits::Zero(), SkippedChecks);
+  P3100MoveSanitizerNull = nullptr;
+  P3100SkipNullGuard = false;
+  P3100MemberAccessed = false;
 
   // Get the member function pointer.
   llvm::Value *MemFnPtr = EmitScalarExpr(MemFnExpr);

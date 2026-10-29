@@ -274,8 +274,102 @@ void CodeGenFunction::EmitIgnoredExpr(const Expr *E) {
       return EmitIgnoredConditionalOperator(CondOp);
   }
 
-  // Just emit it as an l-value and drop the result.
-  EmitLValue(E);
+  // Just emit it as an l-value and drop the result.  P3100: a discarded `*p`
+  // is still an indirection through p.
+  EmitUnaccessedLValue(E);
+}
+
+LValue CodeGenFunction::EmitUnaccessedLValue(const Expr *E,
+                                             KnownNonNull_t IsKnownNonNull) {
+  if (!getLangOpts().ContractsP3100)
+    return EmitLValue(E, IsKnownNonNull);
+  const Expr *Inner = E->IgnoreParens();
+  // p[i]: EmitArraySubscriptExpr checks p, as for an accessed p[i], under
+  // .indirection (see P3100SubscriptIndirection).
+  if (isa<ArraySubscriptExpr>(Inner)) {
+    P3100SubscriptIndirection = true;
+    return EmitLValue(E, IsKnownNonNull);
+  }
+  // A conversion of `*p` to a base class checks p before it converts: the
+  // base may be at a nonzero offset (see P3100BaseConversionUse).
+  P3100BaseConversionUse BaseUse;
+  SourceLocation Loc;
+  if (const CastExpr *CE = getP3100BaseConversion(Inner);
+      CE && CE->isGLValue() && isP3100IndirectionGLValue(CE->getSubExpr(), Loc)) {
+    BaseUse = {CE, TCK_ReferenceBinding, Loc};
+    BaseUse.GuardOnly = true;
+    P3100BaseConversion = &BaseUse;
+  }
+  LValue LV = EmitLValue(E, IsKnownNonNull);
+  P3100BaseConversion = nullptr;
+  if (!BaseUse.Cast && LV.isSimple() && isP3100IndirectionGLValue(E, Loc))
+    EmitImplicitIndirectionGuard(LV.emitRawPointer(*this), Loc);
+  return LV;
+}
+
+static const Expr *stripP3100NoOps(const Expr *E);
+
+LValue CodeGenFunction::EmitP3100VTableReadLValue(const Expr *E) {
+  // The innermost operand of conversions to base classes: p->m, p[i] and
+  // p->*pm check p as accessed; so does the conversion of *p, before it
+  // converts.
+  const Expr *Op = E;
+  P3100BaseConversionUse BaseUse;
+  SourceLocation Loc;
+  if (const CastExpr *CE = getP3100BaseConversion(E); CE && CE->isGLValue()) {
+    Op = CE->getSubExpr();
+    if (isP3100IndirectionGLValue(Op, Loc)) {
+      BaseUse = {CE, TCK_MemberAccess, Loc, /*Accessed=*/true};
+      P3100BaseConversion = &BaseUse;
+    }
+  }
+  Op = stripP3100NoOps(Op);
+  const auto *OpBO = dyn_cast<BinaryOperator>(Op);
+  if ((isa<MemberExpr>(Op) && !isP3100ReferenceGLValue(Op)) ||
+      (OpBO && OpBO->isPtrMemOp()))
+    P3100MemberAccessed = true;
+  else if (isa<ArraySubscriptExpr>(Op))
+    P3100SubscriptUse = P3100SubscriptUseKind::NullAccessed;
+  LValue LV = EmitLValue(E);
+  P3100MemberAccessed = false;
+  P3100BaseConversion = nullptr;
+  if (!BaseUse.Cast && LV.isSimple() && isP3100IndirectionGLValue(E, Loc)) {
+    llvm::Value *Ptr = LV.emitRawPointer(*this);
+    // The address of a local or a global is not null.
+    if (!isa<llvm::AllocaInst, llvm::GlobalValue>(Ptr->stripPointerCasts()))
+      EmitImplicitNullDerefGuard(Ptr, Loc, /*Access=*/true);
+  }
+  return LV;
+}
+
+void CodeGenFunction::EmitIgnoredMemberBase(const Expr *Base, bool IsArrow,
+                                            SourceLocation Loc) {
+  // P3100: `p->m` is `(*p).m`, and the object expression is evaluated even
+  // when the member is static ([expr.ref]); `(*p).m` is checked as a
+  // discarded `*p`.  A conversion of p to a base class (the object of a
+  // trivial destructor called as p->B::~B()) checks p before it converts
+  // (see P3100BaseConversionUse).
+  if (IsArrow && getLangOpts().ContractsP3100 &&
+      Base->getType()->isPointerType() && !isP3100NonNullPointerOperand(Base)) {
+    P3100BaseConversionUse BaseUse;
+    if (const CastExpr *CE = getP3100BaseConversion(Base)) {
+      BaseUse = {CE, TCK_ReferenceBinding, Loc};
+      BaseUse.GuardOnly = true;
+      P3100BaseConversion = &BaseUse;
+    }
+    // (a + i)->m is an indirection through a + i (see P3100IndirectedArith).
+    const BinaryOperator *SavedIndirected = std::exchange(
+        P3100IndirectedArith,
+        dyn_cast<BinaryOperator>(
+            (BaseUse.Cast ? BaseUse.Cast->getSubExpr() : Base)->IgnoreParens()));
+    llvm::Value *Ptr = EmitScalarExpr(Base);
+    P3100IndirectedArith = SavedIndirected;
+    P3100BaseConversion = nullptr;
+    if (!BaseUse.Checked)
+      EmitImplicitIndirectionGuard(Ptr, Loc);
+    return;
+  }
+  EmitIgnoredExpr(Base);
 }
 
 /// EmitAnyExpr - Emit code to compute the specified expression which
@@ -703,19 +797,55 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
 
 RValue
 CodeGenFunction::EmitReferenceBindingToExpr(const Expr *E) {
+  // P3100: binding to a base of an object checks the object before its
+  // conversion to the base (see P3100BaseConversionUse); a member
+  // subobject's own object pointer was checked by its member access, and a
+  // reference (isP3100ReferenceGLValue) indirects through nothing.
+  P3100BaseConversionUse BaseUse;
+  if (getLangOpts().ContractsP3100)
+    if (const CastExpr *CE = getP3100BaseConversion(E); CE && CE->isGLValue()) {
+      BaseUse = {CE, TCK_ReferenceBinding, E->getExprLoc()};
+      BaseUse.SkipNull = isP3100CheckedMemberSubobject(CE->getSubExpr()) ||
+                         isP3100ReferenceGLValue(CE->getSubExpr());
+      P3100BaseConversion = &BaseUse;
+    }
   // Emit the expression as an lvalue.
   LValue LV = EmitLValue(E);
+  P3100BaseConversion = nullptr;
   assert(LV.isSimple());
   llvm::Value *Value = LV.getPointer(*this);
 
-  if (sanitizePerformTypeCheck() && !E->getType()->isFunctionType()) {
+  // P3100 routes this check too, so reach EmitTypeCheck when contracts ask
+  // for it even if no sanitizer does -- otherwise binding a reference to *p
+  // is the one access shape whose configured null/alignment reaction never
+  // fires.
+  if ((sanitizePerformTypeCheck() || getLangOpts().ContractsP3100) &&
+      !E->getType()->isFunctionType()) {
     // C++11 [dcl.ref]p5 (as amended by core issue 453):
     //   If a glvalue to which a reference is directly bound designates neither
     //   an existing object or function of an appropriate type nor a region of
     //   storage of suitable size and alignment to contain an object of the
     //   reference's type, the behavior is undefined.
     QualType Ty = E->getType();
-    EmitTypeCheck(TCK_ReferenceBinding, E->getExprLoc(), Value, Ty);
+    // P3100: binding to a member subobject, whose object pointer the member
+    // access already checked, needs no second null check.
+    SanitizerSet SkippedChecks;
+    if (getLangOpts().ContractsP3100 && isP3100CheckedMemberSubobject(E))
+      SkippedChecks.set(SanitizerKind::Null, true);
+    if (BaseUse.Checked)
+      SkippedChecks.set(SanitizerKind::Null, true);
+    // P3100: a reference bound to a reference (`return r;`, `id(r)`,
+    // `const int &r2 = r;`) indirects through nothing: a null r was
+    // reported where it was bound.
+    P3100SkipNullGuard =
+        getLangOpts().ContractsP3100 && isP3100ReferenceGLValue(E);
+    EmitTypeCheck(TCK_ReferenceBinding, E->getExprLoc(), Value, Ty,
+                  /*Alignment=*/CharUnits::Zero(), SkippedChecks);
+    P3100SkipNullGuard = false;
+  } else if (E->getType()->isFunctionType()) {
+    // P3100: binding a reference to `*fp` checks fp for null; the sanitizer
+    // checks above mean nothing for a function.
+    EmitImplicitFunctionIndirectionGuard(E, Value);
   }
 
   return RValue::get(Value);
@@ -759,13 +889,65 @@ bool CodeGenFunction::sanitizePerformTypeCheck() const {
          SanOpts.has(SanitizerKind::Vptr);
 }
 
+/// P3100: whether Ty is an empty class, whose trivial copy reads or writes no
+/// object.
+static bool isP3100EmptyClass(QualType Ty) {
+  const auto *RD = Ty->getAsCXXRecordDecl();
+  return RD && RD->hasDefinition() && RD->isEmpty();
+}
+
+/// True if a type check of kind TCK is an access that carries the P3100
+/// implicit contract assertions for null dereference and misalignment.
+///
+/// A load or a store is the obvious case.  Binding a reference to *p and
+/// calling a non-static member function through a null this are the same
+/// undefined behaviour reached by different syntax -- [dcl.ref]/5 and
+/// [class.mfct.non-static]/2 respectively -- and UBSan groups all three
+/// under -fsanitize=null.  Taking the address of a dereference is NOT one
+/// of them: &*p accesses nothing and must stay uninstrumented.
+static bool isP3100AccessTypeCheck(CodeGenFunction::TypeCheckKind TCK) {
+  switch (TCK) {
+  case CodeGenFunction::TCK_Load:
+  case CodeGenFunction::TCK_Store:
+  case CodeGenFunction::TCK_ReferenceBinding:
+  case CodeGenFunction::TCK_MemberCall:
+  case CodeGenFunction::TCK_ConstructorCall:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// True if a type check of kind TCK carries the P3100 implicit contract
+/// assertion for null dereference: an access, or a class member access
+/// through the pointer ([expr.ref] makes p->m (*p).m), which the access that
+/// follows it then need not repeat.  The prologue check of a member function's
+/// own this is not one: the call site checks the object expression, where the
+/// optimizer cannot delete the guard on account of a nonnull this.
+static bool isP3100NullCheck(CodeGenFunction::TypeCheckKind TCK,
+                             bool IsOwnThis) {
+  if (TCK == CodeGenFunction::TCK_MemberAccess)
+    return true;
+  if (TCK == CodeGenFunction::TCK_MemberCall && IsOwnThis)
+    return false;
+  return isP3100AccessTypeCheck(TCK);
+}
+
 void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                                     llvm::Value *Ptr, QualType Ty,
                                     CharUnits Alignment,
                                     SanitizerSet SkippedChecks,
                                     llvm::Value *ArraySize) {
-  if (!sanitizePerformTypeCheck())
+  // P3100 implicit null-dereference contract assertions reuse this null-check
+  // choke point even when no sanitizer requests a type check.
+  if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
     return;
+
+  // P3100: the alignment a cast requires of Ptr (see P3100CastAlign).  A
+  // member access leaves it for the member's own access (EmitMemberExpr).
+  CharUnits P3100CastRequired = CharUnits::Zero();
+  if (getLangOpts().ContractsP3100 && TCK != TCK_MemberAccess)
+    P3100CastRequired = takeP3100CastAlign(Ptr, Ty);
 
   // Don't check pointers outside the default address space. The null check
   // isn't correct, the object-size check isn't supported by LLVM, and we can't
@@ -803,7 +985,54 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
 
     llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
     bool AllowNullPointers = isNullPointerAllowed(TCK);
-    if ((SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
+
+    // P3100: an access through a possibly-null pointer carries an implicit
+    // ub:expr.unary.dereference.nullptr contract assertion.
+    // Emit its configured reaction here; it takes precedence over the sanitizer
+    // null check on the null edge.  (assume/ignore emit nothing and fall
+    // through.)
+    // A load or store is the group's .access leaf, and so is a member access
+    // that a load or store follows; a reference binding, a member call and a
+    // member access whose address alone is used are its .indirection leaf.
+    // The trivial copy of an empty class, loaded or stored, accesses no
+    // object (nor does that of an empty base, P3100EmptyCopy): .indirection.
+    // An access through a glvalue that is already a reference gets no guard
+    // (P3100SkipNullGuard).  A virtual call reads the vtable pointer through
+    // the object pointer: .access, devirtualized or not (P3100VTableRead).
+    bool P3100NullHandled = false;
+    if (getLangOpts().ContractsP3100 && !P3100PlacementNewChecked &&
+        !P3100SkipNullGuard && !IsGuaranteedNonNull &&
+        isP3100NullCheck(TCK, Ptr == CXXABIThisValue)) {
+      bool EmptyClass = isP3100EmptyClass(Ty) || P3100EmptyCopy;
+      bool Access = ((TCK == TCK_Load || TCK == TCK_Store) && !EmptyClass) ||
+                    (TCK == TCK_MemberAccess && P3100MemberAccessed) ||
+                    (TCK == TCK_MemberCall && P3100VTableRead);
+      P3100DeferredNullCheck *Deferred = P3100DeferNull;
+      P3100NullHandled = EmitImplicitNullDerefGuard(Ptr, Loc, Access);
+      // A deferred check (P3100DeferNull) takes the sanitizer's with it, as
+      // the call through a pointer to member function's own does
+      // (P3100MoveSanitizerNull): made only where the P3100 check is not
+      // (DECISIONS.md E111 (a)).
+      if (Deferred && !P3100DeferNull && Deferred->Ptr &&
+          SanOpts.has(SanitizerKind::Null) && !AllowNullPointers) {
+        Deferred->SanPtr = Ptr;
+        Deferred->SanTy = Ty;
+        Deferred->SanTCK = TCK;
+        Deferred->SanLoc = Loc;
+      }
+    }
+    // The call through a pointer to member function's own sanitizer check,
+    // likewise moved (see P3100MoveSanitizerNull).
+    if (!P3100NullHandled && P3100MoveSanitizerNull &&
+        SanOpts.has(SanitizerKind::Null) && !AllowNullPointers &&
+        !IsGuaranteedNonNull) {
+      *P3100MoveSanitizerNull = {nullptr, SourceLocation(), Ptr, Ty,
+                                 static_cast<unsigned>(TCK), Loc};
+      P3100NullHandled = true;
+    }
+
+    if (!P3100NullHandled &&
+        (SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
         !IsGuaranteedNonNull) {
       // The glvalue must not be an empty glvalue.
       IsNonNull = Builder.CreateIsNotNull(Ptr);
@@ -859,26 +1088,56 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
     llvm::MaybeAlign AlignVal;
     llvm::Value *PtrAsInt = nullptr;
 
-    if (SanOpts.has(SanitizerKind::Alignment) &&
-        !SkippedChecks.has(SanitizerKind::Alignment)) {
+    // The required alignment feeds both the P3100
+    // ub:basic.align.object.alignment contract and the -fsanitize=alignment
+    // check; compute it and the "needs checking" predicate once when either
+    // consumer is active.
+    bool AlignNeeded = false;
+    if (!SkippedChecks.has(SanitizerKind::Alignment) &&
+        (getLangOpts().ContractsP3100 ||
+         SanOpts.has(SanitizerKind::Alignment))) {
       AlignVal = Alignment.getAsMaybeAlign();
       if (!Ty->isIncompleteType() && !AlignVal)
         AlignVal = CGM.getNaturalTypeAlignment(Ty, nullptr, nullptr,
                                                /*ForPointeeType=*/true)
                        .getAsMaybeAlign();
+      AlignNeeded = AlignVal && *AlignVal > llvm::Align(1) &&
+                    (!PtrToAlloca || PtrToAlloca->getAlign() < *AlignVal);
+    }
 
+    // P3100: an access through a possibly-misaligned pointer carries an
+    // implicit contract assertion; emit its reaction here
+    // (independent of the null check above), taking precedence over the
+    // sanitizer alignment check, which is then skipped.
+    // An access through a pointer a cast produced from a character array
+    // requires the cast-to type's alignment, more than the address's derived
+    // one (CLANG-810); the sanitizer's check below keeps the derived one.
+    llvm::MaybeAlign P3100AlignVal = AlignVal;
+    bool P3100AlignNeeded = AlignNeeded;
+    if (!SkippedChecks.has(SanitizerKind::Alignment) &&
+        !P3100CastRequired.isZero() &&
+        (!AlignVal || P3100CastRequired.getAsAlign() > *AlignVal)) {
+      P3100AlignVal = P3100CastRequired.getAsAlign();
+      P3100AlignNeeded =
+          *P3100AlignVal > llvm::Align(1) &&
+          (!PtrToAlloca || PtrToAlloca->getAlign() < *P3100AlignVal);
+    }
+    bool P3100AlignHandled = false;
+    if (getLangOpts().ContractsP3100 && !P3100PlacementNewChecked &&
+        P3100AlignNeeded && isP3100AccessTypeCheck(TCK))
+      P3100AlignHandled =
+          EmitImplicitMisalignedGuard(Ptr, *P3100AlignVal, Loc);
+
+    if (SanOpts.has(SanitizerKind::Alignment) && !P3100AlignHandled &&
+        AlignNeeded) {
       // The glvalue must be suitably aligned.
-      if (AlignVal && *AlignVal > llvm::Align(1) &&
-          (!PtrToAlloca || PtrToAlloca->getAlign() < *AlignVal)) {
-        PtrAsInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
-        llvm::Value *Align = Builder.CreateAnd(
-            PtrAsInt, llvm::ConstantInt::get(IntPtrTy, AlignVal->value() - 1));
-        llvm::Value *Aligned =
-            Builder.CreateICmpEQ(Align, llvm::ConstantInt::get(IntPtrTy, 0));
-        if (Aligned != True)
-          Checks.push_back(
-              std::make_pair(Aligned, SanitizerKind::SO_Alignment));
-      }
+      PtrAsInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+      llvm::Value *Align = Builder.CreateAnd(
+          PtrAsInt, llvm::ConstantInt::get(IntPtrTy, AlignVal->value() - 1));
+      llvm::Value *Aligned =
+          Builder.CreateICmpEQ(Align, llvm::ConstantInt::get(IntPtrTy, 0));
+      if (Aligned != True)
+        Checks.push_back(std::make_pair(Aligned, SanitizerKind::SO_Alignment));
     }
 
     if (Checks.size() > 0) {
@@ -902,6 +1161,30 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
       !SkippedChecks.has(SanitizerKind::Vptr) && isVptrCheckRequired(TCK, Ty)) {
     SanitizerDebugLocation SanScope(this, {SanitizerKind::SO_Vptr},
                                     SanitizerHandler::DynamicTypeCacheMiss);
+
+    // P3100: a null check skipped because the P3100 check of the pointer, or
+    // of the pointer it was reached from, was made elsewhere (a conversion to
+    // a base, a member subobject's access) is no guarantee: that check may
+    // continue (observe) or be ignored.  The vptr check keeps its null guard,
+    // as without -fcontracts-p3100, but for `this` and an alloca.
+    if (getLangOpts().ContractsP3100 && IsGuaranteedNonNull && !IsNonNull &&
+        !PtrToAlloca && Ptr != CXXABIThisValue) {
+      IsNonNull = Builder.CreateIsNotNull(Ptr);
+      IsGuaranteedNonNull =
+          IsNonNull == llvm::ConstantInt::getTrue(getLLVMContext());
+    }
+    // P3100: the object a downcast to a reference forms, static_cast<D &>(*p)
+    // with the base at a nonzero offset in D, is not null where p is: its
+    // vptr check, the downcast's or a use's, skips a null p, which the
+    // use's P3100 null check reports, where a leaf of the group is checked
+    // (DECISIONS.md E116 (a)).  Reading through the object's address faulted
+    // first, before any report (CLANG-806).
+    if (getLangOpts().ContractsP3100)
+      if (llvm::Value *Operand = getP3100DowncastOperand(Ptr, Loc)) {
+        IsNonNull = Builder.CreateIsNotNull(Operand);
+        IsGuaranteedNonNull =
+            IsNonNull == llvm::ConstantInt::getTrue(getLLVMContext());
+      }
 
     // Ensure that the pointer is non-null before loading it. If there is no
     // compile-time guarantee, reuse the run-time null check or emit a new one.
@@ -1061,6 +1344,31 @@ static llvm::Value *getArrayIndexingBound(CodeGenFunction &CGF,
   }
 
   return nullptr;
+}
+
+/// P3100: the pointer arithmetic a + i or a - i that E, the operand of an
+/// indirection (*E, E->m) or the pointer of a subscript (E[i]), is, for
+/// P3100IndirectedArith or P3100SubscriptBaseArith; null otherwise.  The
+/// object pointer of `->*` may be converted to the base whose member the
+/// pointer to member is first, ((a + i)->*pm).
+static const BinaryOperator *
+getP3100IndirectedArith(const CodeGenFunction &CGF, const Expr *E) {
+  if (!CGF.getLangOpts().ContractsP3100)
+    return nullptr;
+  E = E->IgnoreParens();
+  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(E);
+      ICE && ICE->getCastKind() == CK_DerivedToBase)
+    E = ICE->getSubExpr();
+  const auto *BO = dyn_cast<BinaryOperator>(E->IgnoreParens());
+  if (!BO || !BO->isAdditiveOp() || !BO->getType()->isPointerType())
+    return nullptr;
+  return BO;
+}
+
+llvm::ConstantInt *CodeGenFunction::getP3100KnownArrayBound(const Expr *E) {
+  QualType IndexedType;
+  return dyn_cast_or_null<llvm::ConstantInt>(getArrayIndexingBound(
+      *this, E, IndexedType, getLangOpts().getStrictFlexArraysLevel()));
 }
 
 /// Returns true if \p Field is reachable from \p RD either as a direct field or
@@ -1563,6 +1871,12 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
             if (BaseInfo)
               BaseInfo->mergeForCast(TargetTypeBaseInfo);
             Addr.setAlignment(Align);
+          } else if (CGF.getLangOpts().ContractsP3100 &&
+                     CE->getCastKind() == CK_BitCast &&
+                     Align > Addr.getAlignment() && !Addr.hasOffset()) {
+            // P3100: the cast-to type's alignment is what an access through
+            // the result requires (see P3100CastAlign).
+            CGF.setP3100CastAlign(Addr.getBasePointer(), Align);
           }
         }
 
@@ -1599,14 +1913,29 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
       // type.
       if (TBAAInfo)
         *TBAAInfo = CGF.CGM.getTBAAAccessInfo(E->getType());
+      // P3100: a use of a base's member checks the operand first.
+      CodeGenFunction::P3100BaseConversionUse *P3100Use =
+          CGF.takeP3100BaseConversion(CE);
       Address Addr = CGF.EmitPointerWithAlignment(
           CE->getSubExpr(), BaseInfo, nullptr,
           (KnownNonNull_t)(IsKnownNonNull ||
                            CE->getCastKind() == CK_UncheckedDerivedToBase));
+      if (P3100Use)
+        CGF.EmitP3100BaseConversionCheck(
+            *P3100Use, Addr.emitRawPointer(CGF),
+            CE->getSubExpr()->getType()->getPointeeType());
       auto Derived = CE->getSubExpr()->getType()->getPointeeCXXRecordDecl();
-      return CGF.GetAddressOfBaseClass(
+      Address Base = CGF.GetAddressOfBaseClass(
           Addr, Derived, CE->path_begin(), CE->path_end(),
           CGF.ShouldNullCheckClassCastValue(CE), CE->getExprLoc());
+      // P3100: a + i converted to a base, the operand of an indirection
+      // ((a + i)->*pm): the null check of the converted pointer is that of
+      // a + i, which checks a (see P3100ElementBase).
+      if (CGF.getLangOpts().ContractsP3100 && CGF.P3100IndirectedArith &&
+          CE->getSubExpr()->IgnoreParens() == CGF.P3100IndirectedArith)
+        CGF.mapP3100ElementBase(Base.emitRawPointer(CGF),
+                                Addr.emitRawPointer(CGF));
+      return Base;
     }
 
     // TODO: Is there any reason to treat base-to-derived conversions
@@ -1619,7 +1948,7 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
   // Unary &.
   if (const UnaryOperator *UO = dyn_cast<UnaryOperator>(E)) {
     if (UO->getOpcode() == UO_AddrOf) {
-      LValue LV = CGF.EmitLValue(UO->getSubExpr(), IsKnownNonNull);
+      LValue LV = CGF.EmitUnaccessedLValue(UO->getSubExpr(), IsKnownNonNull);
       if (BaseInfo) *BaseInfo = LV.getBaseInfo();
       if (TBAAInfo) *TBAAInfo = LV.getTBAAInfo();
       return LV.getAddress();
@@ -1634,7 +1963,7 @@ static Address EmitPointerWithAlignment(const Expr *E, LValueBaseInfo *BaseInfo,
     case Builtin::BIaddressof:
     case Builtin::BI__addressof:
     case Builtin::BI__builtin_addressof: {
-      LValue LV = CGF.EmitLValue(Call->getArg(0), IsKnownNonNull);
+      LValue LV = CGF.EmitUnaccessedLValue(Call->getArg(0), IsKnownNonNull);
       if (BaseInfo) *BaseInfo = LV.getBaseInfo();
       if (TBAAInfo) *TBAAInfo = LV.getTBAAInfo();
       return LV.getAddress();
@@ -1739,12 +2068,159 @@ bool CodeGenFunction::IsWrappedCXXThis(const Expr *Obj) {
   return true;
 }
 
+/// P3100: convert LV, the operand of the glvalue conversion E to a base
+/// class, as EmitCastLValue does.
+static LValue emitP3100DerivedToBaseLValue(CodeGenFunction &CGF,
+                                           const CastExpr *E, LValue LV) {
+  auto *Derived = E->getSubExpr()->getType()->castAsCXXRecordDecl();
+  Address Base = CGF.GetAddressOfBaseClass(
+      LV.getAddress(), Derived, E->path_begin(), E->path_end(),
+      /*NullCheckValue=*/false, E->getExprLoc());
+  return CGF.MakeAddrLValue(Base, E->getType(), LV.getBaseInfo(),
+                            CGF.CGM.getTBAAInfoForSubobject(LV, E->getType()));
+}
+
+/// P3100: the argument of E if E is a call to std::move, std::forward,
+/// std::forward_like, std::move_if_noexcept or std::as_const that Clang
+/// emits as a builtin (the result is the argument's glvalue), else null.
+static const Expr *getP3100BuiltinMoveArg(const Expr *E) {
+  const auto *CE = dyn_cast<CallExpr>(E);
+  if (!CE || CE->getNumArgs() != 1)
+    return nullptr;
+  switch (CE->getBuiltinCallee()) {
+  case Builtin::BImove:
+  case Builtin::BImove_if_noexcept:
+  case Builtin::BIforward:
+  case Builtin::BIforward_like:
+  case Builtin::BIas_const:
+    return CE->getArg(0);
+  default:
+    return nullptr;
+  }
+}
+
 LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
   LValue LV;
-  if (SanOpts.has(SanitizerKind::ArrayBounds) && isa<ArraySubscriptExpr>(E))
+  bool P3100BaseConverted = false;
+  bool NullCheckOnly = std::exchange(P3100NullCheckOnly, false);
+  // P3100: a member access's deferred null check (see P3100DeferNull),
+  // passed on with MemberAccessed below, or made by the type check here.
+  P3100DeferredNullCheck *DeferNull = std::exchange(P3100DeferNull, nullptr);
+  if (TCK != TCK_MemberAccess)
+    DeferNull = nullptr;
+  // P3100: a load or store that copies an empty class -- E's own, or an
+  // empty non-virtual base of E's class that E is converted to -- reads or
+  // writes no object (DECISIONS.md E86 (a)), so its null check is the
+  // .indirection leaf.
+  bool EmptyCopy = std::exchange(P3100EmptyCopy, false);
+  if (getLangOpts().ContractsP3100 && (TCK == TCK_Load || TCK == TCK_Store) &&
+      isP3100EmptyClass(E->getType()))
+    EmptyCopy = true;
+  // P3100: std::move(x) and the like, emitted as builtins, are x: x is
+  // checked as the access's glvalue, so that `S s2 = std::move(p->s)`
+  // checks p once, for the copy's read.
+  if (getLangOpts().ContractsP3100)
+    if (const Expr *Arg = getP3100BuiltinMoveArg(stripP3100NoOps(E))) {
+      P3100EmptyCopy = EmptyCopy;
+      P3100NullCheckOnly = NullCheckOnly;
+      LValue ArgLV = EmitCheckedLValue(Arg, TCK);
+      LV = MakeNaturalAlignPointeeAddrLValue(ArgLV.getPointer(*this),
+                                             E->getType());
+      if (P3100OverlapSrc && stripP3100OverlapGlvalue(E) == P3100OverlapSrc)
+        P3100OverlapSrcAddr = LV.getAddress();
+      return LV;
+    }
+  // P3100: whether the member access E (or the one whose object expression E
+  // is) is followed by a load or store, for the leaf of its null check.  A
+  // load or store of E makes it so, unless it copies an empty class; the
+  // object expression of a member access inherits the answer from that
+  // access.
+  bool MemberAccessed = (TCK == TCK_Load || TCK == TCK_Store) && !EmptyCopy;
+  if (TCK == TCK_MemberAccess)
+    MemberAccessed = std::exchange(P3100MemberAccessed, false);
+  // Under P3100 a qualification conversion of the member access (the
+  // `const S` of a copy's source) does not hide it.
+  const Expr *Inner =
+      getLangOpts().ContractsP3100 ? stripP3100NoOps(E) : E->IgnoreParens();
+  bool IsMemberAccess = isa<MemberExpr>(Inner);
+  if (const auto *BO = dyn_cast<BinaryOperator>(Inner);
+      BO && BO->isPtrMemOp())
+    IsMemberAccess = true;
+  // Mark the subscript as accessed so the P3100 implicit bounds guard (like
+  // the array-bounds sanitizer) treats index == bound as a violation for a
+  // dereference; a one-past address &a[N] is formed elsewhere and stays legal.
+  if ((SanOpts.has(SanitizerKind::ArrayBounds) ||
+       getLangOpts().ContractsP3100) &&
+      isa<ArraySubscriptExpr>(E)) {
+    // P3100: &q[i].m accesses no element, so q's null check is .indirection;
+    // nor does a copy of an empty class (`q[i] = e`), whose bounds check is
+    // an unaccessed subscript's too (DECISIONS.md E95 (a); see
+    // P3100SubscriptUse).
+    P3100SubscriptIndirection =
+        (TCK == TCK_MemberAccess && !MemberAccessed) || EmptyCopy;
+    if (EmptyCopy)
+      P3100SubscriptUse = P3100SubscriptUseKind::NullAccessed;
+    P3100DeferNull = std::exchange(DeferNull, nullptr);
     LV = EmitArraySubscriptExpr(cast<ArraySubscriptExpr>(E), /*Accessed*/true);
-  else
+    P3100DeferNull = nullptr;
+  } else if (getLangOpts().ContractsP3100 &&
+             (TCK == TCK_Load || TCK == TCK_Store) &&
+             isa<ArraySubscriptExpr>(Inner)) {
+    // P3100: a qualification conversion of the subscript (the `const S` of a
+    // copy's source) does not hide it either: the copy accesses the element,
+    // or, for an empty class, only indirects through it (see
+    // P3100SubscriptUse).
+    P3100SubscriptIndirection = EmptyCopy;
+    P3100SubscriptUse = EmptyCopy ? P3100SubscriptUseKind::NullAccessed
+                                  : P3100SubscriptUseKind::Accessed;
     LV = EmitLValue(E);
+  } else if (const CastExpr *CE = getLangOpts().ContractsP3100
+                                      ? getP3100BaseConversion(E)
+                                      : nullptr;
+             CE && CE->isGLValue()) {
+    // P3100: the object converted to a base class (o.b, b a member of a base
+    // of o's class) is checked as it would be unconverted, before the
+    // conversion (see P3100BaseConversionUse); a virtual base's member is
+    // accessed through it.
+    P3100MemberAccessed =
+        TCK == TCK_MemberAccess &&
+        (MemberAccessed || isP3100VirtualBaseConversion(CE));
+    P3100NullCheckOnly = true;
+    // A copy of an empty non-virtual base reads or writes nothing of the
+    // object; a virtual one reads the base's offset through it.
+    P3100EmptyCopy = EmptyCopy && !isP3100VirtualBaseConversion(CE);
+    P3100DeferNull = isP3100VirtualBaseConversion(CE)
+                         ? nullptr
+                         : std::exchange(DeferNull, nullptr);
+    LV = emitP3100DerivedToBaseLValue(
+        *this, CE, EmitCheckedLValue(CE->getSubExpr(), TCK));
+    P3100MemberAccessed = false;
+    P3100DeferNull = nullptr;
+    P3100BaseConverted = true;
+  } else {
+    // The member access consumes the flag first thing, so it reaches no
+    // other one.
+    P3100MemberAccessed = MemberAccessed && IsMemberAccess;
+    if (IsMemberAccess)
+      P3100DeferNull = std::exchange(DeferNull, nullptr);
+    LV = EmitLValue(E);
+    P3100MemberAccessed = false;
+    P3100DeferNull = nullptr;
+  }
+  // Under P3100 the object expression of a member access (and the pointer of
+  // an accessed subscript) was already checked for null; the member's address
+  // coincides with it for the first member, so checking it again would report
+  // the same null dereference twice.
+  bool P3100BaseChecked = P3100SubscriptBaseGuarded;
+  P3100SubscriptBaseGuarded = false;
+  if (getLangOpts().ContractsP3100) {
+    const Expr *Inner = stripP3100NoOps(E);
+    if (isa<MemberExpr>(Inner))
+      P3100BaseChecked = true;
+    else if (const auto *BO = dyn_cast<BinaryOperator>(Inner);
+             BO && BO->isPtrMemOp())
+      P3100BaseChecked = true;
+  }
   if (!isa<DeclRefExpr>(E) && !LV.isBitField() && LV.isSimple()) {
     SanitizerSet SkippedChecks;
     if (const auto *ME = dyn_cast<MemberExpr>(E)) {
@@ -1754,8 +2230,37 @@ LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
       if (IsBaseCXXThis || isa<DeclRefExpr>(ME->getBase()))
         SkippedChecks.set(SanitizerKind::Null, true);
     }
+    if (P3100BaseChecked)
+      SkippedChecks.set(SanitizerKind::Null, true);
+    // P3100: the object was checked for null before its conversion, and
+    // the operand of a conversion is checked for null only.
+    if (P3100BaseConverted)
+      SkippedChecks.set(SanitizerKind::Null, true);
+    if (NullCheckOnly) {
+      SkippedChecks.set(SanitizerKind::Alignment, true);
+      SkippedChecks.set(SanitizerKind::ObjectSize, true);
+      SkippedChecks.set(SanitizerKind::Vptr, true);
+    }
+    P3100MemberAccessed = TCK == TCK_MemberAccess && MemberAccessed;
+    // P3100: an access through a glvalue that is already a reference (a
+    // call returning one, a reference variable under a qualification
+    // conversion) indirects through nothing.  (Nothing through `this` is
+    // checked either, `(*this).m`, `this[i].m`, a copy of `*this`: see
+    // EmitImplicitNullDerefGuard.)
+    P3100SkipNullGuard =
+        getLangOpts().ContractsP3100 && isP3100ReferenceGLValue(E);
+    P3100EmptyCopy = EmptyCopy;
+    P3100DeferNull = DeferNull;
     EmitTypeCheck(TCK, E->getExprLoc(), LV, E->getType(), SkippedChecks);
+    P3100DeferNull = nullptr;
+    P3100EmptyCopy = false;
+    P3100SkipNullGuard = false;
+    P3100MemberAccessed = false;
   }
+  // P3100: where the value a scalar assignment stores is loaded from.
+  if (P3100OverlapSrc && LV.isSimple() &&
+      stripP3100OverlapGlvalue(E) == P3100OverlapSrc)
+    P3100OverlapSrcAddr = LV.getAddress();
   return LV;
 }
 
@@ -2102,6 +2607,16 @@ static bool getRangeForType(CodeGenFunction &CGF, QualType Ty, llvm::APInt &Min,
   return true;
 }
 
+bool CodeGenFunction::getStrictEnumRange(QualType Ty, llvm::APInt &Min,
+                                         llvm::APInt &End) {
+  const EnumDecl *ED = Ty->getAsEnumDecl();
+  if (!(getLangOpts().CPlusPlus && ED && !ED->isFixed()) ||
+      getContext().isTypeIgnoredBySanitizer(SanitizerKind::Enum, Ty))
+    return false;
+  ED->getValueRange(End, Min);
+  return true;
+}
+
 llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
   llvm::APInt Min, End;
   bool IsBool = Ty->hasBooleanRepresentation() && !Ty->isVectorType();
@@ -2250,9 +2765,18 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(Address Addr, bool Volatile,
 
   CGM.DecorateInstructionWithTBAA(Load, TBAAInfo);
 
-  maybeAttachRangeForLoad(Load, Ty, Loc);
+  // P3100: guard an invalid bool/enum value load.  When the guard is active
+  // (non-assume) it substitutes a defined valid value, and range metadata must
+  // NOT be attached (that would let the optimizer assume validity and discard
+  // the guard); when inactive it returns Load and the metadata/sanitizer path
+  // runs as usual.
+  llvm::Value *V = Load;
+  if (getLangOpts().ContractsP3100)
+    V = EmitImplicitInvalidValueGuard(Load, Ty, Loc);
+  if (V == Load)
+    maybeAttachRangeForLoad(Load, Ty, Loc);
 
-  return EmitFromMemory(Load, Ty);
+  return EmitFromMemory(V, Ty);
 }
 
 /// Converts a scalar value from its primary IR type (as returned
@@ -3695,6 +4219,22 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   assert(E->isNonOdrUse() != NOUR_Unevaluated &&
          "should not emit an unevaluated operand");
 
+  if (const auto *RND = dyn_cast<ResultNameDecl>(ND)) {
+    // In a lambda in the postcondition, the result name is a capture.
+    if (E->refersToEnclosingVariableOrCapture())
+      if (auto *FD = LambdaCaptureFields.lookup(RND))
+        return EmitCapturedFieldLValue(*this, FD, CXXABIThisValue);
+    // For a reference-returning function the return slot holds the reference
+    // itself -- a pointer -- while the binding names the referred-to object,
+    // so load the slot rather than reinterpreting it as that object.  T is
+    // already the pointee type: a reference-typed declaration's DeclRefExpr
+    // has the referred-to type and is an lvalue.
+    if (RND->getType()->isReferenceType())
+      return MakeNaturalAlignPointeeAddrLValue(Builder.CreateLoad(ReturnValue),
+                                               T);
+    return MakeAddrLValue(ReturnValue, T, AlignmentSource::Decl);
+  }
+
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Global Named registers access via intrinsics only
     if (VD->getStorageClass() == SC_Register &&
@@ -3796,7 +4336,10 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Check if this is a global variable.
-    if (VD->hasLinkage() || VD->isStaticDataMember())
+    // PostconditionCaptureDecls are always local, even if their DeclContext
+    // is a CXXRecordDecl (from inline class body parsing).
+    if ((VD->hasLinkage() || VD->isStaticDataMember()) &&
+        !isa<PostconditionCaptureDecl>(VD))
       return EmitGlobalVarDeclLValue(*this, E, VD);
 
     Address addr = Address::invalid();
@@ -3948,8 +4491,12 @@ LValue CodeGenFunction::EmitUnaryOpLValue(const UnaryOperator *E) {
 
     LValueBaseInfo BaseInfo;
     TBAAAccessInfo TBAAInfo;
+    // P3100: *(a + i) is an indirection through a + i.
+    const BinaryOperator *SavedIndirected = std::exchange(
+        P3100IndirectedArith, getP3100IndirectedArith(*this, E->getSubExpr()));
     Address Addr = EmitPointerWithAlignment(E->getSubExpr(), &BaseInfo,
                                             &TBAAInfo);
+    P3100IndirectedArith = SavedIndirected;
     LValue LV = MakeAddrLValue(Addr, T, BaseInfo, TBAAInfo);
     LV.getQuals().setAddressSpace(ExprTy.getAddressSpace());
 
@@ -3989,7 +4536,10 @@ LValue CodeGenFunction::EmitUnaryOpLValue(const UnaryOperator *E) {
   }
   case UO_PreInc:
   case UO_PreDec: {
-    LValue LV = EmitLValue(E->getSubExpr());
+    // The operand is accessed (read and written): take it as a checked store,
+    // as ScalarExprEmitter does, so that a subscript one past the end is
+    // reported.
+    LValue LV = EmitCheckedLValue(E->getSubExpr(), TCK_Store);
     bool isInc = E->getOpcode() == UO_PreInc;
 
     if (E->getType()->isAnyComplexType())
@@ -4820,6 +5370,180 @@ static const Expr *isSimpleArrayDecayOperand(const Expr *E) {
   return SubExpr;
 }
 
+bool CodeGenFunction::isP3100CheckedMemberSubobject(const Expr *E) {
+  while (true) {
+    E = E->IgnoreParens();
+    if (const auto *CE = dyn_cast<ImplicitCastExpr>(E);
+        CE && CE->getCastKind() == CK_NoOp) {
+      E = CE->getSubExpr();
+      continue;
+    }
+    // Not a reference member: its referent is not at an offset from the
+    // object.
+    if (const auto *ME = dyn_cast<MemberExpr>(E))
+      return !ME->getMemberDecl()->getType()->isReferenceType();
+    if (const auto *BO = dyn_cast<BinaryOperator>(E))
+      return BO->isPtrMemOp();
+    // An element of a member array: p->arr[i], p->arr2[i][j].
+    if (const auto *ASE = dyn_cast<ArraySubscriptExpr>(E)) {
+      if (const Expr *Array = isSimpleArrayDecayOperand(ASE->getBase())) {
+        E = Array;
+        continue;
+      }
+    }
+    return false;
+  }
+}
+
+bool CodeGenFunction::isP3100ReferenceGLValue(const Expr *E) {
+  while (true) {
+    E = stripP3100NoOps(E);
+    if (const Expr *Arg = getP3100BuiltinMoveArg(E)) {
+      E = Arg;
+      continue;
+    }
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(E))
+      return isa<VarDecl>(DRE->getDecl()) &&
+             DRE->getDecl()->getType()->isReferenceType();
+    if (const auto *ME = dyn_cast<MemberExpr>(E))
+      return isa<FieldDecl>(ME->getMemberDecl()) &&
+             ME->getMemberDecl()->getType()->isReferenceType();
+    if (const auto *CE = dyn_cast<CallExpr>(E))
+      return CE->isGLValue() && !CE->getType()->isFunctionType();
+    return false;
+  }
+}
+
+/// Strip parentheses and qualification conversions from E.
+static const Expr *stripP3100NoOps(const Expr *E) {
+  while (true) {
+    E = E->IgnoreParens();
+    const auto *CE = dyn_cast<CastExpr>(E);
+    if (!CE || CE->getCastKind() != CK_NoOp)
+      return E;
+    E = CE->getSubExpr();
+  }
+}
+
+/// The conversion to a base class that E is, ignoring parentheses and
+/// qualification conversions; null if it is none.
+static const CastExpr *getDerivedToBaseCast(const Expr *E) {
+  const auto *CE = dyn_cast<CastExpr>(stripP3100NoOps(E));
+  if (!CE || (CE->getCastKind() != CK_DerivedToBase &&
+              CE->getCastKind() != CK_UncheckedDerivedToBase))
+    return nullptr;
+  return CE;
+}
+
+const CastExpr *CodeGenFunction::getP3100BaseConversion(const Expr *E) {
+  const CastExpr *CE = getDerivedToBaseCast(E);
+  if (!CE || IsWrappedCXXThis(CE))
+    return nullptr;
+  // A conversion of a pointer that keeps a null pointer null is checked
+  // where its result is used.
+  if (!CE->isGLValue() && ShouldNullCheckClassCastValue(CE))
+    return nullptr;
+  return CE;
+}
+
+void CodeGenFunction::setP3100CastAlign(llvm::Value *Ptr, CharUnits Align) {
+  // A value handle cannot be put on constant data (null, undef).
+  if (isa<llvm::ConstantData>(Ptr))
+    return;
+  P3100CastAlign = {Ptr, Align};
+}
+
+CharUnits CodeGenFunction::takeP3100CastAlign(llvm::Value *Ptr, QualType Ty) {
+  if (!P3100CastAlign.Ptr || P3100CastAlign.Ptr != Ptr)
+    return CharUnits::Zero();
+  CharUnits Align = P3100CastAlign.Align;
+  P3100CastAlign = {};
+  if (!Ty->isIncompleteType())
+    Align = std::min(Align, CGM.getNaturalTypeAlignment(
+                                Ty, nullptr, nullptr, /*ForPointeeType=*/true));
+  return Align;
+}
+
+void CodeGenFunction::mapP3100ElementBase(llvm::Value *To, llvm::Value *From,
+                                          bool Downcast) {
+  // An address the conversion did not change needs no entry, and a constant
+  // cannot be held in one.
+  if (To == From || !isa<llvm::Instruction>(To))
+    return;
+  P3100ElementBase[To] = {To, From, Downcast};
+}
+
+llvm::Value *CodeGenFunction::getP3100DowncastOperand(llvm::Value *Ptr,
+                                                      SourceLocation Loc) {
+  auto It = P3100ElementBase.find(Ptr);
+  if (It == P3100ElementBase.end() || It->second.Element != Ptr ||
+      !It->second.Base || !It->second.Downcast)
+    return nullptr;
+  if (!isP3100NullCheckMade(Loc))
+    return nullptr;
+  // The pointer the operand was formed from in turn, as
+  // EmitImplicitNullDerefGuard follows it.
+  while (true) {
+    It = P3100ElementBase.find(Ptr);
+    if (It == P3100ElementBase.end() || It->second.Element != Ptr ||
+        !It->second.Base)
+      break;
+    Ptr = It->second.Base;
+  }
+  return Ptr;
+}
+
+bool CodeGenFunction::isP3100VirtualBaseConversion(const Expr *E) {
+  // Sema puts a virtual step first in the path (see GetAddressOfBaseClass).
+  const CastExpr *CE = getDerivedToBaseCast(E);
+  return CE && (*CE->path_begin())->isVirtual();
+}
+
+CodeGenFunction::P3100BaseConversionUse *
+CodeGenFunction::takeP3100BaseConversion(const CastExpr *CE) {
+  if (!P3100BaseConversion || P3100BaseConversion->Cast != CE)
+    return nullptr;
+  return std::exchange(P3100BaseConversion, nullptr);
+}
+
+void CodeGenFunction::EmitP3100BaseConversionCheck(P3100BaseConversionUse &Use,
+                                                   llvm::Value *Ptr,
+                                                   QualType Ty) {
+  Use.Checked = true;
+  if (Use.SkipNull)
+    return;
+  bool Virtual = isP3100VirtualBaseConversion(Use.Cast);
+  // A use that accesses nothing: the .indirection guard, unless the
+  // conversion itself loads a virtual base's offset through the operand.
+  if (Use.GuardOnly && !Virtual) {
+    EmitImplicitIndirectionGuard(Ptr, Use.Loc);
+    return;
+  }
+  // The null check only; the use checks the converted object otherwise.
+  SanitizerSet SkippedChecks;
+  SkippedChecks.set(SanitizerKind::Alignment, true);
+  SkippedChecks.set(SanitizerKind::ObjectSize, true);
+  SkippedChecks.set(SanitizerKind::Vptr, true);
+  TypeCheckKind TCK = Virtual ? TCK_MemberAccess : Use.TCK;
+  P3100MemberAccessed = TCK == TCK_MemberAccess && (Virtual || Use.Accessed);
+  // A virtual call reads the vtable pointer through the converted object.
+  P3100VTableRead = TCK == TCK_MemberCall && Use.Accessed;
+  // A store to an empty non-virtual base (p->E::operator=(e)) writes
+  // nothing of the object (see P3100EmptyCopy).
+  QualType To = Use.Cast->getType();
+  if (const auto *PT = To->getAs<PointerType>())
+    To = PT->getPointeeType();
+  P3100EmptyCopy =
+      (TCK == TCK_Load || TCK == TCK_Store) && isP3100EmptyClass(To);
+  // The member access's deferred null check (see P3100DeferNull).
+  P3100DeferNull = Virtual ? nullptr : Use.DeferNull;
+  EmitTypeCheck(TCK, Use.Loc, Ptr, Ty, CharUnits::Zero(), SkippedChecks);
+  P3100DeferNull = nullptr;
+  P3100EmptyCopy = false;
+  P3100MemberAccessed = false;
+  P3100VTableRead = false;
+}
+
 static llvm::Value *emitArraySubscriptGEP(CodeGenFunction &CGF,
                                           llvm::Type *elemType,
                                           llvm::Value *ptr,
@@ -5156,11 +5880,35 @@ void CodeGenFunction::EmitCountedByBoundsChecking(
 
 LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
                                                bool Accessed) {
+  bool SubscriptBaseGuarded = false;
+  // P3100: whether only an address is formed from the element (see
+  // P3100SubscriptIndirection), consumed before anything else is emitted.
+  bool P3100AddressOnly = std::exchange(P3100SubscriptIndirection, false);
+  // P3100: how a subscript EmitLValue reached is used (see
+  // P3100SubscriptUse); NullAccessed is whether its null check is an
+  // accessed subscript's.
+  P3100SubscriptUseKind P3100Use =
+      std::exchange(P3100SubscriptUse, P3100SubscriptUseKind::None);
+  // P3100: the deferred null check of the pointer or the member access this
+  // subscript's null check is (see P3100DeferNull).
+  P3100DeferredNullCheck *DeferNull = std::exchange(P3100DeferNull, nullptr);
+  if (P3100Use == P3100SubscriptUseKind::Accessed)
+    Accessed = true;
+  bool NullAccessed = Accessed || P3100Use != P3100SubscriptUseKind::None;
+  // P3100: whether the bounds check is an accessed subscript's: not for a
+  // NullAccessed use, which accesses no element, even where the sanitizer's
+  // array-bounds check treats the subscript as accessed (an empty class
+  // stored to it, DECISIONS.md E95 (a)).
+  bool BoundsAccessed =
+      Accessed && P3100Use != P3100SubscriptUseKind::NullAccessed;
   // The index must always be an integer, which is not an aggregate.  Emit it
   // in lexical order (this complexity is, sadly, required by C++17).
   llvm::Value *IdxPre =
       (E->getLHS() == E->getIdx()) ? EmitScalarExpr(E->getIdx()) : nullptr;
   bool SignedIndices = false;
+  // P3100: the value of a pointer base, for a subscript of known-bound
+  // pointer arithmetic.
+  llvm::Value *P3100BasePtr = nullptr;
   auto EmitIdxAfterBase = [&, IdxPre](bool Promote) -> llvm::Value * {
     auto *Idx = IdxPre;
     if (E->getLHS() != E->getIdx()) {
@@ -5172,7 +5920,60 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
     SignedIndices |= IdxSigned;
 
-    if (SanOpts.has(SanitizerKind::ArrayBounds))
+    // P3100 implicit array-bounds contract assertion
+    // (ub:expr.add.out.of.bounds.known.subscript).  Only the statically-
+    // known-bound case is handled; an out-of-range subscript is redirected to
+    // the defined valid index 0.  It takes precedence over the sanitizer,
+    // which checks the subscript only when no contract applies.
+    //
+    // A subscript that is not accessed (&a[i], a reference bound to a[i]) may
+    // name the one-past index, as C allows, but a[i] is *(a + i), and in C++
+    // an indirection through the past-the-end pointer is undefined even when
+    // only its address is used: ub:expr.unary.dereference.invalid.known
+    // requires the index, once the subscript check has redirected it (so an
+    // index it reported is not reported twice), to be below the bound.
+    llvm::Value *Unguarded = Idx;
+    if (getLangOpts().ContractsP3100) {
+      if (llvm::ConstantInt *Bound = getP3100KnownArrayBound(E->getBase())) {
+        Idx = EmitImplicitArrayBoundsGuard(
+            Idx, IdxSigned, Bound, /*AllowEnd=*/!BoundsAccessed,
+            "ub:expr.add.out.of.bounds.known.subscript",
+            "array subscript out of bounds", E->getExprLoc());
+        if (!BoundsAccessed)
+          Idx = EmitImplicitArrayBoundsGuard(
+              Idx, IdxSigned, Bound, /*AllowEnd=*/false,
+              "ub:expr.unary.dereference.invalid.known",
+              "indirection past the end of an array", E->getExprLoc());
+      } else if (const P3100KnownArithInfo *Known =
+                     P3100BasePtr
+                         ? getP3100KnownArith(E->getBase(), P3100BasePtr)
+                         : nullptr) {
+        // A subscript of known-bound pointer arithmetic, (a + k)[i], is
+        // checked as a[k + i] is; execution that continues past a violation
+        // uses a's first element.
+        llvm::ConstantInt *KnownBound = Known->Bound;
+        llvm::Value *Base = Known->Position;
+        llvm::Value *Pos =
+            EmitP3100NestedPosition(Base, Idx, IdxSigned, KnownBound);
+        llvm::Value *UnguardedPos = Pos;
+        Pos = EmitImplicitArrayBoundsGuard(
+            Pos, /*IdxSigned=*/true, KnownBound, /*AllowEnd=*/!BoundsAccessed,
+            "ub:expr.add.out.of.bounds.known.subscript",
+            "array subscript out of bounds", E->getExprLoc());
+        if (!BoundsAccessed)
+          Pos = EmitImplicitArrayBoundsGuard(
+              Pos, /*IdxSigned=*/true, KnownBound, /*AllowEnd=*/false,
+              "ub:expr.unary.dereference.invalid.known",
+              "indirection past the end of an array", E->getExprLoc());
+        if (Pos != UnguardedPos) {
+          Idx = Builder.CreateSub(
+              Pos, Builder.CreateIntCast(Base, Pos->getType(), true));
+          IdxSigned = true;
+          SignedIndices = true;
+        }
+      }
+    }
+    if (Idx == Unguarded && SanOpts.has(SanitizerKind::ArrayBounds))
       EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, Accessed);
 
     // Extend or truncate the index type to 32 or 64-bits.
@@ -5289,10 +6090,54 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     LValue ArrayLV;
     // For simple multidimensional array indexing, set the 'accessed' flag for
     // better bounds-checking of the base expression.
-    if (const auto *ASE = dyn_cast<ArraySubscriptExpr>(Array))
+    if (const auto *ASE = dyn_cast<ArraySubscriptExpr>(Array)) {
+      // P3100: the inner subscript's null check takes this one's leaf.
+      P3100SubscriptIndirection = P3100AddressOnly || !NullAccessed;
+      P3100DeferNull = DeferNull;
       ArrayLV = EmitArraySubscriptExpr(ASE, /*Accessed*/ true);
-    else
+      P3100DeferNull = nullptr;
+    } else {
+      // P3100: an accessed p->arr[i], (p->*pa)[i] or ((*p).*pa)[i] accesses
+      // *p (see P3100MemberAccessed).
+      const Expr *ArrayE = Array->IgnoreParens();
+      const auto *ArrayBO = dyn_cast<BinaryOperator>(ArrayE);
+      P3100MemberAccessed =
+          NullAccessed && !P3100AddressOnly &&
+          (isa<MemberExpr>(ArrayE) || (ArrayBO && ArrayBO->isPtrMemOp()));
+      P3100DeferNull = DeferNull;
       ArrayLV = EmitLValue(Array);
+      P3100DeferNull = nullptr;
+      P3100MemberAccessed = false;
+    }
+    // P3100: the member access checked the object pointer of an element of a
+    // member array; the element's address is null only if that pointer is.
+    SubscriptBaseGuarded = NullAccessed && getLangOpts().ContractsP3100 &&
+                           isP3100CheckedMemberSubobject(Array);
+    // P3100: (*pa)[i] is an indirection through pa, checked as p[i] checks
+    // p: an accessed element (or one whose address alone is formed) checks
+    // pa here, and a use that checks the element's address for null (a
+    // reference bound to it, a member function called on it) checks pa
+    // instead (see P3100ElementBase).  The element's address is not null
+    // for a nonzero i (CLANG-813).
+    llvm::Value *P3100DerefBase = nullptr;
+    if (getLangOpts().ContractsP3100 && !DeferNull && ArrayLV.isSimple() &&
+        !ArrayLV.getAddress().hasOffset() &&
+        !ArrayLV.getAddress().isKnownNonNull()) {
+      const auto *UO = dyn_cast<UnaryOperator>(Array->IgnoreParens());
+      if (UO && UO->getOpcode() == UO_Deref &&
+          !IsWrappedCXXThis(UO->getSubExpr()) &&
+          !isa<llvm::AllocaInst>(
+              ArrayLV.getAddress().getBasePointer()->stripPointerCasts())) {
+        llvm::Value *BasePtr = ArrayLV.getAddress().getBasePointer();
+        if (NullAccessed || P3100AddressOnly) {
+          bool Guarded = EmitImplicitNullDerefGuard(
+              BasePtr, E->getExprLoc(), /*Access=*/!P3100AddressOnly);
+          SubscriptBaseGuarded |= NullAccessed && Guarded;
+        } else {
+          P3100DerefBase = BasePtr;
+        }
+      }
+    }
     auto *Idx = EmitIdxAfterBase(/*Promote*/true);
 
     if (SanOpts.has(SanitizerKind::ArrayBounds))
@@ -5306,6 +6151,10 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
         *this, ArrayLV.getAddress(), {CGM.getSize(CharUnits::Zero()), Idx},
         E->getType(), !getLangOpts().PointerOverflowDefined, SignedIndices,
         E->getExprLoc(), &arrayType, E->getBase());
+    if (P3100DerefBase && !Addr.hasOffset() &&
+        isa<llvm::Instruction>(Addr.getBasePointer()))
+      P3100ElementBase[Addr.getBasePointer()] = {Addr.getBasePointer(),
+                                                 P3100DerefBase};
     EltBaseInfo = ArrayLV.getBaseInfo();
     if (!CGM.getCodeGenOpts().NewStructPathTBAA) {
       // Since CodeGenTBAA::getTypeInfoHelper only handles array types for
@@ -5363,6 +6212,10 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     {
       llvm::SaveAndRestore SavedCapture(CurLoadedLValueCapture,
                                         CountedByME ? &FieldCapture : nullptr);
+      // P3100: (p + 1)[i] checks p (see P3100SubscriptBaseArith).
+      llvm::SaveAndRestore SavedSubscriptArith(
+          P3100SubscriptBaseArith,
+          getP3100IndirectedArith(*this, E->getBase()));
       // The base must be a pointer; emit it with an estimate of its alignment.
       BaseAddr =
           EmitPointerWithAlignment(E->getBase(), &EltBaseInfo, &EltTBAAInfo);
@@ -5371,12 +6224,55 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     Address CountedByFieldAddr =
         FieldCapture.LV ? FieldCapture.LV->getAddress() : Address::invalid();
 
+    if (getLangOpts().ContractsP3100 && !BaseAddr.hasOffset())
+      P3100BasePtr = BaseAddr.getBasePointer();
+    // P3100: ((int *)(buf + o))[i]: the element's access requires the
+    // alignment the cast requires (see P3100CastAlign); taken before the
+    // index is emitted, which may contain casts of its own.
+    CharUnits CastRequired = CharUnits::Zero();
+    if (P3100BasePtr)
+      CastRequired = takeP3100CastAlign(P3100BasePtr, E->getType());
+    // P3100: an accessed p[i] is *(p + i), a dereference of p, so check p
+    // itself; the element's address is not null for a nonzero i.  The
+    // .indirection leaf where only an address is formed from it (&p[i].m).
+    // An unaccessed p[i] (&p[i], a discarded p[i]; EmitUnaccessedLValue) is
+    // an indirection too, the .indirection leaf.
+    bool P3100CheckBase = getLangOpts().ContractsP3100 &&
+                          !BaseAddr.isKnownNonNull() &&
+                          !IsWrappedCXXThis(E->getBase());
+    if ((NullAccessed || P3100AddressOnly) && P3100CheckBase) {
+      llvm::Value *BasePtr = BaseAddr.emitRawPointer(*this);
+      if (!isa<llvm::AllocaInst>(BasePtr->stripPointerCasts())) {
+        P3100DeferNull = DeferNull;
+        bool Guarded = EmitImplicitNullDerefGuard(
+            BasePtr, E->getExprLoc(), /*Access=*/!P3100AddressOnly);
+        P3100DeferNull = nullptr;
+        // Only an access type-checks the element's address afterwards.
+        SubscriptBaseGuarded = NullAccessed && Guarded;
+      }
+    }
     auto *Idx = EmitIdxAfterBase(/*Promote*/true);
     QualType ptrType = E->getBase()->getType();
     Addr = emitArraySubscriptGEP(*this, BaseAddr, Idx, E->getType(),
                                  !getLangOpts().PointerOverflowDefined,
                                  SignedIndices, E->getExprLoc(), &ptrType,
                                  E->getBase());
+    if (!CastRequired.isZero() && !Addr.hasOffset())
+      setP3100CastAlign(Addr.getBasePointer(), CastRequired);
+    // P3100: a use that checks the element's address for null -- a reference
+    // bound to the element, a member function called on it, a conversion of
+    // it to a base -- checks p instead, whatever i is (see P3100ElementBase).
+    // An element of `this[i]`, accessed or not, is mapped to `this`, which
+    // is never checked (DECISIONS.md E106 (a), E108 (a)).
+    bool P3100ThisBase =
+        getLangOpts().ContractsP3100 && IsWrappedCXXThis(E->getBase());
+    if (((!NullAccessed && !P3100AddressOnly && P3100CheckBase) ||
+         P3100ThisBase) &&
+        !BaseAddr.hasOffset() && !Addr.hasOffset() &&
+        isa<llvm::Instruction>(Addr.getBasePointer()) &&
+        !isa<llvm::AllocaInst>(BaseAddr.getBasePointer()->stripPointerCasts()))
+      P3100ElementBase[Addr.getBasePointer()] = {Addr.getBasePointer(),
+                                                 BaseAddr.getBasePointer()};
 
     // If the field wasn't loaded through ScalarExprEmitter (e.g. it was
     // constant folded), EmitCountedByBoundsChecking re-emits the field's
@@ -5397,6 +6293,8 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
     LV.setNonGC(!E->isOBJCGCCandidate(getContext()));
     setObjCGCLValueClass(getContext(), E, LV);
   }
+  // Set last: evaluating the index may emit other subscripts.
+  P3100SubscriptBaseGuarded = SubscriptBaseGuarded;
   return LV;
 }
 
@@ -5755,8 +6653,14 @@ bool CodeGenFunction::isUnderlyingBasePointerConstantNull(const Expr *E) {
 }
 
 LValue CodeGenFunction::EmitMemberExpr(const MemberExpr *E) {
+  // P3100: whether a load or store follows this member access (see
+  // P3100MemberAccessed), consumed first so that nothing emitted for the
+  // object expression sees it.
+  bool MemberAccessed = std::exchange(P3100MemberAccessed, false);
+  // P3100: this access's deferred null check (see P3100DeferNull), likewise.
+  P3100DeferredNullCheck *DeferNull = std::exchange(P3100DeferNull, nullptr);
   if (DeclRefExpr *DRE = tryToConvertMemberExprToDeclRefExpr(*this, E)) {
-    EmitIgnoredExpr(E->getBase());
+    EmitIgnoredMemberBase(E->getBase(), E->isArrow(), E->getExprLoc());
     return EmitDeclRefLValue(DRE);
   }
 
@@ -5773,6 +6677,12 @@ LValue CodeGenFunction::EmitMemberExpr(const MemberExpr *E) {
     }
   }
 
+  // P3100: a data member of *this referred to in a constructor or destructor
+  // function-try-block handler.
+  if (P3100InCdtorHandler && isa<FieldDecl>(E->getMemberDecl()))
+    EmitImplicitHandlerMemberCheck(E->getBase(), E->isArrow(),
+                                   E->getExprLoc());
+
   Expr *BaseExpr = E->getBase();
   // Check whether the underlying base pointer is a constant null.
   // If so, we do not set inbounds flag for GEP to avoid breaking some
@@ -5784,23 +6694,64 @@ LValue CodeGenFunction::EmitMemberExpr(const MemberExpr *E) {
   if (E->isArrow()) {
     LValueBaseInfo BaseInfo;
     TBAAAccessInfo TBAAInfo;
+    // P3100: p->b, b a member of a base of p's class: p is checked before its
+    // conversion to the base (see P3100BaseConversionUse).
+    P3100BaseConversionUse BaseUse;
+    if (getLangOpts().ContractsP3100)
+      if (const CastExpr *CE = getP3100BaseConversion(BaseExpr)) {
+        BaseUse = {CE, TCK_MemberAccess, E->getExprLoc(), MemberAccessed};
+        BaseUse.DeferNull = std::exchange(DeferNull, nullptr);
+        P3100BaseConversion = &BaseUse;
+      }
+    // P3100: (a + i)->m is an indirection through a + i.
+    const BinaryOperator *SavedIndirected = std::exchange(
+        P3100IndirectedArith,
+        getP3100IndirectedArith(
+            *this, BaseUse.Cast ? BaseUse.Cast->getSubExpr() : BaseExpr));
     Address Addr = EmitPointerWithAlignment(BaseExpr, &BaseInfo, &TBAAInfo);
+    P3100IndirectedArith = SavedIndirected;
+    P3100BaseConversion = nullptr;
+
     QualType PtrTy = BaseExpr->getType()->getPointeeType();
     SanitizerSet SkippedChecks;
     bool IsBaseCXXThis = IsWrappedCXXThis(BaseExpr);
     if (IsBaseCXXThis)
       SkippedChecks.set(SanitizerKind::Alignment, true);
-    if (IsBaseCXXThis || isa<DeclRefExpr>(BaseExpr))
+    if (IsBaseCXXThis || isa<DeclRefExpr>(BaseExpr) || BaseUse.Checked)
       SkippedChecks.set(SanitizerKind::Null, true);
+    P3100MemberAccessed = MemberAccessed;
+    P3100DeferNull = DeferNull;
     EmitTypeCheck(TCK_MemberAccess, E->getExprLoc(), Addr, PtrTy,
                   /*Alignment=*/CharUnits::Zero(), SkippedChecks);
+    P3100DeferNull = nullptr;
+    P3100MemberAccessed = false;
     BaseLV = MakeAddrLValue(Addr, PtrTy, BaseInfo, TBAAInfo);
-  } else
+  } else {
+    P3100MemberAccessed = MemberAccessed;
+    P3100DeferNull = DeferNull;
     BaseLV = EmitCheckedLValue(BaseExpr, TCK_MemberAccess);
+    P3100DeferNull = nullptr;
+  }
 
   NamedDecl *ND = E->getMemberDecl();
   if (auto *Field = dyn_cast<FieldDecl>(ND)) {
+    // P3100: an object reached through a pointer a cast produced from a
+    // character array, ((P *)(buf + o))->m: the member's access requires the
+    // alignment the cast requires of the object at the member's offset (see
+    // P3100CastAlign).
+    CharUnits CastRequired = CharUnits::Zero();
+    if (getLangOpts().ContractsP3100 && BaseLV.isSimple() &&
+        !BaseLV.getAddress().hasOffset())
+      CastRequired = takeP3100CastAlign(BaseLV.getAddress().getBasePointer(),
+                                        BaseLV.getType());
     LValue LV = EmitLValueForField(BaseLV, Field, IsInBounds);
+    if (!CastRequired.isZero() && LV.isSimple() && !LV.isBitField() &&
+        !LV.getAddress().hasOffset()) {
+      CharUnits Offset = getContext().toCharUnitsFromBits(
+          getContext().getFieldOffset(Field));
+      setP3100CastAlign(LV.getAddress().getBasePointer(),
+                        CastRequired.alignmentAtOffset(Offset));
+    }
     setObjCGCLValueClass(getContext(), E, LV);
     if (getLangOpts().OpenMP) {
       // If the member was explicitly marked as nontemporal, mark it as
@@ -6346,6 +7297,9 @@ LValue CodeGenFunction::EmitConditionalOperatorLValue(
 LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   llvm::scope_exit RestoreCurCast([this, Prev = CurCast] { CurCast = Prev; });
   CurCast = E;
+  // P3100: a dynamic_cast of *this, whatever its cast kind.
+  if (const auto *DCE = dyn_cast<CXXDynamicCastExpr>(E))
+    EmitImplicitDynamicCastThisCheck(DCE);
   switch (E->getCastKind()) {
   case CK_ToVoid:
   case CK_BitCast:
@@ -6411,7 +7365,11 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     return EmitAggExprToLValue(E);
 
   case CK_Dynamic: {
-    LValue LV = EmitLValue(E->getSubExpr());
+    // P3100: dynamic_cast<T &>(*p) reads the vtable pointer through p, so p
+    // is checked under .access (DECISIONS.md E102 (a)).
+    LValue LV = getLangOpts().ContractsP3100
+                    ? EmitP3100VTableReadLValue(E->getSubExpr())
+                    : EmitLValue(E->getSubExpr());
     Address V = LV.getAddress();
     const auto *DCE = cast<CXXDynamicCastExpr>(E);
     return MakeNaturalAlignRawAddrLValue(EmitDynamicCast(V, DCE), E->getType());
@@ -6446,7 +7404,34 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   case CK_UncheckedDerivedToBase:
   case CK_DerivedToBase: {
     auto *DerivedClassDecl = E->getSubExpr()->getType()->castAsCXXRecordDecl();
+    // P3100: a use of a base's member checks the operand first.
+    P3100BaseConversionUse *P3100Use = takeP3100BaseConversion(E);
+    // P3100: a conversion to a virtual base reads the base's offset through
+    // its operand, so the operand's own null check -- a member access's, a
+    // subscript's -- is the .access leaf, whatever the conversion's result is
+    // used for (DECISIONS.md E94 (b)); the subscript's check replaces the
+    // check of the element's address below.  A reference (a reference
+    // member) is not checked again (see isP3100ReferenceGLValue).
+    bool P3100VirtualOperand = false;
+    if (getLangOpts().ContractsP3100 && isP3100VirtualBaseConversion(E)) {
+      const Expr *Op = stripP3100NoOps(E->getSubExpr());
+      const auto *OpBO = dyn_cast<BinaryOperator>(Op);
+      if ((isa<MemberExpr>(Op) && !isP3100ReferenceGLValue(Op)) ||
+          (OpBO && OpBO->isPtrMemOp()))
+        P3100MemberAccessed = true;
+      else if (isa<ArraySubscriptExpr>(Op)) {
+        P3100SubscriptUse = P3100SubscriptUseKind::NullAccessed;
+        P3100VirtualOperand = true;
+      }
+    }
     LValue LV = EmitLValue(E->getSubExpr());
+    P3100MemberAccessed = false;
+    if (P3100VirtualOperand &&
+        std::exchange(P3100SubscriptBaseGuarded, false) && P3100Use)
+      P3100Use->SkipNull = true;
+    if (P3100Use && LV.isSimple())
+      EmitP3100BaseConversionCheck(*P3100Use, LV.emitRawPointer(*this),
+                                   E->getSubExpr()->getType());
     Address This = LV.getAddress();
 
     // Perform the derived-to-base conversion
@@ -6470,6 +7455,14 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     Address Derived = GetAddressOfDerivedClass(
         LV.getAddress(), DerivedClassDecl, E->path_begin(), E->path_end(),
         /*NullCheckValue=*/false);
+    // P3100: the null check a use of the downcast object makes -- a member
+    // access, a member call, a reference binding -- is that of the operand,
+    // static_cast<D &>(*p) checking p: with the base at a nonzero offset in
+    // D, the object's address is not null where p is (see
+    // P3100ElementBase).
+    if (getLangOpts().ContractsP3100 && LV.isSimple())
+      mapP3100ElementBase(Derived.emitRawPointer(*this),
+                          LV.emitRawPointer(*this), /*Downcast=*/true);
 
     // C++11 [expr.static.cast]p2: Behavior is undefined if a downcast is
     // performed and the object is not of the derived type.
@@ -6814,7 +7807,7 @@ CGCallee CodeGenFunction::EmitCallee(const Expr *E) {
     }
   } else if (auto ME = dyn_cast<MemberExpr>(E)) {
     if (auto FD = dyn_cast<FunctionDecl>(ME->getMemberDecl())) {
-      EmitIgnoredExpr(ME->getBase());
+      EmitIgnoredMemberBase(ME->getBase(), ME->isArrow(), ME->getExprLoc());
       return EmitDirectCallee(*this, FD);
     }
 
@@ -6836,6 +7829,8 @@ CGCallee CodeGenFunction::EmitCallee(const Expr *E) {
   } else {
     functionType = E->getType();
     calleePtr = EmitLValue(E, KnownNonNull).getPointer(*this);
+    // P3100: a call through `*fp` checks fp for null.
+    EmitImplicitFunctionIndirectionGuard(E, calleePtr);
   }
   assert(functionType->isFunctionType());
 
@@ -6909,6 +7904,8 @@ LValue CodeGenFunction::EmitBinaryOperatorLValue(const BinaryOperator *E) {
     RValue RV;
     llvm::Value *Previous = nullptr;
     QualType SrcType = E->getRHS()->getType();
+    // P3100: an assignment from an object overlapping the destination.
+    P3100AssignOverlapScope Overlap(*this, E);
     // Check if LHS is a bitfield, if RHS contains an implicit cast expression
     // we want to extract that value and potentially (if the bitfield sanitizer
     // is enabled) use it to check for an implicit conversion.
@@ -6939,8 +7936,10 @@ LValue CodeGenFunction::EmitBinaryOperatorLValue(const BinaryOperator *E) {
       QualType DstType = E->getLHS()->getType();
       EmitBitfieldConversionCheck(Src, SrcType, Result, DstType,
                                   LV.getBitFieldInfo(), E->getExprLoc());
-    } else
+    } else {
+      Overlap.check(LV);
       EmitStoreThroughLValue(RV, LV);
+    }
 
     if (getLangOpts().OpenMP)
       CGM.getOpenMPRuntime().checkAndEmitLastprivateConditional(*this,
@@ -7350,14 +8349,46 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType,
 LValue CodeGenFunction::
 EmitPointerToDataMemberBinaryExpr(const BinaryOperator *E) {
   Address BaseAddr = Address::invalid();
+  const auto *MPT = E->getRHS()->getType()->castAs<MemberPointerType>();
   if (E->getOpcode() == BO_PtrMemI) {
+    // P3100: whether a load or store follows (see P3100MemberAccessed).
+    bool MemberAccessed = std::exchange(P3100MemberAccessed, false);
+    // P3100: this access's deferred null check (see P3100DeferNull), unless
+    // a virtual base's offset is loaded through p first.
+    P3100DeferredNullCheck *DeferNull = std::exchange(P3100DeferNull, nullptr);
+    if (isP3100VirtualBaseConversion(E->getLHS()))
+      DeferNull = nullptr;
+    // P3100: (a + i)->*pm is an indirection through a + i.
+    const BinaryOperator *SavedIndirected = std::exchange(
+        P3100IndirectedArith, getP3100IndirectedArith(*this, E->getLHS()));
     BaseAddr = EmitPointerWithAlignment(E->getLHS());
+    P3100IndirectedArith = SavedIndirected;
+    // P3100: p->*pm is (*p).*pm ([expr.mptr.oper]), a dereference of p.
+    if (getLangOpts().ContractsP3100) {
+      // A virtual base's offset is loaded through p: an access.
+      P3100MemberAccessed =
+          MemberAccessed || isP3100VirtualBaseConversion(E->getLHS());
+      P3100DeferNull = DeferNull;
+      EmitTypeCheck(TCK_MemberAccess, E->getExprLoc(), BaseAddr,
+                    getContext().getCanonicalTagType(
+                        MPT->getMostRecentCXXRecordDecl()));
+      P3100DeferNull = nullptr;
+      P3100MemberAccessed = false;
+    }
+  } else if (getLangOpts().ContractsP3100) {
+    // P3100: o.*pm is a member access of o, checked like o.m: the object
+    // expression's own indirection or subscript (*p, p[i]) checks p, with
+    // the leaf P3100MemberAccessed gives, which EmitCheckedLValue consumes,
+    // as it does P3100DeferNull.
+    BaseAddr = EmitCheckedLValue(E->getLHS(), TCK_MemberAccess).getAddress();
+    P3100MemberAccessed = false;
   } else {
     BaseAddr = EmitLValue(E->getLHS()).getAddress();
   }
 
   llvm::Value *OffsetV = EmitScalarExpr(E->getRHS());
-  const auto *MPT = E->getRHS()->getType()->castAs<MemberPointerType>();
+  // P3100: applying a null pointer to data member.
+  EmitImplicitNullMemberPointerGuard(OffsetV, MPT, E->getExprLoc());
 
   LValueBaseInfo BaseInfo;
   TBAAAccessInfo TBAAInfo;

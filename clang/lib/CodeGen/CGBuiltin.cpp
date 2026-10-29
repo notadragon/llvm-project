@@ -6017,7 +6017,8 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
   case Builtin::BIaddressof:
   case Builtin::BI__addressof:
   case Builtin::BI__builtin_addressof:
-    return RValue::get(EmitLValue(E->getArg(0)).getPointer(*this));
+    // P3100: std::addressof(*p) is an indirection through p.
+    return RValue::get(EmitUnaccessedLValue(E->getArg(0)).getPointer(*this));
   case Builtin::BI__builtin_function_start:
     return RValue::get(CGM.GetFunctionStart(
         E->getArg(0)->getAsBuiltinConstantDeclRef(CGM.getContext())));

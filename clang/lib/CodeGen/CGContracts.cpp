@@ -946,6 +946,196 @@ void CodeGenFunction::emitImplicitGuardReaction(ContractEvaluationSemantic Sem,
   EmitBlock(ContBB);
 }
 
+bool CodeGenFunction::EmitImplicitNullDerefGuard(llvm::Value *Ptr,
+                                                 SourceLocation Loc,
+                                                 bool Access) {
+  using CES = ContractEvaluationSemantic;
+
+  // The address of an element checks the pointer it was formed from, and
+  // that pointer the one it was formed from in turn, for a chain such as
+  // *(p + 1 + 2) (see P3100ElementBase).
+  while (true) {
+    auto It = P3100ElementBase.find(Ptr);
+    if (It == P3100ElementBase.end() || It->second.Element != Ptr ||
+        !It->second.Base)
+      break;
+    Ptr = It->second.Base;
+  }
+
+  // Nothing is checked through `this`: a null `this` was reported where the
+  // member function was called (DECISIONS.md E100 (a), E106 (a)).  In a
+  // lambda, CXXThisValue is the captured `this`.
+  if (Ptr == CXXThisValue || Ptr == CXXABIThisValue)
+    return false;
+
+  // A check deferred to the call through a pointer to member function whose
+  // object expression is being emitted: record it (see P3100DeferNull).
+  if (P3100DeferNull && !P3100DeferNull->Ptr) {
+    *std::exchange(P3100DeferNull, nullptr) = {Ptr, Loc};
+    return true;
+  }
+
+  // Resolve the semantic for ub:expr.unary.dereference.nullptr at this site:
+  // its .access leaf when a load or store follows the indirection, its
+  // .indirection leaf when nothing is accessed.  See
+  // EmitImplicitFlowOffReaction for the allowed-set rationale.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM,
+      Access ? "ub:expr.unary.dereference.nullptr.access"
+             : "ub:expr.unary.dereference.nullptr.indirection",
+      FD, Loc);
+
+  // assume / ignore: `*p` is an lvalue with no defined substitute, so leave the
+  // raw dereference untouched, as it is without the check.
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return false;
+
+  // Emit `if (Ptr == null) <reaction>` before the real access.  The reaction is
+  // a void statement (not a value substitution).
+  llvm::BasicBlock *ViolBB = createBasicBlock("nulldref.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("nulldref.ok");
+  llvm::Value *IsNull = Builder.CreateIsNull(Ptr);
+  Builder.CreateCondBr(IsNull, ViolBB, ContBB);
+
+  // observe reports then proceeds into the real (still-null) dereference.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
+                            "null pointer dereference", FD);
+  return true;
+}
+
+bool CodeGenFunction::isP3100NullCheckMade(SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+  if (!getLangOpts().ContractsP3100)
+    return false;
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  for (StringRef Leaf : {"ub:expr.unary.dereference.nullptr.access",
+                         "ub:expr.unary.dereference.nullptr.indirection"}) {
+    CES Sem = resolveImplicitContractSemantic(CGM, Leaf, FD, Loc);
+    if (Sem != CES::Assume && Sem != CES::Ignore)
+      return true;
+  }
+  return false;
+}
+
+void CodeGenFunction::EmitP3100MovedSanitizerNullCheck(
+    const P3100DeferredNullCheck &D) {
+  if (!D.SanPtr)
+    return;
+  // The sanitizer's null check alone: every other check of the type check
+  // it was moved from was made there, and no P3100 check is wanted here.
+  SanitizerSet Skipped;
+  Skipped.set(SanitizerKind::All);
+  Skipped.set(SanitizerKind::Null, false);
+  bool SavedSkipGuard = std::exchange(P3100SkipNullGuard, true);
+  EmitTypeCheck(static_cast<TypeCheckKind>(D.SanTCK), D.SanLoc, D.SanPtr,
+                D.SanTy, CharUnits::Zero(), Skipped);
+  P3100SkipNullGuard = SavedSkipGuard;
+}
+
+bool CodeGenFunction::isP3100NonNullPointerOperand(const Expr *E) {
+  if (IsWrappedCXXThis(E))
+    return true;
+  E = E->IgnoreParens();
+  while (const auto *CE = dyn_cast<CastExpr>(E)) {
+    switch (CE->getCastKind()) {
+    case CK_ArrayToPointerDecay:
+    case CK_FunctionToPointerDecay:
+    case CK_BuiltinFnToFnPtr:
+      return true;
+    case CK_NoOp:
+    case CK_BitCast:
+      E = CE->getSubExpr()->IgnoreParens();
+      continue;
+    default:
+      return false;
+    }
+  }
+  const auto *UO = dyn_cast<UnaryOperator>(E);
+  return UO && UO->getOpcode() == UO_AddrOf;
+}
+
+bool CodeGenFunction::isP3100IndirectionGLValue(const Expr *E,
+                                                SourceLocation &Loc) {
+  E = E->IgnoreParens();
+  if (const auto *CE = dyn_cast<CastExpr>(E)) {
+    if (CE->getCastKind() != CK_NoOp && CE->getCastKind() != CK_LValueBitCast)
+      return false;
+    return isP3100IndirectionGLValue(CE->getSubExpr(), Loc);
+  }
+  if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+    if (UO->getOpcode() == UO_Extension)
+      return isP3100IndirectionGLValue(UO->getSubExpr(), Loc);
+    if (UO->getOpcode() != UO_Deref ||
+        isP3100NonNullPointerOperand(UO->getSubExpr()))
+      return false;
+    Loc = UO->getExprLoc();
+    return true;
+  }
+  // The address of the result is the address of the operand chosen.
+  if (const auto *CO = dyn_cast<ConditionalOperator>(E))
+    return isP3100IndirectionGLValue(CO->getTrueExpr(), Loc) ||
+           isP3100IndirectionGLValue(CO->getFalseExpr(), Loc);
+  if (const auto *BO = dyn_cast<BinaryOperator>(E);
+      BO && BO->getOpcode() == BO_Comma)
+    return isP3100IndirectionGLValue(BO->getRHS(), Loc);
+  return false;
+}
+
+void CodeGenFunction::EmitImplicitIndirectionGuard(llvm::Value *Ptr,
+                                                   SourceLocation Loc) {
+  // The address of a local or a global is not null.
+  if (isa<llvm::AllocaInst, llvm::GlobalValue>(Ptr->stripPointerCasts()))
+    return;
+  EmitImplicitNullDerefGuard(Ptr, Loc, /*Access=*/false);
+}
+
+void CodeGenFunction::EmitImplicitFunctionIndirectionGuard(const Expr *E,
+                                                           llvm::Value *Ptr) {
+  if (!getLangOpts().ContractsP3100)
+    return;
+  // `*fp` with fp a null pointer to function is an indirection through a null
+  // pointer ([expr.unary.op]) whether the function is then called or a
+  // reference is bound to it.  The glvalue's address is fp's value (for a
+  // conditional, the value of the pointer chosen).
+  SourceLocation Loc;
+  if (isP3100IndirectionGLValue(E, Loc))
+    EmitImplicitIndirectionGuard(Ptr, Loc);
+}
+
+bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
+                                                  llvm::Align Align,
+                                                  SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for ub:basic.align.object.alignment at this site.
+  // Every access-site check is the group's .store leaf: the check is at a
+  // typed access, which a creation performing no store (.nostore) never
+  // makes.
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(
+      CGM, "ub:basic.align.object.alignment.store", FD, Loc);
+
+  // assume / ignore: a misaligned access is an lvalue with no defined
+  // substitute, so leave the raw access untouched, as it is without the check.
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return false;
+
+  // Emit `if ((Ptr & (Align - 1)) != 0) <reaction>` before the real access.
+  llvm::Value *PtrInt = Builder.CreatePtrToInt(Ptr, IntPtrTy);
+  llvm::Value *Masked = Builder.CreateAnd(
+      PtrInt, llvm::ConstantInt::get(IntPtrTy, Align.value() - 1));
+  llvm::Value *IsMisaligned = Builder.CreateIsNotNull(Masked);
+  llvm::BasicBlock *ViolBB = createBasicBlock("misalign.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("misalign.ok");
+  Builder.CreateCondBr(IsMisaligned, ViolBB, ContBB);
+
+  // observe reports then proceeds into the real (still-misaligned) access.
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
+                            "misaligned pointer access", FD);
+  return true;
+}
+
 ContractEvaluationSemantic
 CodeGenFunction::resolveImplicitSemantic(StringRef Group, SourceLocation Loc) {
   if (!getLangOpts().ContractsP3100)

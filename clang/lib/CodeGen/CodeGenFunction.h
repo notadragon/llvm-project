@@ -836,6 +836,217 @@ public:
   llvm::Value *BlockPointer = nullptr;
 
   llvm::DenseMap<const ValueDecl *, FieldDecl *> LambdaCaptureFields;
+
+  /// Set by EmitArraySubscriptExpr when it emitted the P3100 null guard on the
+  /// subscripted pointer; consumed by EmitCheckedLValue.
+  bool P3100SubscriptBaseGuarded = false;
+  /// P3100: whether the member access about to be emitted is followed by a
+  /// load or store, which makes a null object pointer the .access leaf of
+  /// ub:expr.unary.dereference.nullptr rather than the .indirection one.  Set
+  /// by EmitCheckedLValue for an accessed member access and consumed (reset) by
+  /// the member access itself, so it never reaches an unrelated one.
+  bool P3100MemberAccessed = false;
+  /// P3100: set by EmitCheckedLValue when an accessed subscript is the object
+  /// expression of a member access whose address alone is used (&q[i].m):
+  /// the subscript's null guard is then the .indirection leaf rather than the
+  /// .access one.  Consumed by EmitArraySubscriptExpr first thing.
+  bool P3100SubscriptIndirection = false;
+  /// P3100: how the subscript about to be emitted by EmitLValue is used,
+  /// where EmitLValue cannot tell: the source or target of a copy, under a
+  /// qualification conversion (EmitCheckedLValue), or the operand of a
+  /// conversion to a virtual base (EmitCastLValue).  Consumed by
+  /// EmitArraySubscriptExpr first thing.
+  enum class P3100SubscriptUseKind {
+    None,
+    /// The null check is an accessed subscript's (its leaf as
+    /// P3100SubscriptIndirection says), the bounds check an unaccessed one's:
+    /// a copy of an empty class, a conversion to a virtual base.
+    NullAccessed,
+    /// Accessed: the copy reads or writes the element.
+    Accessed,
+  };
+  P3100SubscriptUseKind P3100SubscriptUse = P3100SubscriptUseKind::None;
+  /// P3100: set by EmitCheckedLValue around the emission of the operand of a
+  /// conversion to a base class, which it checks for null only: the
+  /// alignment, object-size and vptr checks stay with the converted object.
+  /// Consumed by EmitCheckedLValue first thing.
+  bool P3100NullCheckOnly = false;
+  /// P3100: whether the glvalue E designates a member subobject -- a class
+  /// member access, a pointer-to-data-member access, or an element of a
+  /// member array -- whose object expression the member access already
+  /// checked for null, so that a null check of its own address would report
+  /// the same null dereference again.
+  static bool isP3100CheckedMemberSubobject(const Expr *E);
+  /// P3100: whether the glvalue E is already a reference -- a reference
+  /// variable or parameter, a reference member, a call returning a reference
+  /// (through std::move and the like, their argument), under parentheses and
+  /// qualification conversions.  It indirects through nothing: a null
+  /// reference was reported where it was bound, and a binding to it, an
+  /// access through it or a conversion of it is not checked for null again.
+  static bool isP3100ReferenceGLValue(const Expr *E);
+  /// P3100: set around a type check whose ub:expr.unary.dereference.nullptr
+  /// guard is not wanted (the glvalue is already a reference, see
+  /// isP3100ReferenceGLValue), leaving the sanitizer null check as it is.
+  bool P3100SkipNullGuard = false;
+  /// P3100: set by EmitCheckedLValue when the load or store of the glvalue it
+  /// is about to emit copies an empty class (an empty non-virtual base of
+  /// the glvalue's class): the access reads or writes no object, so its null
+  /// check is the .indirection leaf.  Consumed by EmitCheckedLValue first
+  /// thing, and set again around its own type check for EmitTypeCheck.
+  bool P3100EmptyCopy = false;
+  /// P3100: the pointer arithmetic (a + i, a - i) that is the operand of the
+  /// indirection being emitted (*(a + i), (a + i)->m), so EmitPointerArithmetic
+  /// also checks it for ub:expr.unary.dereference.invalid.known.
+  const BinaryOperator *P3100IndirectedArith = nullptr;
+  /// P3100: the pointer arithmetic that is the pointer operand of the
+  /// subscript being emitted, (p + 1)[i], so that EmitPointerArithmetic maps
+  /// it (and each inner sum of a chain) to its innermost pointer for the null
+  /// check (see P3100ElementBase); no ub:expr.unary.dereference.invalid.known
+  /// check is made of it, the subscript checking the element's position.
+  const BinaryOperator *P3100SubscriptBaseArith = nullptr;
+  /// P3100: whether BO is Root (P3100IndirectedArith or
+  /// P3100SubscriptBaseArith) or a sum in the chain of pointer operands
+  /// under it.
+  static bool isP3100NullCheckedArith(const BinaryOperator *BO,
+                                      const BinaryOperator *Root);
+  /// P3100: set around the type check of a member function call that reads
+  /// the vtable pointer through the object pointer -- a call to a virtual
+  /// function that is not qualified, devirtualized or not (DECISIONS.md
+  /// E110 (a)) -- whose null check is then the .access leaf (DECISIONS.md
+  /// E102 (a)).
+  bool P3100VTableRead = false;
+  /// P3100: an object pointer's null check deferred by P3100DeferNull: the
+  /// pointer EmitImplicitNullDerefGuard would have checked, and where.
+  struct P3100DeferredNullCheck {
+    llvm::Value *Ptr = nullptr;
+    SourceLocation Loc;
+    /// The -fsanitize=null check of the same object that the type check
+    /// the P3100 check is taken from would have made (its pointer, type,
+    /// TypeCheckKind and location): moved with it, and made after the
+    /// pointer to member function is evaluated only where the P3100 check
+    /// is not (its leaf resolves to assume or ignore), so that the null
+    /// dereference is reported once (DECISIONS.md E111 (a)).  See
+    /// EmitP3100MovedSanitizerNullCheck.
+    llvm::Value *SanPtr = nullptr;
+    QualType SanTy;
+    unsigned SanTCK = 0;
+    SourceLocation SanLoc;
+  };
+  /// P3100: set while the object expression of a call through a pointer to
+  /// member function of a polymorphic class on a member subobject is
+  /// emitted, (p->m.*pmf)(): whether the call reads the vtable pointer
+  /// through p only pmf's value says, so the member access's null check of
+  /// p is made once pmf is evaluated, under the leaf its virtual bit selects
+  /// (DECISIONS.md E102 (a)).  Passed down, as P3100MemberAccessed and
+  /// P3100SubscriptUse are, to the one member access, subscript or base
+  /// conversion whose check of p it takes over; each consumes it first
+  /// thing, and EmitImplicitNullDerefGuard records the pointer instead of
+  /// checking it.
+  P3100DeferredNullCheck *P3100DeferNull = nullptr;
+  /// P3100: set around the type check of the object of a call through a
+  /// pointer to member function of a polymorphic class whose P3100 null
+  /// check is made once the pointer to member function is evaluated
+  /// (P3100LeafByValue in EmitCXXMemberPointerCallExpr): the type check
+  /// records its -fsanitize=null check here instead of making it (see
+  /// P3100DeferredNullCheck::SanPtr).
+  P3100DeferredNullCheck *P3100MoveSanitizerNull = nullptr;
+  /// P3100: set by EmitCtorPrologue while a constructor's base-class or
+  /// delegating mem-initializers are emitted, where an operation on *this is
+  /// undefined because its bases are not yet initialized
+  /// (ub:class.base.init.mem.fun).
+  bool P3100InBaseMemInit = false;
+  /// P3100: set by ExitCXXTryStmt while a handler of a constructor's or
+  /// destructor's function-try-block is emitted, where a member of *this
+  /// referred to is undefined (ub:except.handle.handler.ctor.dtor).
+  bool P3100InCdtorHandler = false;
+  /// P3100: set by EmitCXXNewExpr around the type check of a non-allocating
+  /// placement new, whose pointer it has checked itself for
+  /// ub:expr.new.non.allocating.null and ub:basic.align.object.alignment, so
+  /// EmitTypeCheck emits neither implicit assertion again.
+  bool P3100PlacementNewChecked = false;
+  /// P3100: the pointer an explicit cast to a pointer type produced, and the
+  /// alignment the cast-to type requires of it, where the cast kept a smaller
+  /// alignment derived from a declaration -- `(int *)(buf + o)`,
+  /// `(int *)&buf[o]`, buf a character array -- so that the misalignment
+  /// check of the access made through it requires the type's alignment, not
+  /// the derived one (CLANG-810).  Set by EmitPointerWithAlignment, carried
+  /// to a member or an element of the object by EmitMemberExpr and
+  /// EmitArraySubscriptExpr, and consumed by the next type check of that
+  /// pointer (takeP3100CastAlign); EmitStmt clears it.  The sanitizer's own
+  /// alignment check does not use it (it stays stock).
+  struct P3100CastAlignInfo {
+    llvm::WeakVH Ptr;
+    CharUnits Align;
+  };
+  P3100CastAlignInfo P3100CastAlign;
+  /// P3100: record Ptr, produced by a cast whose type requires Align.
+  void setP3100CastAlign(llvm::Value *Ptr, CharUnits Align);
+  /// P3100: if Ptr is P3100CastAlign's pointer, clear it and return the
+  /// alignment it requires of an object of type Ty there (at most Ty's
+  /// natural alignment); otherwise zero.
+  CharUnits takeP3100CastAlign(llvm::Value *Ptr, QualType Ty);
+  /// P3100: set by FinishFunction when a [[noreturn]] function's
+  /// postconditions are evaluated in the epilogue, so that EmitPostContracts
+  /// makes the ub:dcl.attr.noreturn.eventually.returns check after them.
+  bool P3100NoreturnCheckAfterPosts = false;
+  /// P3100: the glvalue (without parentheses or no-op glvalue casts) whose
+  /// load supplies the value stored by the scalar assignment being emitted,
+  /// and the address EmitCheckedLValue loaded it from, for
+  /// ub:expr.assign.overlap (see P3100AssignOverlapScope).
+  const Expr *P3100OverlapSrc = nullptr;
+  Address P3100OverlapSrcAddr = Address::invalid();
+  /// P3100: pointer arithmetic on an array of statically-known bound: the
+  /// value it produced, the position within the array it designates (in
+  /// elements, of the index type) and the bound, so that arithmetic or a
+  /// subscript applied to it is checked against the same array.
+  struct P3100KnownArithInfo {
+    llvm::Value *Result;
+    llvm::Value *Position;
+    llvm::ConstantInt *Bound;
+  };
+  llvm::DenseMap<const Expr *, P3100KnownArithInfo> P3100KnownArith;
+  /// P3100: the address of an element, mapped to the pointer it was formed
+  /// from -- `p + i` for a subscript p[i] that did not check p itself, `p + i`
+  /// for an indirection through pointer arithmetic, *(p + i), constant or
+  /// not, and each sum of a chain such as *(p + 1 + 2) or (p + 1)[i] -- so
+  /// that the null check a use of the element makes on its address (a
+  /// reference bound to it, a member function called on it, a load or store)
+  /// checks p instead: the address is not null for a nonzero offset, even
+  /// where p is (DECISIONS.md E83 (c), E97 (c), E99 (a), E103 (a)).  Also a
+  /// conversion's result, mapped to its operand: `a + i` converted to a base
+  /// as the object pointer of `->*`, ((a + i)->*pm), and the object a
+  /// downcast to a reference forms, static_cast<D &>(*p), whose address is
+  /// not null where p is if the base is at a nonzero offset in D (see
+  /// mapP3100ElementBase).  Written by EmitArraySubscriptExpr,
+  /// EmitPointerArithmetic and mapP3100ElementBase, read (following a chain
+  /// to its innermost pointer) by EmitImplicitNullDerefGuard.  Each entry
+  /// holds its key in a WeakVH, so an entry whose address was deleted (and
+  /// its memory reused) is ignored.  Downcast marks the object a downcast to
+  /// a reference forms (see getP3100DowncastOperand).
+  struct P3100ElementBaseInfo {
+    llvm::WeakVH Element;
+    llvm::WeakVH Base;
+    bool Downcast = false;
+  };
+  llvm::DenseMap<const llvm::Value *, P3100ElementBaseInfo> P3100ElementBase;
+  /// P3100: map To, an address a conversion formed from From, to From in
+  /// P3100ElementBase, so that a null check of To checks From (and what From
+  /// is mapped to in turn).  Downcast: To is the object a downcast to a
+  /// reference forms.
+  void mapP3100ElementBase(llvm::Value *To, llvm::Value *From,
+                           bool Downcast = false);
+  /// P3100: if Ptr is the address of the object a downcast to a reference
+  /// formed, static_cast<D &>(*p), with the base at a nonzero offset in D
+  /// (mapped in P3100ElementBase), and a leaf of
+  /// ub:expr.unary.dereference.nullptr is checked at Loc, the pointer p it
+  /// was formed from (followed through P3100ElementBase); otherwise null.
+  /// The vptr check of the downcast and of its use tests p for null, not the
+  /// object's address, which is not null where p is (DECISIONS.md E116 (a)).
+  llvm::Value *getP3100DowncastOperand(llvm::Value *Ptr, SourceLocation Loc);
+  /// P3100: whether a null check of ub:expr.unary.dereference.nullptr is made
+  /// at LOC under either leaf (.access or .indirection: its semantic there is
+  /// neither assume nor ignore).
+  bool isP3100NullCheckMade(SourceLocation Loc);
   FieldDecl *LambdaThisCaptureField = nullptr;
 
   /// A mapping from NRVO variables to the flags used to indicate
@@ -3612,7 +3823,8 @@ public:
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, LValue LV,
                      QualType Type, SanitizerSet SkippedChecks = SanitizerSet(),
                      llvm::Value *ArraySize = nullptr) {
-    if (!sanitizePerformTypeCheck())
+    // P3100 implicit null-dereference assertions also need this path.
+    if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
       return;
     EmitTypeCheck(TCK, Loc, LV.emitRawPointer(*this), Type, LV.getAlignment(),
                   SkippedChecks, ArraySize);
@@ -3622,7 +3834,8 @@ public:
                      QualType Type, CharUnits Alignment = CharUnits::Zero(),
                      SanitizerSet SkippedChecks = SanitizerSet(),
                      llvm::Value *ArraySize = nullptr) {
-    if (!sanitizePerformTypeCheck())
+    // P3100 implicit null-dereference assertions also need this path.
+    if (!sanitizePerformTypeCheck() && !getLangOpts().ContractsP3100)
       return;
     EmitTypeCheck(TCK, Loc, Addr.emitRawPointer(*this), Type, Alignment,
                   SkippedChecks, ArraySize);
