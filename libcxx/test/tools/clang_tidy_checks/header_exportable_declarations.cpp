@@ -130,9 +130,16 @@ void header_exportable_declarations::registerMatchers(clang::ast_matchers::Match
     [[fallthrough]];
   case FileType::ModulePartition:
   case FileType::CompatModulePartition:
-    finder->addMatcher(namedDecl(anyOf(isExpansionInFileMatching(filename_), isExpansionInFileMatching(extra_header_)))
-                           .bind("header_exportable_declarations"),
-                       this);
+    // A partition has no never-matching default for extra_header_, as a header
+    // has, and an empty regex is an error (an assertion failure in a
+    // clang-tidy built with assertions), so match it only when it is given.
+    if (extra_header_.empty())
+      finder->addMatcher(
+          namedDecl(isExpansionInFileMatching(filename_)).bind("header_exportable_declarations"), this);
+    else
+      finder->addMatcher(namedDecl(anyOf(isExpansionInFileMatching(filename_), isExpansionInFileMatching(extra_header_)))
+                             .bind("header_exportable_declarations"),
+                         this);
     break;
   case FileType::Module:
   case FileType::CompatModule:

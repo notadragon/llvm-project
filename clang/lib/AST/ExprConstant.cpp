@@ -1314,6 +1314,7 @@ static bool isModification(AccessKinds AK) {
   case AK_TypeId:
   case AK_IsWithinLifetime:
   case AK_Dereference:
+  case AK_VirtualBaseConversion:
     return false;
   case AK_Assign:
   case AK_Increment:
@@ -1356,6 +1357,7 @@ static bool isValidIndeterminateAccess(AccessKinds AK) {
   case AK_MemberCall:
   case AK_DynamicCast:
   case AK_TypeId:
+  case AK_VirtualBaseConversion:
     // These aren't really meaningful on scalars.
     return true;
   }
@@ -3284,6 +3286,11 @@ static bool HandleLValueDirectVirtualBase(EvalInfo &Info, const Expr *E,
   return true;
 }
 
+// Check that an lvalue designates an object that is within its lifetime (or its
+// period of construction or destruction), diagnosing if not. Defined below.
+static bool checkDynamicType(EvalInfo &Info, const Expr *E, const LValue &This,
+                             AccessKinds AK, bool Polymorphic);
+
 static bool HandleLValueBase(EvalInfo &Info, const Expr *E, LValue &Obj,
                              const CXXRecordDecl *DerivedDecl,
                              const CXXBaseSpecifier *Base) {
@@ -3294,6 +3301,19 @@ static bool HandleLValueBase(EvalInfo &Info, const Expr *E, LValue &Obj,
 
   SubobjectDesignator &D = Obj.Designator;
   if (D.Invalid)
+    return false;
+
+  // Converting to a virtual base class requires consulting the most-derived
+  // object's layout to find the virtual base offset, which is a use of the
+  // object. Performing that on an object that is outside its lifetime -- e.g.
+  // one that has been deleted or whose construction has not yet begun -- is
+  // undefined behavior and therefore not a constant expression. (A non-virtual
+  // base conversion uses a static offset and does not access the object, so it
+  // is handled above and is unaffected.) Diagnose using the same object
+  // liveness check applied to other operations that consult an object's
+  // most-derived type, such as member calls.
+  if (!checkDynamicType(Info, E, Obj, AK_VirtualBaseConversion,
+                        /*Polymorphic=*/false))
     return false;
 
   // Extract most-derived object and corresponding type.

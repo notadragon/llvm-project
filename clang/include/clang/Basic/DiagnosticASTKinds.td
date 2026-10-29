@@ -187,14 +187,15 @@ def access_kind
     : TextSubstitution<
           "%select{read of|read of|assignment to|increment of|decrement of|"
           "member call on|dynamic_cast of|typeid applied to|construction of|"
-          "destruction of|read of|read of}0">;
+          "destruction of|read of|read of|conversion to a virtual base of}0">;
 def access_kind_subobject : TextSubstitution<
   "%select{read of|read of|assignment to|increment of|decrement of|"
   "member call on|dynamic_cast of|typeid applied to|"
-  "construction of subobject of|destruction of|read of}0">;
+  "construction of subobject of|destruction of|read of|read of|"
+  "conversion to a virtual base of}0">;
 def access_kind_volatile : TextSubstitution<
   "%select{read of|read of|assignment to|increment of|decrement of|"
-  "<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>}0">;
+  "<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>|<ERROR>}0">;
 def note_constexpr_access_uninit : Note<
   "%sub{access_kind_subobject}0 "
   "%select{object outside its lifetime|uninitialized object}1 "

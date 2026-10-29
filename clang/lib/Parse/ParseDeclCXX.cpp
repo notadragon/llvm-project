@@ -4220,7 +4220,10 @@ void Parser::ParseTrailingRequiresClause(Declarator &D) {
   TrailingRequiresClause =
       Actions.ActOnFinishTrailingRequiresClause(TrailingRequiresClause);
 
-  if (!D.isDeclarationOfFunction()) {
+  // isDeclarationOfFunction looks only at the declarator's chunks, which a
+  // typedef of a function type has too; it declares a type, not a function.
+  if (!D.isDeclarationOfFunction() ||
+      D.getDeclSpec().getStorageClassSpec() == DeclSpec::SCS_typedef) {
     Diag(RequiresKWLoc,
          diag::err_requires_clause_on_declarator_not_declaring_a_function);
     return;

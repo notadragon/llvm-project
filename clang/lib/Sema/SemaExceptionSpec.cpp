@@ -1291,7 +1291,6 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Expr::ExprWithCleanupsClass:
   case Expr::ExtVectorElementExprClass:
   case Expr::MatrixElementExprClass:
-  case Expr::InitListExprClass:
   case Expr::ArrayInitLoopExprClass:
   case Expr::MemberExprClass:
   case Expr::ObjCIsaExprClass:
@@ -1339,6 +1338,17 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
     CanThrowResult CT =
         cast<Expr>(S)->isTypeDependent() ? CT_Dependent : CT_Cannot;
     return mergeCanThrow(CT, canSubStmtsThrow(*this, S));
+  }
+
+  case Expr::InitListExprClass: {
+    // The elements the list leaves to its array filler are initialized by the
+    // filler, which is not among the children.
+    const auto *ILE = cast<InitListExpr>(S);
+    CanThrowResult CT = ILE->isTypeDependent() ? CT_Dependent : CT_Cannot;
+    CT = mergeCanThrow(CT, canSubStmtsThrow(*this, ILE));
+    if (const Expr *Filler = ILE->getArrayFiller())
+      CT = mergeCanThrow(CT, canThrow(Filler));
+    return CT;
   }
 
   case Expr::CXXDefaultArgExprClass:
