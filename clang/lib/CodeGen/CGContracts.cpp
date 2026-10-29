@@ -843,6 +843,15 @@ static ContractEvaluationSemantic resolveImplicitContractSemantic(
   return Sem;
 }
 
+bool CodeGenFunction::implicitContractApplies(StringRef Group,
+                                              SourceLocation Loc) {
+  if (!getLangOpts().ContractsP3100)
+    return false;
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  return resolveImplicitContractSemantic(CGM, Group, FD, Loc) !=
+         ContractEvaluationSemantic::Assume;
+}
+
 llvm::Value *CodeGenFunction::EmitImplicitIntOpGuard(
     QualType Ty, llvm::Value *IsViolation, SourceLocation Loc,
     StringRef GroupName, StringRef Comment,
@@ -1134,6 +1143,100 @@ bool CodeGenFunction::EmitImplicitMisalignedGuard(llvm::Value *Ptr,
   emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
                             "misaligned pointer access", FD);
   return true;
+}
+
+llvm::Value *CodeGenFunction::EmitImplicitSignedOverflowOp(
+    QualType Ty, SourceLocation Loc, StringRef GroupName, StringRef Comment,
+    ImplicitOverflowOp Op, llvm::Value *LHS, llvm::Value *RHS) {
+  using CES = ContractEvaluationSemantic;
+
+  // Resolve the semantic for GroupName, the leaf of
+  // ub:expr.expr.eval.signed.integer for this operation, at this site.
+  // See EmitImplicitFlowOffReaction for the allowed-set rationale; Clang's
+  // codegen is always in a valid EH context, so throwing enforce/observe are
+  // supported here (no need to exclude them as the GCC middle-end does).
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  CES Sem = resolveImplicitContractSemantic(CGM, GroupName, FD, Loc);
+
+  auto EmitNSW = [&]() -> llvm::Value * {
+    switch (Op) {
+    case ImplicitOverflowOp::Add:
+      return Builder.CreateNSWAdd(LHS, RHS, "add");
+    case ImplicitOverflowOp::Sub:
+      return Builder.CreateNSWSub(LHS, RHS, "sub");
+    case ImplicitOverflowOp::Mul:
+      return Builder.CreateNSWMul(LHS, RHS, "mul");
+    }
+    llvm_unreachable("bad ImplicitOverflowOp");
+  };
+  auto EmitPlain = [&]() -> llvm::Value * {
+    switch (Op) {
+    case ImplicitOverflowOp::Add:
+      return Builder.CreateAdd(LHS, RHS, "add");
+    case ImplicitOverflowOp::Sub:
+      return Builder.CreateSub(LHS, RHS, "sub");
+    case ImplicitOverflowOp::Mul:
+      return Builder.CreateMul(LHS, RHS, "mul");
+    }
+    llvm_unreachable("bad ImplicitOverflowOp");
+  };
+
+  // assume: keep the no-overflow assumption (nsw), as without the check.
+  if (Sem == CES::Assume)
+    return EmitNSW();
+  // ignore: defined 2's-complement wrapping, no check (-fwrapv-equivalent).
+  if (Sem == CES::Ignore)
+    return EmitPlain();
+
+  // Checking semantic: compute the wrapped result and the overflow bit
+  // together, then branch on overflow to the reaction.  The wrapped result
+  // dominates the continuation, so observe/noexcept_observe continue with it
+  // and no PHI is needed.
+  llvm::Intrinsic::ID IID;
+  switch (Op) {
+  case ImplicitOverflowOp::Add:
+    IID = llvm::Intrinsic::sadd_with_overflow;
+    break;
+  case ImplicitOverflowOp::Sub:
+    IID = llvm::Intrinsic::ssub_with_overflow;
+    break;
+  case ImplicitOverflowOp::Mul:
+    IID = llvm::Intrinsic::smul_with_overflow;
+    break;
+  }
+  llvm::Function *Intrin = CGM.getIntrinsic(IID, LHS->getType());
+  llvm::Value *Pair = Builder.CreateCall(Intrin, {LHS, RHS});
+  llvm::Value *Result = Builder.CreateExtractValue(Pair, 0, "ovf.res");
+  llvm::Value *Overflowed = Builder.CreateExtractValue(Pair, 1, "ovf.bit");
+
+  llvm::BasicBlock *ViolBB = createBasicBlock("ovf.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("ovf.ok");
+  Builder.CreateCondBr(Overflowed, ViolBB, ContBB);
+
+  EmitBlock(ViolBB);
+  if (Sem == CES::QuickEnforce) {
+    CreateTrap(*this);
+  } else {
+    bool IsNoExcept =
+        (Sem == CES::NoexceptEnforce || Sem == CES::NoexceptObserve);
+    bool IsEnforce = (Sem == CES::Enforce || Sem == CES::NoexceptEnforce);
+    llvm::Constant *Info = FinishViolationInfo(
+        *this,
+        getContext().BuildViolationObject(Loc, Comment, std::nullopt, FD));
+    EmitCxaContractViolationCall(ContractKind::Implicit, Sem,
+                                 ContractDetectionMode::PredicateFailed, Info,
+                                 IsNoExcept, /*IsPostCapture=*/false);
+    // enforce/noexcept_enforce: the entry point is noreturn and already
+    // terminated the block.  observe/noexcept_observe: the handler returned --
+    // continue with the defined wrapped result (report then proceed).
+    if (IsEnforce)
+      Builder.CreateUnreachable();
+    else
+      Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+  return Result;
 }
 
 ContractEvaluationSemantic
