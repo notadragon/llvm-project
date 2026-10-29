@@ -1874,6 +1874,79 @@ void CodeGenFunction::EmitImplicitHandlerMemberCheck(const Expr *Object,
       Loc);
 }
 
+// P3100: calling a member function of an object, or applying typeid or
+// dynamic_cast to it, before the mem-initializers for its base classes have
+// completed, which includes a precondition of its constructor, or after its
+// bases have been destroyed, which includes a postcondition of its
+// destructor, is undefined ({class.base.init.mem.fun}).  The check is lexical
+// and unconditional, for the direct forms on *this.  A virtual call, typeid
+// and dynamic_cast are the polymorphic leaves, any other member function call
+// the nonpolymorphic leaf of where it is.  The mem-initializers are marked
+// by EmitCtorPrologue (P3100InBaseMemInit); the contract is the one whose
+// predicate is being emitted (CurContract), for the function being emitted.
+static bool isP3100CdtorContract(const Decl *CodeDecl,
+                                 const CurrentContractInfo *CI) {
+  if (!CI || !CI->Contract)
+    return false;
+  ContractKind Kind = CI->Contract->getContractKind();
+  return (isa_and_nonnull<CXXConstructorDecl>(CodeDecl) &&
+          Kind == ContractKind::Pre) ||
+         (isa_and_nonnull<CXXDestructorDecl>(CodeDecl) &&
+          Kind == ContractKind::Post);
+}
+
+void CodeGenFunction::EmitImplicitThisOperationCheck(const Expr *Object,
+                                                     bool IsArrow,
+                                                     P3100ThisOp Op,
+                                                     SourceLocation Loc) {
+  if (!getLangOpts().ContractsP3100 || !isP3100ThisObject(Object, IsArrow))
+    return;
+  bool MemInit = P3100InBaseMemInit;
+  if (!MemInit && !isP3100CdtorContract(CurCodeDecl, CurContract()))
+    return;
+  StringRef Group;
+  switch (Op) {
+  case P3100ThisOp::Call:
+    Group = MemInit ? "ub:class.base.init.mem.fun.nonpolymorphic.mem.init"
+                    : "ub:class.base.init.mem.fun.nonpolymorphic.contract";
+    break;
+  case P3100ThisOp::VirtualCall:
+    Group = "ub:class.base.init.mem.fun.polymorphic.virtual.call";
+    break;
+  case P3100ThisOp::Typeid:
+    Group = "ub:class.base.init.mem.fun.polymorphic.typeid";
+    break;
+  case P3100ThisOp::DynamicCast:
+    Group = "ub:class.base.init.mem.fun.polymorphic.dynamic.cast";
+    break;
+  }
+  EmitImplicitUnconditionalCheck(
+      Group,
+      "member function, typeid or dynamic_cast used before the bases are "
+      "initialized or after they are destroyed",
+      Loc);
+}
+
+void CodeGenFunction::EmitImplicitDynamicCastThisCheck(
+    const CXXDynamicCastExpr *DCE) {
+  if (!P3100InBaseMemInit && !CurContract())
+    return;
+  // Whatever the cast kind -- a run-time check, an upcast, an identity cast
+  // -- a dynamic_cast of a polymorphic *this is the operation.
+  const Expr *Operand = DCE->getSubExpr();
+  QualType SrcTy = Operand->getType();
+  bool IsPointer = false;
+  if (const auto *PT = SrcTy->getAs<PointerType>()) {
+    SrcTy = PT->getPointeeType();
+    IsPointer = true;
+  }
+  const auto *RD = SrcTy->getAsCXXRecordDecl();
+  if (!RD || !RD->hasDefinition() || !RD->isPolymorphic())
+    return;
+  EmitImplicitThisOperationCheck(Operand, IsPointer, P3100ThisOp::DynamicCast,
+                                 DCE->getExprLoc());
+}
+
 // P3100: applying a null pointer to member with .* or ->* is undefined
 // ({expr.mptr.oper.member.func.null}).  The ABI's null test is the
 // representation's: a data member offset of -1, a zero function pointer (with

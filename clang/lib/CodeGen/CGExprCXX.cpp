@@ -243,6 +243,13 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   // P3100: a member function of *this called in a constructor or destructor
   // function-try-block handler.
   EmitImplicitHandlerMemberCheck(Base, IsArrow, CE->getExprLoc());
+  // P3100: a member function of *this called before the bases are
+  // initialized or after they are destroyed.
+  EmitImplicitThisOperationCheck(
+      Base, IsArrow,
+      CanUseVirtualCall ? P3100ThisOp::VirtualCall : P3100ThisOp::Call,
+      CE->getExprLoc());
+
   const CXXMethodDecl *DevirtualizedMethod = nullptr;
   if (CanUseVirtualCall &&
       MD->getDevirtualizedMethod(Base, getLangOpts().AppleKext)) {
@@ -2647,6 +2654,13 @@ llvm::Value *CodeGenFunction::EmitCXXTypeidExpr(const CXXTypeidExpr *E) {
         CGM.GetAddrOfRTTIDescriptor(E->getTypeOperand(getContext()));
     return MaybeASCast(TypeInfo);
   }
+
+  // P3100: typeid of a polymorphic *this before the bases are initialized,
+  // whether or not the operand is evaluated.
+  if (const auto *RD = E->getExprOperand()->getType()->getAsCXXRecordDecl();
+      RD && RD->hasDefinition() && RD->isPolymorphic())
+    EmitImplicitThisOperationCheck(E->getExprOperand(), /*IsArrow=*/false,
+                                   P3100ThisOp::Typeid, E->getExprLoc());
 
   const Expr *Operand = E->getExprOperand();
   QualType OperandTy = Operand->getType();
