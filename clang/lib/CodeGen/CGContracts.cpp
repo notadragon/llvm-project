@@ -1745,6 +1745,35 @@ llvm::Value *CodeGenFunction::EmitP3100NestedPosition(llvm::Value *Pos,
       Builder.CreateAdd(BoundW, llvm::ConstantInt::get(Ty, 1)), Sum);
 }
 
+// P3100: applying a null pointer to member with .* or ->* is undefined
+// ({expr.mptr.oper.member.func.null}).  The ABI's null test is the
+// representation's: a data member offset of -1, a zero function pointer (with
+// a clear virtual bit where the ABI keeps it in the adjustment).  Nothing
+// defined can replace the member pointer, so observe continues with it.
+void CodeGenFunction::EmitImplicitNullMemberPointerGuard(
+    llvm::Value *MemPtr, const MemberPointerType *MPT, SourceLocation Loc) {
+  using CES = ContractEvaluationSemantic;
+  if (!getLangOpts().ContractsP3100 || !HaveInsertPoint() ||
+      isa<llvm::Constant>(MemPtr))
+    return;
+  bool Function = MPT->isMemberFunctionPointer();
+  CES Sem = resolveImplicitSemantic(
+      Function ? "ub:expr.mptr.oper.member.func.null.function"
+               : "ub:expr.mptr.oper.member.func.null.data",
+      Loc);
+  if (Sem == CES::Assume || Sem == CES::Ignore)
+    return;
+  llvm::Value *IsNotNull =
+      CGM.getCXXABI().EmitMemberPointerIsNotNull(*this, MemPtr, MPT);
+  llvm::BasicBlock *ViolBB = createBasicBlock("mptr.null.viol");
+  llvm::BasicBlock *ContBB = createBasicBlock("mptr.null.ok");
+  Builder.CreateCondBr(IsNotNull, ContBB, ViolBB);
+  emitImplicitGuardReaction(Sem, ViolBB, ContBB, Loc,
+                            Function ? "null pointer to member function"
+                                     : "null pointer to data member",
+                            dyn_cast_or_null<FunctionDecl>(CurFuncDecl));
+}
+
 // P3098: emit a postcondition's capture-construction DeclStmt, converting a
 // construction exception into a post_capture violation. See the
 // CodeGenFunction.h declaration for the contract.

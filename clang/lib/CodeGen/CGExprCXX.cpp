@@ -754,6 +754,45 @@ CodeGenFunction::EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
 
   // Get the member function pointer.
   llvm::Value *MemFnPtr = EmitScalarExpr(MemFnExpr);
+  // P3100: a call through a null pointer to member function.
+  EmitImplicitNullMemberPointerGuard(MemFnPtr, MPT, E->getExprLoc());
+  llvm::Value *P3100LeafPtr = P3100LeafByValue ? ThisPtr : DeferredNull.Ptr;
+  if (P3100LeafPtr) {
+    SourceLocation Loc =
+        P3100LeafByValue ? E->getExprLoc() : DeferredNull.Loc;
+    const P3100DeferredNullCheck &Moved =
+        P3100LeafByValue ? MovedSanitizerNull : DeferredNull;
+    auto EmitGuard = [&](bool Access) {
+      if (!EmitImplicitNullDerefGuard(P3100LeafPtr, Loc, Access))
+        EmitP3100MovedSanitizerNullCheck(Moved);
+    };
+    llvm::Value *IsVirtual =
+        CGM.getCXXABI().EmitMemberFunctionPointerIsVirtual(*this, MemFnPtr,
+                                                           MPT);
+    if (!IsVirtual) {
+      EmitGuard(/*Access=*/false);
+    } else {
+      llvm::BasicBlock *VirtualBB = createBasicBlock("p3100.memptr.virtual");
+      llvm::BasicBlock *NonVirtualBB =
+          createBasicBlock("p3100.memptr.nonvirtual");
+      llvm::BasicBlock *EndBB = createBasicBlock("p3100.memptr.end");
+      Builder.CreateCondBr(IsVirtual, VirtualBB, NonVirtualBB);
+      EmitBlock(VirtualBB);
+      EmitGuard(/*Access=*/true);
+      EmitBranch(EndBB);
+      EmitBlock(NonVirtualBB);
+      EmitGuard(/*Access=*/false);
+      EmitBranch(EndBB);
+      EmitBlock(EndBB);
+    }
+  }
+  if (P3100DeferVptr) {
+    SanitizerSet VptrOnly;
+    VptrOnly.set(SanitizerKind::All);
+    VptrOnly.set(SanitizerKind::Vptr, false);
+    EmitTypeCheck(TCK_MemberCall, E->getExprLoc(), ThisPtr, ClassType,
+                  /*Alignment=*/CharUnits::Zero(), VptrOnly);
+  }
 
   // Ask the ABI to load the callee.  Note that This is modified.
   llvm::Value *ThisPtrForCall = nullptr;
