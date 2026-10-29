@@ -294,6 +294,10 @@ PUNCTUATOR(greatergreatergreater, ">>>")
 //                which are heavily based on AltiVec
 //   KEYBORLAND - This is a keyword if Borland extensions are enabled
 //   KEYCOROUTINES - This is a keyword if support for C++ coroutines is enabled
+//   KEYCONTRACTS - This is a keyword if support for C++ contracts is enabled
+//                  (C++11 and later)
+//   KEYCONTRACTSP3400 - This is a keyword if -fcontracts-p3400 is enabled
+//   KEYCONTRACTSP4299 - This is a keyword if -fcontracts-p4299 is enabled
 //   BOOLSUPPORT - This is a keyword if 'bool' is a built-in type
 //   HALFSUPPORT - This is a keyword if 'half' is a built-in type
 //   WCHARSUPPORT - This is a keyword if 'wchar_t' is a built-in type
@@ -436,6 +440,9 @@ CXX20_KEYWORD(constinit             , 0)
 CXX20_KEYWORD(concept               , 0)
 CXX20_KEYWORD(requires              , 0)
 
+// C++ contracts keywords
+KEYWORD(contract_assert             , KEYCONTRACTS)
+ALIAS("__contract_assert"        , contract_assert      , KEYCXX11)
 // Not a CXX20_KEYWORD because it is disabled by -fno-char8_t.
 KEYWORD(char8_t                     , CHAR8SUPPORT)
 
