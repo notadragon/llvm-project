@@ -42,13 +42,24 @@ list(INSERT CMAKE_MODULE_PATH 0
 
 # We order libraries to mirror roughly how they are layered, except that
 # compiler-rt can depend on libc++, so we put it after. Offload can depend on
-# flang-rt so we order it before.
-set(LLVM_DEFAULT_RUNTIMES "libc;libunwind;libcxxabi;libcxx;compiler-rt;libclc;openmp;offload")
-set(LLVM_SUPPORTED_RUNTIMES "libc;libunwind;libcxxabi;libcxx;compiler-rt;libclc;openmp;flang-rt;offload;llvm-libgcc;libsycl;orc-rt")
+# flang-rt so we order it before.  libcontracts is inserted before libcxx: the
+# C++26 contracts runtime in libc++ has a hard dependency on it.
+set(LLVM_DEFAULT_RUNTIMES "libc;libunwind;libcxxabi;libcontracts;libcxx;compiler-rt;libclc;openmp;offload")
+set(LLVM_SUPPORTED_RUNTIMES "libc;libunwind;libcxxabi;libcontracts;libcxx;compiler-rt;libclc;openmp;flang-rt;offload;llvm-libgcc;libsycl;orc-rt")
 set(LLVM_ENABLE_RUNTIMES "" CACHE STRING
   "Semicolon-separated list of runtimes to build, or \"all\" (${LLVM_DEFAULT_RUNTIMES}). Supported runtimes are ${LLVM_SUPPORTED_RUNTIMES}.")
 if(LLVM_ENABLE_RUNTIMES STREQUAL "all" )
   set(LLVM_ENABLE_RUNTIMES ${LLVM_DEFAULT_RUNTIMES})
+endif()
+# libc++ has a hard build-time dependency on libcontracts: it unconditionally
+# compiles the C++26 contracts runtime, which references the pure-C ABI core in
+# libcontracts.  Mirror how GCC treats libgcc/libgcc_s -- the core runtime is
+# never optional relative to the C++ runtime that depends on it -- by
+# auto-enabling libcontracts whenever libcxx is enabled.  This keeps build
+# recipes that list runtimes explicitly (and omit libcontracts) from silently
+# producing a libc++ with undefined references.
+if("libcxx" IN_LIST LLVM_ENABLE_RUNTIMES AND NOT "libcontracts" IN_LIST LLVM_ENABLE_RUNTIMES)
+  list(APPEND LLVM_ENABLE_RUNTIMES "libcontracts")
 endif()
 include(SortSubset)
 sort_subset("${LLVM_SUPPORTED_RUNTIMES}" "${LLVM_ENABLE_RUNTIMES}" LLVM_ENABLE_RUNTIMES)

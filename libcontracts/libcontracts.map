@@ -1,0 +1,25 @@
+## Linker version script for libcontracts (LLVM build).
+##
+## Part of the LLVM Project, under the Apache License v2.0 with LLVM
+## Exceptions.  See https://llvm.org/LICENSE.txt for license information.
+## SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+##
+## The exported symbol set and version node (LIBCONTRACTS_1.0) must match the
+## GCC build of libcontracts and the contracts ABI specification (section 8).
+
+LIBCONTRACTS_1.0 {
+  global:
+    # Chain walking + dispatch primitives.
+    __cxa_find_field;
+    __contract_dispatch_core;
+    __dispatch_with_override_core;
+    # Non-noexcept entry points (universal + specialized).
+    __cxa_contract_violation*;
+    # C contract-check helpers (D4299).
+    __c_contract_check_*;
+    # C accessor functions and P3290 C API.
+    stdc_contract_violation_*;
+    stdc_handle_*;
+  local:
+    *;
+};

@@ -174,8 +174,8 @@ set(LLVM_DEPENDENCY_ONLY_PROJECTS)
 #
 # As we migrate runtimes to using the bootstrapping build, the set of default runtimes
 # should grow as we remove those runtimes from LLVM_ENABLE_PROJECTS above.
-set(LLVM_DEFAULT_RUNTIMES "libcxx;libcxxabi;libunwind;libclc;compiler-rt;openmp")
-set(LLVM_SUPPORTED_RUNTIMES "libc;libunwind;libcxxabi;libcxx;compiler-rt;openmp;llvm-libgcc;offload;flang-rt;libclc;libsycl;orc-rt")
+set(LLVM_DEFAULT_RUNTIMES "libcontracts;libcxx;libcxxabi;libunwind;libclc;compiler-rt;openmp")
+set(LLVM_SUPPORTED_RUNTIMES "libc;libunwind;libcxxabi;libcontracts;libcxx;compiler-rt;openmp;llvm-libgcc;offload;flang-rt;libclc;libsycl;orc-rt")
 set(LLVM_ENABLE_RUNTIMES "" CACHE STRING
   "Semicolon-separated list of runtimes to build, or \"all\" (${LLVM_DEFAULT_RUNTIMES}). Supported runtimes are ${LLVM_SUPPORTED_RUNTIMES}.")
 if(LLVM_ENABLE_RUNTIMES STREQUAL "all")
@@ -186,6 +186,12 @@ foreach(proj IN LISTS LLVM_ENABLE_RUNTIMES)
     message(FATAL_ERROR "Runtime \"${proj}\" is not a supported runtime. Supported runtimes are: ${LLVM_SUPPORTED_RUNTIMES}")
   endif()
 endforeach()
+# libc++ has a hard build-time dependency on libcontracts, so enabling libcxx
+# enables libcontracts, here for the bootstrapping build and in
+# runtimes/CMakeLists.txt for the standalone runtimes build.
+if("libcxx" IN_LIST LLVM_ENABLE_RUNTIMES AND NOT "libcontracts" IN_LIST LLVM_ENABLE_RUNTIMES)
+  list(APPEND LLVM_ENABLE_RUNTIMES "libcontracts")
+endif()
 
 if ("flang" IN_LIST LLVM_ENABLE_PROJECTS)
   if (NOT "mlir" IN_LIST LLVM_ENABLE_PROJECTS)
