@@ -25,6 +25,7 @@
 #include "Solaris.h"
 #include "ToolChains/Cuda.h"
 #include "clang/Basic/CodeGenOptions.h"
+#include "clang/Basic/LangStandard.h"
 #include "clang/Config/config.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Compilation.h"
@@ -1004,6 +1005,91 @@ void tools::addSeparateSectionFlags(const llvm::Triple &Triple,
   if (Args.hasFlag(options::OPT_fdata_sections, options::OPT_fno_data_sections,
                    UseSeparateSections || HasDefaultDataSections))
     CmdArgs.push_back("-fdata-sections");
+}
+
+bool tools::linksCxxOrUnknownInput(const Action &A) {
+  if (const auto *IA = dyn_cast<InputAction>(&A)) {
+    types::ID T = IA->getType();
+    // A source file tells its language; anything else (an object file, an
+    // archive, a library) may hold C++.
+    return types::isCXX(T) || !types::isSrcFile(T);
+  }
+  return llvm::any_of(A.inputs(), [](const Action *In) {
+    return linksCxxOrUnknownInput(*In);
+  });
+}
+
+bool tools::wantsCxxContracts(const ArgList &Args) {
+  // An explicit -fno-contracts (as the last of the -f(no-)contracts pair)
+  // suppresses contracts regardless of any implying flag.
+  if (Arg *A =
+          Args.getLastArg(options::OPT_fcontracts, options::OPT_fno_contracts);
+      A && A->getOption().matches(options::OPT_fno_contracts))
+    return false;
+  if (Args.hasArg(options::OPT_fcontracts))
+    return true;
+  // C++26 and later enable contracts: ask the standard, so that a new one,
+  // or another spelling of one, needs no change here.
+  StringRef Std = Args.getLastArgValue(options::OPT_std_EQ);
+  if (!Std.empty()) {
+    LangStandard::Kind K = LangStandard::getLangKind(Std);
+    if (K != LangStandard::lang_unspecified &&
+        LangStandard::getLangStandardForKind(K).isCPlusPlus26())
+      return true;
+  }
+  // clang-cl: /std:c++latest selects the newest standard (c++2d), and
+  // /std:c++26preview C++26.
+  StringRef SlashStd = Args.getLastArgValue(options::OPT__SLASH_std);
+  if (SlashStd == "c++latest" || SlashStd == "c++26preview")
+    return true;
+  // Any per-paper C++ contracts sub-flag implies -fcontracts, unless a later
+  // -fno- form cancels it.  The C-only -fcontracts-p4299 is deliberately
+  // excluded.
+  static const std::pair<options::ID, options::ID> SubFlags[] = {
+      {options::OPT_fcontracts_p3097, options::OPT_fno_contracts_p3097},
+      {options::OPT_fcontracts_p3098, options::OPT_fno_contracts_p3098},
+      {options::OPT_fcontracts_p3099, options::OPT_fno_contracts_p3099},
+      {options::OPT_fcontracts_p3100, options::OPT_fno_contracts_p3100},
+      {options::OPT_fcontracts_p3290, options::OPT_fno_contracts_p3290},
+      {options::OPT_fcontracts_p3400, options::OPT_fno_contracts_p3400},
+      {options::OPT_fcontracts_p3850, options::OPT_fno_contracts_p3850},
+      {options::OPT_fcontracts_p4283, options::OPT_fno_contracts_p4283},
+      {options::OPT_fcontracts_p4298, options::OPT_fno_contracts_p4298},
+      {options::OPT_fcontracts_p4301, options::OPT_fno_contracts_p4301},
+      {options::OPT_fcontracts_p4405, options::OPT_fno_contracts_p4405},
+  };
+  for (const auto &[Pos, Neg] : SubFlags)
+    if (Args.hasFlag(Pos, Neg, false))
+      return true;
+  return false;
+}
+
+bool tools::hasContractsPaperFlag(const ArgList &Args, OptSpecifier Pos,
+                                  OptSpecifier Neg) {
+  return Args.hasFlag(Pos, Neg,
+                      Args.hasFlag(options::OPT_fcontracts_p3850,
+                                   options::OPT_fno_contracts_p3850, false));
+}
+
+bool tools::needsContractsRuntime(const ToolChain &TC, const JobAction &JA,
+                                  const ArgList &Args) {
+  // A link whose inputs are all C sources has no C++ contracts in it, and
+  // leaving the option unclaimed there lets it draw the usual "argument
+  // unused" warning, as the compile step does.
+  if (linksCxxOrUnknownInput(JA) && wantsCxxContracts(Args))
+    return true;
+  if (Args.hasFlag(options::OPT_fcontracts_p4299,
+                   options::OPT_fno_contracts_p4299, false))
+    return true;
+  // P3100 routes sanitizer reports to the contract-violation handler in C as
+  // well, whenever a sanitizer is enabled.  -fcontracts-p3850 implies
+  // -fcontracts-p3100, and either reaches -cc1 only with the C++ contracts
+  // options (wantsCxxContracts).
+  if (!wantsCxxContracts(Args))
+    return false;
+  return hasContractsPaperFlag(Args, options::OPT_fcontracts_p3100,
+                               options::OPT_fno_contracts_p3100) &&
+         TC.getSanitizerArgs(Args).hasAnySanitizer();
 }
 
 bool tools::isTLSDESCEnabled(const ToolChain &TC,

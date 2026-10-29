@@ -1825,6 +1825,20 @@ defm named_loops
           PosFlag<SetTrue, [], [CC1Option], "Enable support for named loops">,
           NegFlag<SetFalse>>;
 
+// C++ Contracts
+defm contracts : BoolFOption<"contracts",
+  LangOpts<"Contracts">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option, CLOption],
+          "Enable support for C++ contracts">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contract_constification : BoolFOption<"contract-constification",
+  LangOpts<"ContractConstification">, DefaultTrue,
+  PosFlag<SetTrue, [], [ClangOption],
+          "Enable contract constification">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option],
+    "Disable contract constification">>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,
