@@ -447,6 +447,151 @@ precomputeDynamicTable(Sema &S, ContractStmt *CS, unsigned AllowedMask,
                      Table);
 }
 
+QualType Sema::deducePostconditionCaptureType(const Expr *Init) {
+  // As `auto' deduces from it: an array or a function decays, and top-level
+  // cv-qualifiers are dropped.  The initializer is in the contract assertion,
+  // so an entity declared outside it is constified there; the capture is
+  // declared inside it and is not (P3098; CLANG-641, CLANG-643).
+  QualType T = Init->getType();
+  if (T.isNull() || T->isDependentType())
+    return T;
+  if (T->isArrayType())
+    T = Context.getArrayDecayedType(T);
+  else if (T->isFunctionType())
+    T = Context.getPointerType(T);
+  return T.getUnqualifiedType();
+}
+
+Decl *Sema::ActOnPostconditionCapture(Scope *S, SourceLocation IdLoc,
+                                      IdentifierInfo *Id, Expr *Init,
+                                      bool IsPackExpansion) {
+  DeclContext *DC = CurContext;
+  // When parsing contracts inline in a class body, DC is the CXXRecordDecl.
+  // Captures need an access specifier in that context, and SC_Auto storage
+  // to ensure CodeGen treats them as locals (not globals).
+  bool InClassContext = isa<CXXRecordDecl>(DC);
+  StorageClass CaptureSC = InClassContext ? SC_Auto : SC_None;
+
+  if (!Init) {
+    // Plain capture [i] -- look up in function parameter scope.
+    LookupResult R(*this, Id, IdLoc, LookupOrdinaryName);
+    LookupName(R, S);
+    auto *PVD = R.getAsSingle<ParmVarDecl>();
+    if (!PVD) {
+      Diag(IdLoc, diag::err_contract_postcondition_capture_not_parameter);
+      return nullptr;
+    }
+
+    // A pack-expansion capture [i...] is only well-formed when the captured
+    // parameter is itself a function parameter pack.
+    if (IsPackExpansion && !PVD->isParameterPack()) {
+      Diag(IdLoc, diag::err_pack_expansion_without_parameter_packs);
+      return nullptr;
+    }
+
+    // Conversely, a function parameter pack named without the `...' is an
+    // unexpanded pack, ill-formed in the template definition as a lambda's
+    // `[xs]' is; left alone, the capture's dependent pack type reaches the
+    // instantiation unexpanded.
+    if (!IsPackExpansion && PVD->isParameterPack()) {
+      ExprResult Ref = BuildDeclRefExpr(
+          PVD, PVD->getType().getNonReferenceType(), VK_LValue, IdLoc);
+      if (Ref.isInvalid() ||
+          DiagnoseUnexpandedParameterPack(Ref.get(), UPPC_Initializer))
+        return nullptr;
+    }
+
+    QualType T = PVD->getType().getNonReferenceType();
+    TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(T, IdLoc);
+    auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                                 T, TInfo, CaptureSC);
+    Cap->setIsParameterCapture(true);
+    Cap->setIsPackExpansion(IsPackExpansion);
+    if (InClassContext)
+      Cap->setAccess(AS_public);
+
+    // Build copy-init from the parameter.
+    ExprResult CopyInit = BuildDeclRefExpr(
+        PVD, PVD->getType().getNonReferenceType(), VK_LValue, IdLoc);
+    if (!CopyInit.isInvalid()) {
+      if (T->isDependentType()) {
+        Cap->setInit(CopyInit.get());
+      } else {
+        ExprResult InitExpr = PerformCopyInitialization(
+            InitializedEntity::InitializeVariable(Cap), IdLoc, CopyInit.get());
+        if (!InitExpr.isInvalid()) {
+          Cap->setInit(InitExpr.get());
+          // A capture is an object with automatic storage duration: CodeGen
+          // destroys it when the call ends, and Runnable/p3098-dtor.cpp pins
+          // the order.  PerformCopyInitialization above only establishes
+          // that it can be constructed, so check the destructor too --
+          // otherwise an inaccessible or deleted one is accepted here and
+          // then called.
+          if (auto *RD = T->getAsCXXRecordDecl())
+            FinalizeVarWithDestructor(Cap, RD);
+        }
+      }
+    }
+
+    return Cap;
+  }
+
+  // A pack-expansion init-capture [...old = expr] is only well-formed when the
+  // initializer contains an unexpanded parameter pack.
+  if (IsPackExpansion && !Init->containsUnexpandedParameterPack()) {
+    Diag(IdLoc, diag::err_pack_expansion_without_parameter_packs);
+    return nullptr;
+  }
+  // And one that is not a pack expansion may not contain one ([y = xs]).
+  if (!IsPackExpansion && DiagnoseUnexpandedParameterPack(Init, UPPC_Initializer))
+    return nullptr;
+
+  // Init-capture [old = expr] -- deduce type from initializer.
+  QualType DeducedType = deducePostconditionCaptureType(Init);
+  // A pack init-capture [...c = e] is itself a pack, as a lambda's is: its
+  // type is a pack expansion, so a use of `c' contains an unexpanded pack and
+  // can be expanded in the predicate.  Instantiation (TransformContractStmt)
+  // expands it into one capture per element.
+  if (IsPackExpansion)
+    DeducedType = Context.getPackExpansionType(DeducedType, std::nullopt,
+                                               /*ExpectPackInType=*/false);
+
+  TypeSourceInfo *TInfo = Context.getTrivialTypeSourceInfo(DeducedType, IdLoc);
+  auto *Cap = PostconditionCaptureDecl::Create(Context, DC, IdLoc, IdLoc, Id,
+                                               DeducedType, TInfo, CaptureSC);
+  Cap->setIsParameterCapture(false);
+  Cap->setIsPackExpansion(IsPackExpansion);
+  if (InClassContext)
+    Cap->setAccess(AS_public);
+
+  // Build a proper copy-init to the deduced capture type, matching the
+  // parameter-capture path above, so both capture forms produce a uniform,
+  // prvalue-producing initializer for codegen and constant evaluation.
+  if (DeducedType->isDependentType()) {
+    Cap->setInit(Init);
+  } else {
+    ExprResult InitExpr = PerformCopyInitialization(
+        InitializedEntity::InitializeVariable(Cap), IdLoc, Init);
+    if (!InitExpr.isInvalid()) {
+      Cap->setInit(InitExpr.get());
+      // As in the parameter-capture path above: an init-capture is destroyed
+      // when the call ends, so it has to be destructible here.
+      if (auto *RD = DeducedType->getAsCXXRecordDecl())
+        FinalizeVarWithDestructor(Cap, RD);
+    }
+  }
+
+  return Cap;
+}
+
+void Sema::ActOnFinishPostconditionCaptures(Scope *S,
+                                            ArrayRef<Decl *> Captures) {
+  for (Decl *D : Captures) {
+    if (auto *Cap = dyn_cast<PostconditionCaptureDecl>(D))
+      PushOnScopeChains(Cap, S, /*AddToContext=*/false);
+  }
+}
+
 /// Whether CS has a requires-clause on a contract of a non-templated function,
 /// which P4283 makes ill-formed.  ActOnContractAssert diagnoses it (only the
 /// parser reaches that, never an instantiation); BuildContractStmt skips the
@@ -1929,6 +2074,32 @@ Sema::ActOnFinishContractSpecifierSequence(ArrayRef<ContractStmt *> Contracts,
   assert(!Contracts.empty() && "Expected at least one contract");
 
   return ContractSpecifierDecl::Create(Context, CurContext, Loc, Contracts);
+}
+
+PostconditionCaptureDecl *
+Sema::BuildExpandedPostconditionCapture(PostconditionCaptureDecl *Pattern,
+                                        QualType Type, ExprResult Init) {
+  TypeSourceInfo *TInfo =
+      Context.getTrivialTypeSourceInfo(Type, Pattern->getLocation());
+  auto *Cap = PostconditionCaptureDecl::CreateClone(Context, CurContext,
+                                                    Pattern, Type, TInfo);
+  Cap->setIsPackExpansion(false);
+
+  // Copy-initialize from the substituted initializer, as
+  // TemplateDeclInstantiator::VisitPostconditionCaptureDecl does for a single
+  // capture.
+  if (Init.isUsable()) {
+    if (!Type->isDependentType())
+      Init =
+          PerformCopyInitialization(InitializedEntity::InitializeVariable(Cap),
+                                    Pattern->getLocation(), Init.get());
+    if (Init.isInvalid())
+      return nullptr;
+    Cap->setInit(Init.get());
+    if (auto *RD = Type->getAsCXXRecordDecl())
+      FinalizeVarWithDestructor(Cap, RD);
+  }
+  return Cap;
 }
 
 ContractStmt *Sema::BuildInvalidContractStmt(ContractKind CK,

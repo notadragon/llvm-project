@@ -53,6 +53,10 @@ constexpr ContractDetectionMode PredicateFailed =
 static llvm::Value *emitContractDataBlock(CodeGenFunction &CGF,
                                           const ContractStmt &S,
                                           llvm::Value *BasicBlock);
+static llvm::Function *
+getOrCreateDynamicSelector(CodeGenModule &CGM, StringRef Name,
+                           ContractDynamicLinkage Linkage, bool ProvideWeak,
+                           ContractEvaluationSemantic ConfiguredSem);
 constexpr ContractDetectionMode ExceptionRaised =
     ContractDetectionMode::ExceptionRaised;
 
@@ -554,6 +558,208 @@ static llvm::Constant *BuildContractViolationInfo(CodeGenFunction &CGF,
   return FinishViolationInfo(
       CGF, CGF.getContext().BuildViolationObject(
                &S, dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl)));
+}
+
+// P3098: emit a postcondition's capture-construction DeclStmt, converting a
+// construction exception into a post_capture violation. See the
+// CodeGenFunction.h declaration for the contract.
+void CodeGenFunction::EmitPostconditionCaptureInit(
+    const ContractStmt *CS, ContractEvaluationSemantic Sem,
+    llvm::Value *DynSel) {
+  const DeclStmt *CapturesStmt = CS->getCapturesDeclStmt();
+  const bool GuardThrows =
+      getLangOpts().Exceptions && getLangOpts().ContractExceptions;
+
+  // Unlike the predicate-throw path (emitCheckForSemantic), which skips the
+  // try/catch when Sema found the predicate cannot throw
+  // (ContractStmt::predicateCanThrow), always wrap capture construction here:
+  // nothing records whether a capture's construction can throw, and missing
+  // one would let the exception propagate unguarded.
+  Address FailedFlag = Address::invalid();
+  llvm::Constant *ViolationInfo = nullptr;
+  CXXTryStmt *Try = nullptr;
+  if (GuardThrows) {
+    FailedFlag = CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(),
+                                  "contract.capture.failed");
+    Builder.CreateStore(Builder.getFalse(), FailedFlag);
+    ContractData->CaptureInitFailed.insert({CS, FailedFlag});
+    ViolationInfo = BuildContractViolationInfo(*this, *CS);
+    Try = BuildContractCatchAllTry(CS->getCapturesDeclStmt()->getBeginLoc(),
+                                   *this);
+  }
+
+  // Catch body for a capture's construction try/catch: report the exception as
+  // a post_capture violation.  Unlike the predicate-throw path there is no
+  // predicate to re-check afterward -- construction either succeeded (no catch)
+  // or failed, and 'observe' must skip the predicate entirely (recorded via
+  // FailedFlag) rather than fall through to evaluate it.  For a dynamically
+  // selected postcondition the semantic is the one chosen into DynSel.
+  auto ReportWith = [&](ContractEvaluationSemantic S) {
+    if (S == Enforce || S == Observe || S == NoexceptEnforce ||
+        S == NoexceptObserve) {
+      EmitCxaContractViolationCall(
+          ContractKind::Post, S, ExceptionRaised, ViolationInfo,
+          /*IsNoExcept=*/S == NoexceptEnforce || S == NoexceptObserve,
+          /*IsPostCapture=*/true);
+      if (HaveInsertPoint() && (S == Observe || S == NoexceptObserve))
+        Builder.CreateStore(Builder.getTrue(), FailedFlag);
+    } else if (S == QuickEnforce) {
+      CreateTrap(*this);
+    } else {
+      llvm_unreachable("Unhandled semantic");
+    }
+  };
+  auto EmitCaptureCatchBody = [&] {
+    if (!DynSel) {
+      ReportWith(Sem);
+      return;
+    }
+    // Only a semantic that evaluates gets here: the captures are not
+    // initialized otherwise.
+    llvm::BasicBlock *End = createBasicBlock("contract.capture.catch.end");
+    llvm::SwitchInst *Switch = Builder.CreateSwitch(DynSel, End);
+    for (ContractEvaluationSemantic S :
+         {Observe, Enforce, QuickEnforce, NoexceptObserve, NoexceptEnforce}) {
+      llvm::BasicBlock *Arm = createBasicBlock("contract.capture.catch.arm");
+      Switch->addCase(Builder.getInt32(static_cast<unsigned>(S)), Arm);
+      EmitBlock(Arm);
+      ReportWith(S);
+      if (HaveInsertPoint())
+        Builder.CreateBr(End);
+    }
+    EmitBlock(End);
+  };
+
+  // Construct each capture in its own try/catch region, split into the
+  // Alloca/Init/Cleanups steps ExitCXXTryStmt normally performs together via
+  // EmitAutoVarDecl. This matters because the catch teardown requires the catch
+  // scope it pushed to still be the top of the EHScopeStack -- but a
+  // capture's destructor cleanup must persist past this function (the
+  // destruction order and the body-throws path both depend on it living until
+  // the real function exit), so it cannot be pushed until after the catch
+  // scope is torn down. Deferring EmitAutoVarCleanups until after the catch
+  // teardown satisfies both constraints; a still-throwing later
+  // capture in the same DeclStmt correctly unwinds this one via that
+  // (by-then-active) cleanup, exactly like ordinary sequential construction.
+  //
+  // Each capture's destructor cleanup is conditional on a flag set once that
+  // capture is constructed.  The cleanups are lexical, so they are active on
+  // every path out of here, including those on which a capture was never
+  // constructed: an observe-reported throw, which skips the captures after
+  // it, and a dynamic selection that does not evaluate the postcondition,
+  // which skips them all.
+  SmallVector<AutoVarEmission, 2> Emissions;
+  SmallVector<RawAddress, 2> LiveFlags;
+  for (Decl *D : CapturesStmt->decls()) {
+    Emissions.push_back(EmitAutoVarAlloca(*cast<VarDecl>(D)));
+    RawAddress Live = CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(),
+                                       "contract.capture.live");
+    EnsureInsertPoint();
+    Builder.CreateStore(Builder.getFalse(), Live);
+    LiveFlags.push_back(Live);
+  }
+
+  llvm::BasicBlock *DoneBB = createBasicBlock("contract.capture.done");
+  if (DynSel) {
+    // Ignore and assume have no effect, and an invalid selection is reported
+    // by the postcondition's check without reading a capture: initialize the
+    // captures only for a semantic that evaluates the postcondition.
+    llvm::Value *Evaluates = Builder.getFalse();
+    for (ContractEvaluationSemantic S :
+         {Observe, Enforce, QuickEnforce, NoexceptObserve, NoexceptEnforce})
+      Evaluates = Builder.CreateOr(
+          Evaluates,
+          Builder.CreateICmpEQ(DynSel,
+                               Builder.getInt32(static_cast<unsigned>(S))));
+    llvm::BasicBlock *InitBB = createBasicBlock("contract.capture.init");
+    Builder.CreateCondBr(Evaluates, InitBB, DoneBB);
+    EmitBlock(InitBB);
+  }
+
+  for (unsigned I = 0, E = Emissions.size(); I != E; ++I) {
+    EnsureInsertPoint();
+    if (GuardThrows) {
+      EnterCXXTryStmt(*Try);
+      EmitAutoVarInit(Emissions[I]);
+      ExitCXXTryStmtWithCatchIR(*Try, EmitCaptureCatchBody);
+
+      llvm::Value *Failed = Builder.CreateLoad(FailedFlag);
+      llvm::BasicBlock *ContBB = createBasicBlock("contract.capture.cont");
+      Builder.CreateCondBr(Failed, DoneBB, ContBB);
+      EmitBlock(ContBB);
+    } else {
+      EmitAutoVarInit(Emissions[I]);
+    }
+    Builder.CreateStore(Builder.getTrue(), LiveFlags[I]);
+
+    EHScopeStack::stable_iterator OldTop = EHStack.stable_begin();
+    EmitAutoVarCleanups(Emissions[I]);
+    EHScopeStack::stable_iterator Top = EHStack.stable_begin();
+    for (auto It = EHStack.find(Top), End = EHStack.find(OldTop); It != End;
+         ++It)
+      if (auto *Cleanup = dyn_cast<EHCleanupScope>(&*It)) {
+        Cleanup->setActiveFlag(LiveFlags[I]);
+        Cleanup->setTestFlagInNormalCleanup();
+        Cleanup->setTestFlagInEHCleanup();
+      }
+  }
+  EnsureInsertPoint();
+  Builder.CreateBr(DoneBB);
+  EmitBlock(DoneBB);
+}
+
+llvm::Value *
+CodeGenFunction::EmitDynamicEffectiveSelection(const ContractStmt &S) {
+  llvm::Function *Selector = getOrCreateDynamicSelector(
+      CGM, S.getDynName(), S.getDynLinkage(), S.getDynProvideWeak(),
+      S.getDynConfiguredSemantic());
+  EnsureInsertPoint();
+  // An ordinary call: an exception from the selector unwinds through this
+  // function's cleanups and handlers like any other.
+  llvm::Value *Raw = EmitCallOrInvoke(Selector, {}, "contract.dyn.raw");
+  llvm::Value *RawExt = Builder.CreateZExt(Raw, Int32Ty, "contract.dyn.sem");
+  // Map each raw value to its effective semantic (getDynTransform); any other
+  // value, and a disallowed transform, is 0, the invalid selection.
+  llvm::Value *Eff = Builder.getInt32(0);
+  for (unsigned R = 1; R <= ContractStmt::NumDynRawSemantics; ++R)
+    if (unsigned E = static_cast<unsigned>(S.getDynTransform(R)))
+      Eff = Builder.CreateSelect(
+          Builder.CreateICmpEQ(RawExt, Builder.getInt32(R)),
+          Builder.getInt32(E), Eff);
+  return Eff;
+}
+
+bool CodeGenFunction::EmitPostconditionCaptures(const ContractStmt *CS,
+                                                const DeclContext *DC) {
+  ContractEvaluationSemantic Sem = CS->ensureRuntimeSemantic(getContext(), DC);
+  if (CS->isDynamic()) {
+    // The semantic is chosen at run time, here, once for this call; the
+    // postcondition's check reuses the choice (DynSelection).
+    RawAddress Sel =
+        CreateTempAlloca(Int32Ty, CharUnits::fromQuantity(4), "contract.dyn.sel");
+    llvm::Value *Eff = EmitDynamicEffectiveSelection(*CS);
+    Builder.CreateStore(Eff, Sel);
+    ContractData->DynSelection.insert({CS, Sel});
+    EmitPostconditionCaptureInit(CS, Sem, Eff);
+    return true;
+  }
+  // 'assume' lowers to 'ignore' (no check emitted, see emitCheckForSemantic):
+  // the capture must not be constructed either, since the whole postcondition
+  // is gated as a unit.  (D4405: the analysis evaluation never evaluates the
+  // predicate, and a runtime evaluation is never prove or diagnose.)
+  if (Sem == ContractEvaluationSemantic::Ignore ||
+      Sem == ContractEvaluationSemantic::Assume)
+    return false;
+  EmitPostconditionCaptureInit(CS, Sem);
+  return true;
+}
+
+llvm::Value *
+CodeGenFunction::LoadPostconditionCaptureFailed(const ContractStmt *CS) {
+  auto It = ContractData->CaptureInitFailed.find(CS);
+  if (It == ContractData->CaptureInitFailed.end())
+    return nullptr;
+  return Builder.CreateLoad(It->second);
 }
 
 // Build the Itanium mangled name for a no-argument C++ selector given a

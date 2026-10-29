@@ -7684,6 +7684,49 @@ static bool EvaluatePreContracts(EvalInfo &Info, const FunctionDecl *Callee,
   return true;
 }
 
+// P3098: bind each postcondition capture in the call frame at entry (before
+// the body runs), so EvaluateContract can read it later when evaluating that
+// postcondition's predicate -- mirroring how a capture is bound in the
+// codegen prologue (CodeGenFunction::GenerateCode). Uses ScopeKind::Call
+// (not the ScopeKind::Block that ordinary body locals get via
+// EvaluateVarDecl) so the value survives the body's own block scopes
+// closing, through to EvaluatePostContracts. ScopeKind::Call cleanups are
+// only actually processed by an explicit CallScopeRAII -- HandleFunctionCall
+// pushes one around this call and EvaluatePostContracts, and destroys it
+// itself before returning, since (unlike a constructor call, which uses
+// CallScopeRAII already) an ordinary function call has no such scope and the
+// callee's CallStackFrame -- and the storage backing this capture -- is
+// gone the instant HandleFunctionCall returns.
+static bool EvaluatePostconditionCaptures(EvalInfo &Info,
+                                          const FunctionDecl *Callee) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return true;
+  for (auto *CS : Contracts->postconditions()) {
+    if (!CS->hasCaptures())
+      continue;
+    // No capture is initialized for a postcondition that is not evaluated:
+    // ignore (a constant evaluation never has prove or diagnose).
+    ContractEvaluationSemantic CESem =
+        CS->ensureCESemantic(Info.Ctx, Callee->getDeclContext());
+    if (CESem == ContractEvaluationSemantic::Ignore ||
+        isProvingContractSemantic(CESem))
+      continue;
+    for (Decl *D : CS->getCapturesDeclStmt()->decls()) {
+      auto *Cap = cast<PostconditionCaptureDecl>(D);
+      LValue Result;
+      APValue &Val = Info.CurrentCall->createTemporary(Cap, Cap->getType(),
+                                                       ScopeKind::Call, Result);
+      const Expr *InitE = Cap->getInit();
+      if (!InitE || !EvaluateInPlace(Val, Info, Result, InitE)) {
+        Val = APValue();
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 static bool EvaluatePostContracts(EvalInfo &Info, const FunctionDecl *Callee,
                                   APValue &ResultValue,
                                   const LValue *ResultSlot) {
@@ -7750,6 +7793,17 @@ static bool EvaluatePostContracts(EvalInfo &Info, const FunctionDecl *Callee,
   return true;
 }
 
+/// Whether any postcondition of \p Callee has P3098 captures to bind.
+static bool hasPostconditionCaptures(const FunctionDecl *Callee) {
+  ContractSpecifierDecl *Contracts = Callee->getContracts();
+  if (!Contracts)
+    return false;
+  for (auto *CS : Contracts->postconditions())
+    if (CS->hasCaptures())
+      return true;
+  return false;
+}
+
 /// Evaluate a function call.
 static bool HandleFunctionCall(SourceLocation CallLoc,
                                const FunctionDecl *Callee,
@@ -7810,6 +7864,15 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   if (!EvaluatePreContracts(Info, Callee, &Frame))
     return false;
 
+  // P3098: postcondition captures must be destroyed (their ScopeKind::Call
+  // cleanup run) before this function returns -- unlike a constructor call,
+  // an ordinary call has no other CallScopeRAII, and the storage backing a
+  // capture lives in this Frame, which is gone the instant this function
+  // returns. See EvaluatePostconditionCaptures.
+  CallScopeRAII CaptureScope(Info);
+  if (!EvaluatePostconditionCaptures(Info, Callee))
+    return false;
+
   StmtResult Ret = {Result, ResultSlot};
   EvalStmtResult ESR = EvaluateStmt(Ret, Info, Body);
 
@@ -7822,6 +7885,8 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   } else if (ESR == ESR_Returned) {
     ContractsOK = EvaluatePostContracts(Info, Callee, Result, ResultSlot);
   }
+  if (ContractsOK && !CaptureScope.destroy())
+    ContractsOK = false;
   return ContractsOK;
 }
 
@@ -7874,6 +7939,22 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
   APValue RetVal;
   StmtResult Ret = {RetVal, nullptr};
 
+  // The constructor's preconditions are checked, and its postcondition
+  // captures bound, before the mem-initializers run; its postconditions are
+  // checked after the body (see HandleFunctionCall).
+  if (!EvaluatePreContracts(Info, Definition, &Frame))
+    return false;
+  std::optional<CallScopeRAII> CaptureScope;
+  if (hasPostconditionCaptures(Definition)) {
+    CaptureScope.emplace(Info);
+    if (!EvaluatePostconditionCaptures(Info, Definition))
+      return false;
+  }
+  auto FinishContracts = [&] {
+    return EvaluatePostContracts(Info, Definition, RetVal, nullptr) &&
+           (!CaptureScope || CaptureScope->destroy());
+  };
+
   // If it's a delegating constructor, delegate.
   if (Definition->isDelegatingConstructor()) {
     CXXConstructorDecl::init_const_iterator I = Definition->init_begin();
@@ -7886,7 +7967,8 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
           !InitScope.destroy())
         return false;
     }
-    return EvaluateStmt(Ret, Info, Definition->getBody()) != ESR_Failed;
+    return EvaluateStmt(Ret, Info, Definition->getBody()) != ESR_Failed &&
+           FinishContracts();
   }
 
   // For a trivial copy or move constructor, perform an APValue copy. This is
@@ -7902,7 +7984,8 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
        (Definition->isTrivial() &&
         isReadByLvalueToRvalueConversion(Definition->getParent())))) {
     return handleTrivialCopy(Info, Definition->getParamDecl(0), E, Result,
-                             Definition->getParent()->isUnion());
+                             Definition->getParent()->isUnion()) &&
+           FinishContracts();
   }
 
   // Reserve space for the struct members.
@@ -8074,9 +8157,13 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
 
   EvalObj.finishedConstructingFields();
 
+  // The capture scope encloses LifetimeExtendedScope, so it is destroyed
+  // last; the postconditions are checked before either.
   return Success &&
          EvaluateStmt(Ret, Info, Definition->getBody()) != ESR_Failed &&
-         LifetimeExtendedScope.destroy();
+         EvaluatePostContracts(Info, Definition, RetVal, nullptr) &&
+         LifetimeExtendedScope.destroy() &&
+         (!CaptureScope || CaptureScope->destroy());
 }
 
 static bool HandleDestructionImpl(EvalInfo &Info, SourceRange CallRange,
@@ -8210,12 +8297,29 @@ static bool HandleDestructionImpl(EvalInfo &Info, SourceRange CallRange,
   // wasteful.
   APValue RetVal;
   StmtResult Ret = {RetVal, nullptr};
+
+  // The destructor's preconditions are checked, and its postcondition
+  // captures bound, before the body; its postconditions are checked once the
+  // object is destroyed, as at run time (see HandleFunctionCall).
+  if (!EvaluatePreContracts(Info, Definition, &Frame))
+    return false;
+  std::optional<CallScopeRAII> CaptureScope;
+  if (hasPostconditionCaptures(Definition)) {
+    CaptureScope.emplace(Info);
+    if (!EvaluatePostconditionCaptures(Info, Definition))
+      return false;
+  }
+  auto FinishContracts = [&] {
+    return EvaluatePostContracts(Info, Definition, RetVal, nullptr) &&
+           (!CaptureScope || CaptureScope->destroy());
+  };
+
   if (EvaluateStmt(Ret, Info, Definition->getBody()) == ESR_Failed)
     return false;
 
   // A union destructor does not implicitly destroy its members.
   if (RD->isUnion())
-    return true;
+    return FinishContracts();
 
   if (!ASTContext::hasLayout(RD))
     return false;
@@ -8283,7 +8387,7 @@ static bool HandleDestructionImpl(EvalInfo &Info, SourceRange CallRange,
 
   // The period of destruction ends now. The object is gone.
   Value = APValue();
-  return true;
+  return FinishContracts();
 }
 
 namespace {
@@ -9654,6 +9758,10 @@ public:
     }
 
     SmallVector<QualType, 4> CovariantAdjustmentPath;
+    // P3097: the statically named function of a virtual call whose final
+    // overrider is another function; its contracts are checked around the
+    // overrider's, as the call-site wrapper does at run time.
+    const CXXMethodDecl *Interface = nullptr;
     if (This) {
       auto *NamedMember = dyn_cast<CXXMethodDecl>(FD);
       if (NamedMember && NamedMember->isVirtual() && !HasQualifier) {
@@ -9662,6 +9770,10 @@ public:
                                    CovariantAdjustmentPath);
         if (!FD)
           return false;
+        if (Info.getLangOpts().ContractsP3097 &&
+            FD->getCanonicalDecl() != NamedMember->getCanonicalDecl() &&
+            NamedMember->hasContracts())
+          Interface = NamedMember;
       } else if (NamedMember && NamedMember->isImplicitObjectMemberFunction()) {
         // Check that the 'this' pointer points to an object of the right type.
         // FIXME: If this is an assignment operator call, we may need to change
@@ -9691,6 +9803,23 @@ public:
     if (FD->hasCXXExplicitFunctionObjectParameter())
       This = &ObjectArg;
 
+    // The interface's contracts are evaluated in a frame of their own, which
+    // binds its parameters to this call's arguments and encloses the
+    // overrider's frame.
+    std::optional<CallStackFrame> InterfaceFrame;
+    std::optional<CallScopeRAII> InterfaceCaptureScope;
+    if (Interface) {
+      InterfaceFrame.emplace(Info, E->getSourceRange(), Interface, This, E,
+                             Call);
+      if (!EvaluatePreContracts(Info, Interface, &*InterfaceFrame))
+        return false;
+      if (hasPostconditionCaptures(Interface)) {
+        InterfaceCaptureScope.emplace(Info);
+        if (!EvaluatePostconditionCaptures(Info, Interface))
+          return false;
+      }
+    }
+
     if (!CheckConstexprFunction(Info, Loc, FD, Definition, Body) ||
         !HandleFunctionCall(Loc, Definition, This, E, Args, Call, Body, Info,
                             Result, ResultSlot))
@@ -9699,6 +9828,11 @@ public:
     if (!CovariantAdjustmentPath.empty() &&
         !HandleCovariantReturnAdjustment(Info, E, Result,
                                          CovariantAdjustmentPath))
+      return false;
+
+    if (Interface &&
+        (!EvaluatePostContracts(Info, Interface, Result, ResultSlot) ||
+         (InterfaceCaptureScope && !InterfaceCaptureScope->destroy())))
       return false;
 
     return CallScope.destroy();
@@ -24240,10 +24374,27 @@ bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
     HandleConstructorCall(&VIE, This, Args, CD, Info, Scratch);
   } else {
     SourceLocation Loc = FD->getLocation();
-    HandleFunctionCall(
-        Loc, FD, (MD && MD->isImplicitObjectMemberFunction()) ? &This : nullptr,
-        &VIE, Args, CallRef(), FD->getBody(), Info, Scratch,
-        /*ResultSlot=*/nullptr);
+    const LValue *ObjectArg =
+        (MD && MD->isImplicitObjectMemberFunction()) ? &This : nullptr;
+    HandleFunctionCall(Loc, FD, ObjectArg, &VIE, Args, CallRef(),
+                       FD->getBody(), Info, Scratch,
+                       /*ResultSlot=*/nullptr);
+
+    // A precondition is evaluated before the body and so is always reached,
+    // but a postcondition only if the body evaluates, which with unknown
+    // arguments it usually does not.  Check the postconditions on their own,
+    // as a precondition is: those that name neither the result (there is no
+    // return value) nor a capture (none was bound).  If the body did reach
+    // them, this repeats a check that found nothing.
+    if (Diags.empty() && !isa<CXXDestructorDecl>(FD))
+      if (const ContractSpecifierDecl *Contracts = FD->getContracts()) {
+        CallStackFrame Frame(Info, FD->getSourceRange(), FD, ObjectArg, &VIE,
+                             CallRef());
+        for (const ContractStmt *S : Contracts->postconditions())
+          if (!S->hasResultName() && !S->hasCaptures() &&
+              !EvaluateContract(S, Info, FD))
+            break;
+      }
   }
 
   return Diags.empty();

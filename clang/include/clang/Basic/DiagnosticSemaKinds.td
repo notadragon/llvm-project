@@ -13305,6 +13305,18 @@ def err_contract_member_access_without_object : Error<
   "postcondition capture initializer of a constructor}1 "
   "because no object is within its lifetime there">;
 
+// P3098 postcondition capture diagnostics
+def err_contract_postcondition_capture_by_reference : Error<
+  "capture-by-reference not allowed in postcondition captures">;
+def err_contract_postcondition_capture_default : Error<
+  "default capture not allowed in postcondition captures">;
+def err_contract_postcondition_capture_this : Error<
+  "cannot capture 'this' in postcondition captures">;
+def err_contract_postcondition_capture_not_parameter : Error<
+  "only function parameters can be captured by copy in postcondition captures; "
+  "use an init-capture instead">;
+
+} // end of contracts issues
 let CategoryName = "Documentation Issue" in {
 def warn_not_a_doxygen_trailing_member_comment : Warning<
   "not a Doxygen trailing comment">, InGroup<Documentation>, DefaultIgnore;
