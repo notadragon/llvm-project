@@ -24434,6 +24434,58 @@ bool Expr::isPotentialConstantExprUnevaluated(Expr *E,
   return Diags.empty();
 }
 
+// P4405 proving hook: the folding strategy (CodeGen/ContractProveFold.cpp).
+bool Expr::EvaluateAsBooleanConditionInCall(
+    bool &Result, EvalStatus &Status, const ASTContext &Ctx,
+    const FunctionDecl *Callee, ArrayRef<const APValue *> ParamValues,
+    const APValue *ThisValue) const {
+  assert(!isValueDependent() &&
+         "Expression evaluator can't be called on a dependent expression.");
+  EvalResult Scratch;
+  bool Folded;
+  if (!Callee || Ctx.getLangOpts().EnableNewConstInterp) {
+    // No frame (or none the bytecode interpreter can be given): every
+    // parameter is an unknown value, as outside any call.
+    Folded = EvaluateAsRValue(Scratch, Ctx, /*InConstantContext=*/false);
+  } else {
+    EvalInfo Info(Ctx, /*SProxy=*/nullptr, Scratch,
+                  EvaluationMode::IgnoreSideEffects);
+    Info.InConstantContext = false;
+
+    LValue ThisVal;
+    const LValue *ThisPtr = nullptr;
+    if (ThisValue) {
+      ThisVal.setFrom(Ctx, *ThisValue);
+      ThisPtr = &ThisVal;
+    }
+
+    // Only the parameters with a value get a slot; reading any other one
+    // fails, as reading a parameter outside its call does.
+    CallRef Call = Info.CurrentCall->createCall(Callee);
+    for (unsigned I = 0, N = std::min<size_t>(ParamValues.size(),
+                                               Callee->getNumParams());
+         I != N; ++I) {
+      if (!ParamValues[I])
+        continue;
+      LValue LV;
+      Info.CurrentCall->createParam(Call, Callee->getParamDecl(I), LV) =
+          *ParamValues[I];
+    }
+    Info.discardCleanups();
+
+    CallStackFrame Frame(Info, Callee->getLocation(), Callee, ThisPtr,
+                         /*CallExpr=*/nullptr, Call);
+    // Not manifestly constant-evaluated, so a contract assertion met on the
+    // way records no problem to report (EvaluateContract).
+    FullExpressionRAII Scope(Info);
+    Folded =
+        ::EvaluateAsRValue(Info, this, Scratch.Val) && Scope.destroy();
+  }
+  Status.HasSideEffects = Scratch.HasSideEffects;
+  Status.HasUndefinedBehavior = Scratch.HasUndefinedBehavior;
+  return Folded && HandleConversionToBool(Scratch.Val, Result);
+}
+
 std::optional<uint64_t> Expr::tryEvaluateObjectSize(const ASTContext &Ctx,
                                                     unsigned Type) const {
   if (!getType()->isPointerType())

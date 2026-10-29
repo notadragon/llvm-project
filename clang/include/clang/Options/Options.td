@@ -1920,6 +1920,18 @@ defm contracts_p4405 : BoolFOption<"contracts-p4405",
           "Enable P4405 prove and diagnose evaluation semantics">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_prove_fold : BoolFOption<"contracts-prove-fold",
+  LangOpts<"ContractsProveFold">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Prove the predicates of prove and diagnose evaluations that fold to true, and diagnose those that fold to false as always false (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_prove_assume : BoolFOption<"contracts-prove-assume",
+  LangOpts<"ContractsProveAssume">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Treat a prove or diagnose evaluation the proof shadow proves soundly as an assumption (implied by -fcontracts-p4405; no effect with folding alone)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contract_bypass_rethrowing_local_handler :
   BoolFOption<"contract-bypass-rethrowing-local-handler",
   LangOpts<"ContractBypassRethrowingLocalHandler">, DefaultTrue,

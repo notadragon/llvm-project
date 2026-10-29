@@ -786,6 +786,21 @@ public:
                                 ArrayRef<const Expr*> Args,
                                 const Expr *This = nullptr) const;
 
+  /// P4405: fold this condition to a boolean as EvaluateAsBooleanCondition
+  /// does (folding, not manifestly constant-evaluated), recording in
+  /// \p Status whether the evaluation met side effects or undefined behavior,
+  /// which the caller must check.  If \p Callee is not null, the condition is
+  /// folded as if it appeared in the body of a call to \p Callee whose I-th
+  /// parameter holds *ParamValues[I], or an unknown value where that is null
+  /// or absent, and whose `this` designates the object *ThisValue (an
+  /// lvalue), or is unknown if that is null.  Nothing is evaluated at run
+  /// time and nothing is diagnosed.
+  bool EvaluateAsBooleanConditionInCall(
+      bool &Result, EvalStatus &Status, const ASTContext &Ctx,
+      const FunctionDecl *Callee = nullptr,
+      ArrayRef<const APValue *> ParamValues = {},
+      const APValue *ThisValue = nullptr) const;
+
   enum class ConstantExprKind {
     /// An integer constant expression (an array bound, enumerator, case value,
     /// bit-field width, or similar) or similar.

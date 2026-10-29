@@ -174,6 +174,9 @@ bool placeDeferredContractProof(const ContractProofQuery &Q,
 bool takeContractDiagnostic(const ContractProofQuery &Q, ContractProofResult R,
                             const LangOptions &LangOpts);
 
+/// -fcontracts-prove-fold (ContractProveFold.cpp).
+extern const ContractProofStrategy ContractProveFoldStrategy;
+
 } // namespace CodeGen
 } // namespace clang
 
