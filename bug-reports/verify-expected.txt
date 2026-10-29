@@ -1,0 +1,55 @@
+# Measured behaviour of every reproducer in this directory.
+#
+# Regenerate with ./verify.sh --record, and READ THE DIFF: a line
+# that moved in the STOCK column means upstream's behaviour changed,
+# which is the event that retires a row from README.md.  A line that
+# moved in the BRANCH column with stock unchanged is a regression
+# here, or a fix here, and the README Status column should follow.
+#
+# stock:  clang version 24.0.0git (https://github.com/llvm/llvm-project.git 33891afe2ebb48678b15ec9ce2223e3010a6c776)
+# branch: clang version 24.0.0git (git@bbgithub.dev.bloomberg.com:jberne4/llvm-project.git 1bec9777321af903e1ac0d04757aba9990bbdf4a)
+# dated:  2026-10-17
+#
+# id | stock | branch
+CLANG-1|clean|error[11:5d107cd5]
+CLANG-2|clean exit:255 out:[clang-02/clang-02-ubsan-bool-recover.c:38:11: runtime error: load of value 2, which is not a valid value for type '_Bool' SUMMARY: UndefinedBehaviorSanitizer: u]|clean exit:255 out:[clang-02/clang-02-ubsan-bool-recover.c:38:11: runtime error: load of value 2, which is not a valid value for type '_Bool' SUMMARY: UndefinedBehaviorSanitizer: u]
+CLANG-5|clean exit:1 out:[]|clean exit:1 out:[]
+CLANG-5b|clean exit:7 out:[]|clean exit:7 out:[]
+CLANG-5b2|clean exit:7 out:[]|clean exit:7 out:[]
+CLANG-8-1|clean|clean
+CLANG-8-2|clean|clean
+CLANG-8-3|error[1:28fc5e23]|error[1:28fc5e23]
+CLANG-8-4|error[1:dcf53439]|error[1:dcf53439]
+CLANG-8-5|error[1:7c74a75c]|error[1:7c74a75c]
+CLANG-8-6|error[1:6aa2bcc0]|error[1:6aa2bcc0]
+CLANG-8-7|error[2:f4dffc1a]|error[2:f4dffc1a]
+CLANG-8-8|error[1:becd9acc]|error[1:becd9acc]
+CLANG-8-9|clean|clean
+CLANG-8-10|clean|clean
+CLANG-8-11|error[1:3a66dce8]|error[1:3a66dce8]
+CLANG-9|clean[1:0bf35b81]|clean[1:0bf35b81]
+CLANG-39|clean|error[1:a26b8547]
+CLANG-628|error[3:8052c61c]|error[3:8052c61c]
+CLANG-664|error[3:bf902694]|clean
+CLANG-734|clean exit:0 out:[clang-734/clang-734-vptr-base-member.cpp:8:50: runtime error: member access within address 0xADDR which does not point to an object of type 'B' 0xADDR: note: ob]|clean exit:0 out:[clang-734/clang-734-vptr-base-member.cpp:8:50: runtime error: member access within address 0xADDR which does not point to an object of type 'B' 0xADDR: note: ob]
+CLANG-688|clean exit:0 out:[clang-688/clang-688-ubsan-vptr-downcast-during-construction.cpp:4:16: runtime error: downcast of address 0xADDR which does not point to an object of type 'F' 0x]|clean exit:0 out:[clang-688/clang-688-ubsan-vptr-downcast-during-construction.cpp:4:16: runtime error: downcast of address 0xADDR which does not point to an object of type 'F' 0x]
+CLANG-689|error[3:2081ee3b]|error[3:2081ee3b]
+CLANG-710|clean[1:444596e0]|clean[1:444596e0]
+CLANG-711|clean[1:dcfee1f3]|clean[1:dcfee1f3]
+CLANG-712|clean|clean
+CLANG-713|clean|clean
+CLANG-714|clean|clean
+CLANG-715|clean|clean
+CLANG-716|clean|clean
+CLANG-717|clean|clean
+CLANG-718|clean|clean
+CLANG-725|error[1:22bc8e16]|error[1:22bc8e16]
+CLANG-737|clean|clean
+CLANG-748|clean exit:1 out:[UndefinedBehaviorSanitizer:DEADLYSIGNAL ==NNNN==ERROR: UndefinedBehaviorSanitizer: SEGV on unknown address 0xADDR (pc 0xADDR bp 0xADDR sp 0xADDR TNNNN) ==NNNN==]|clean exit:1 out:[UndefinedBehaviorSanitizer:DEADLYSIGNAL ==NNNN==ERROR: UndefinedBehaviorSanitizer: SEGV on unknown address 0xADDR (pc 0xADDR bp 0xADDR sp 0xADDR TNNNN) ==NNNN==]
+CLANG-752|clean exit:0 out:[clang-752/clang-752-vptr-reference-variable.cpp:7:53: runtime error: member access within address 0xADDR which does not point to an object of type 'B' 0xADDR: n]|clean exit:0 out:[clang-752/clang-752-vptr-reference-variable.cpp:7:53: runtime error: member access within address 0xADDR which does not point to an object of type 'B' 0xADDR: n]
+CLANG-756|clean|clean
+CLANG-763|clean exit:1 out:[UndefinedBehaviorSanitizer:DEADLYSIGNAL ==NNNN==ERROR: UndefinedBehaviorSanitizer: SEGV on unknown address 0xADDR (pc 0xADDR bp 0xADDR sp 0xADDR TNNNN) ==NNNN==]|clean exit:1 out:[UndefinedBehaviorSanitizer:DEADLYSIGNAL ==NNNN==ERROR: UndefinedBehaviorSanitizer: SEGV on unknown address 0xADDR (pc 0xADDR bp 0xADDR sp 0xADDR TNNNN) ==NNNN==]
+CLANG-779|clean|clean
+CLANG-803|clean exit:0 out:[bind done addr done call done]|clean exit:0 out:[bind done addr done call done]
+CLANG-809|clean exit:0 out:[load=0 store=0 load_elem=0 pnew=0 pnew_elem=0 load_ptr=1 pnew_ptr=1]|clean exit:0 out:[load=0 store=0 load_elem=0 pnew=0 pnew_elem=0 load_ptr=1 pnew_ptr=1]
+CLANG-812|clean exit:0 out:[star=0 cstar=0 sub=0 member=1]|clean exit:0 out:[star=0 cstar=0 sub=0 member=1]

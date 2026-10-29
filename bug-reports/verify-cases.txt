@@ -1,0 +1,65 @@
+# One row per reproducer measurement: id | file | mode | flags
+#
+# Modes:  syntax   -fsyntax-only
+#         compile  -c
+#         link     -o a.out
+#         run      -o a.out, then execute; the runtime output is part of the
+#                  measurement, because these bugs compile clean and misbehave
+#
+# A mode may carry an "@c" suffix, meaning drive `clang` rather than `clang++`.
+# CLANG-2 is plain C and clang++ rejects -std=c17 outright.
+#
+# Flags are the ones the reproducer's own header comment records, and must
+# never include a branch-only option: stock has to be able to run the same
+# command, or the comparison means nothing.  None of these need -fcontracts --
+# every entry in this directory is a core-language bug by construction, since
+# contracts are not upstream in Clang and a contracts-dependent bug is not
+# filable (see ../open-issues/README.md).
+#
+# CLANG-8 is one row per -DCASE, because the bug is that the explicit-object
+# half of [expr.prim.this]/3 is unenforced while the static half is enforced:
+# a single row would average the two halves into one word and hide exactly the
+# asymmetry the reproducer was built to show.
+
+CLANG-1   | clang-01/clang-01-constexpr-vbase-lifetime.cpp        | syntax | -std=c++26
+CLANG-2   | clang-02/clang-02-ubsan-bool-recover.c                | run@c  | -std=c17 -fsanitize=bool -fsanitize-recover=bool -O0
+CLANG-5   | clang-05/clang-05-retval-not-destroyed-on-throwing-cleanup.cpp | run    | -std=c++17
+CLANG-5b  | clang-05/clang-05b-retval-leak-all-return-forms.cpp   | run    | -std=c++17 -O0
+CLANG-5b2 | clang-05/clang-05b-retval-leak-all-return-forms.cpp   | run    | -std=c++17 -O2
+CLANG-8-1 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=1
+CLANG-8-2 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=2
+CLANG-8-3 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=3
+CLANG-8-4 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=4
+CLANG-8-5 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=5
+CLANG-8-6 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=6
+CLANG-8-7 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=7
+CLANG-8-8 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=8
+CLANG-8-9 | clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=9
+CLANG-8-10| clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=10
+CLANG-8-11| clang-08/clang-08-this-in-xobj-declaration.cpp        | syntax | -std=c++23 -DCASE=11
+CLANG-9   | clang-09/clang-09-member-address-before-ctor.cpp      | syntax | -std=c++26
+CLANG-39 | clang-39/clang-39-typedef-requires-clause.cpp | syntax | -std=c++20
+CLANG-628 | clang-628/clang-628-param-cv-out-of-class-member.cpp | syntax | -std=c++20
+CLANG-664 | clang-664/clang-664-noexcept-array-filler.cpp | syntax | -std=c++20
+CLANG-734 | clang-734/clang-734-vptr-base-member.cpp | run    | -fsanitize=vptr
+CLANG-688 | clang-688/clang-688-ubsan-vptr-downcast-during-construction.cpp | run    | -std=c++26 -O0 -fsanitize=vptr
+CLANG-689 | clang-689/clang-689-constexpr-past-end-nonvirtual-base.cpp | syntax | -std=c++26
+CLANG-710 | clang-710/clang-710-constexpr-unsequenced-modification.cpp | syntax | -std=c++26
+CLANG-711 | clang-711/clang-711-constexpr-noreturn-returns.cpp | syntax | -std=c++26
+CLANG-712 | clang-712/clang-712-constexpr-address-past-end-indirection.cpp | syntax | -std=c++26
+CLANG-713 | clang-713/clang-713-constexpr-call-in-base-mem-init.cpp | syntax | -std=c++26
+CLANG-714 | clang-714/clang-714-constexpr-cdtor-uses.cpp | syntax | -std=c++26
+CLANG-715 | clang-715/clang-715-constexpr-reference-to-freed-storage.cpp | syntax | -std=c++26
+CLANG-716 | clang-716/clang-716-constexpr-union-overlap-assignment.cpp | syntax | -std=c++26
+CLANG-717 | clang-717/clang-717-constexpr-reference-through-dangling-pointer.cpp | syntax | -std=c++26
+CLANG-718 | clang-718/clang-718-constexpr-enum-floating-cast.cpp | syntax | -std=c++26
+CLANG-725 | clang-725/clang-725-constexpr-dynamic-cast-vbase-construction.cpp | syntax | -std=c++26
+CLANG-737 | clang-737/clang-737-constexpr-null-static-member-call.cpp | syntax | -std=c++26
+CLANG-748 | clang-748/clang-748-ubsan-null-base-member.cpp | run    | -fsanitize=null
+CLANG-752 | clang-752/clang-752-vptr-reference-variable.cpp | run    | -fsanitize=vptr
+CLANG-756 | clang-756/clang-756-constexpr-null-function-indirection.cpp | syntax | -std=c++26 -Wno-unused-value
+CLANG-763 | clang-763/clang-763-ubsan-null-trivial-assign-call.cpp | run    | -fsanitize=null
+CLANG-779 | clang-779/clang-779-constexpr-empty-copy-past-end.cpp | syntax | -std=c++26
+CLANG-803 | clang-803/clang-803-ubsan-null-downcast-ref-offset.cpp | run    | -std=c++17 -fsanitize=null
+CLANG-809 | clang-809/clang-809-ubsan-alignment-char-array.cpp | run    | -std=c++17 -fsanitize=alignment
+CLANG-812 | clang-812/clang-812-ubsan-null-dynamic-cast-reference.cpp | run    | -std=c++17 -fsanitize=null
