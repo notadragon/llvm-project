@@ -2047,6 +2047,23 @@ private:
   /// requires-clause, or null if no such clause was specified.
   Expr *TrailingRequiresClause;
 
+  /// The function-contract-specifier-seq parsed with this declarator, if any.
+  ContractSpecifierDecl *Contracts = nullptr;
+
+  /// The tokens of a function-contract-specifier-seq cached to be parsed once
+  /// the declaration exists.
+  CachedTokens LateParsedContracts;
+
+  /// Whether a function-contract-specifier written on this declarator has to
+  /// be late-parsed.  Only ParseFunctionDeclarator can decide that, since only
+  /// there is the declarator still short enough for
+  /// isFunctionDeclaratorAFunctionDeclaration() to mean what it says; the
+  /// answer is recorded because a virt-specifier-seq or a trailing
+  /// requires-clause is parsed afterwards, and a contract written behind one
+  /// of those is reached from ParseCXXMemberDeclaratorBeforeInitializer
+  /// instead.
+  bool ContractsAreLateParsed = false;
+
   /// If this declarator declares a template, its template parameter lists.
   ArrayRef<TemplateParameterList *> TemplateParameterLists;
 
@@ -2202,6 +2219,12 @@ public:
     CommaLoc = SourceLocation();
     EllipsisLoc = SourceLocation();
     PackIndexingExpr = nullptr;
+    Contracts = nullptr;
+    // Contracts cached and never replayed are a parser bug; a release build
+    // drops them rather than carry them into the next declarator.
+    assert(LateParsedContracts.empty() && "Late-parsed contracts unhandled");
+    LateParsedContracts.clear();
+    ContractsAreLateParsed = false;
   }
 
   /// mayOmitIdentifier - Return true if the identifier is either optional or
@@ -2716,6 +2739,19 @@ public:
   bool hasTrailingRequiresClause() const {
     return TrailingRequiresClause != nullptr;
   }
+
+  /// The contract specifier parsed with this declarator, if any.
+  ContractSpecifierDecl *getContracts() const { return Contracts; }
+  void setContracts(ContractSpecifierDecl *C) { Contracts = C; }
+
+  CachedTokens &getLateParsedContracts() { return LateParsedContracts; }
+  const CachedTokens &getLateParsedContracts() const {
+    return LateParsedContracts;
+  }
+
+  void setContractsAreLateParsed(bool Late) { ContractsAreLateParsed = Late; }
+
+  bool areContractsLateParsed() const { return ContractsAreLateParsed; }
 
   /// Sets the template parameter lists that preceded the declarator.
   void setTemplateParameterLists(ArrayRef<TemplateParameterList *> TPLs) {

@@ -345,6 +345,15 @@ Retry:
   case tok::kw__Defer: // C defer TS: defer-statement
     return ParseDeferStatement(TrailingElseLoc);
 
+  case tok::kw_contract_assert: // C++26 contract-assert-statement
+  case tok::kw__ContractAssert: // C (P4299) contract-assert-statement
+    ProhibitAttributes(CXX11Attrs);
+    ProhibitAttributes(GNUAttrs); // The attributes go after the keyword
+    SemiError =
+        Tok.is(tok::kw_contract_assert) ? "contract_assert" : "_ContractAssert";
+    Res = ParseContractAssertStatement();
+    break;
+
   case tok::kw_asm: {
     for (const ParsedAttr &AL : CXX11Attrs)
       // Could be relaxed if asm-related regular keyword attributes are
@@ -999,7 +1008,7 @@ StmtResult Parser::ParseCompoundStatement(bool isStmtExpr) {
 }
 
 StmtResult Parser::ParseCompoundStatement(bool isStmtExpr,
-                                          unsigned ScopeFlags) {
+                                          uint64_t ScopeFlags) {
   assert(Tok.is(tok::l_brace) && "Not a compound stmt!");
 
   // Enter a scope to hold everything within the compound stmt.  Compound
@@ -1706,7 +1715,7 @@ StmtResult Parser::ParseSwitchStatement(SourceLocation *TrailingElseLoc,
   // while, for, and switch statements are local to the if, while, for, or
   // switch statement (including the controlled statement).
   //
-  unsigned ScopeFlags = Scope::SwitchScope;
+  uint64_t ScopeFlags = Scope::SwitchScope;
   if (C99orCXX)
     ScopeFlags |= Scope::DeclScope | Scope::ControlScope;
   ParseScope SwitchScope(this, ScopeFlags);
