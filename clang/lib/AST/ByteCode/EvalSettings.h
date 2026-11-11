@@ -24,6 +24,8 @@ struct EvalSettings {
   bool InConstantContext = false;
   bool CheckingPotentialConstantExpression = false;
   bool CheckingForUndefinedBehavior = false;
+  /// Whether contract assertions are evaluated (see State::EvaluateContracts).
+  bool EvaluateContracts = true;
 
   EvalSettings(EvaluationMode EvalMode, Expr::EvalStatus &EvalStatus,
                SemaProxy *SProxy,
