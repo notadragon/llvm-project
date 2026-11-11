@@ -981,6 +981,576 @@ static unsigned extractAllowedMask(Sema &S, Expr *LabelExpr, QualType LabelTy,
 }
 
 namespace {
+/// A label's group_names, read as a range-based for walks it
+/// ([support.contract.control.ident], [stmt.ranged]): the iterator from
+/// begin-expr incremented until it compares equal to end-expr, each element
+/// converted to std::string_view (or to const char* without <string_view>).
+/// So any range is read in full, whether or not its type says how many names
+/// it holds.
+///
+/// The range is read by constant-evaluating calls to reader functions built
+/// for it, each walking the range once, so the reading costs time linear in
+/// the size of the names (notadragon_wg21 DECISIONS.md E190): one counts the
+/// names, stopping one past MaxNames; one returns an array of their lengths;
+/// one an array of all their characters, one name after another.  A reader
+/// is a constexpr function taking group_names by reference, as a range-based
+/// for binds __range, with the iterator in a local, as __begin is one.  A
+/// name is read within the full-expression that dereferences the iterator,
+/// so an iterator may return its names by value.  An array's names are
+/// counted by its type.
+///
+/// A reader that does not form -- group_names is not a range whose elements
+/// convert to the name type -- gives the label no groups, as an absent
+/// group_names does.  One that forms but is not a constant expression, and
+/// a range that has not ended after MaxNames names, are recorded for the
+/// caller to diagnose (notadragon_wg21 DECISIONS.md E189 (a), E187 (a)):
+/// a label silently in no group would configure its assertions as
+/// unlabelled.
+class GroupNamesReader {
+  enum Pass { CountPass, LengthsPass, CharsPass };
+
+  /// The reader functions' name.  Their own frame is dropped from the
+  /// evaluator's notes: the user wrote no such call.
+  static constexpr llvm::StringLiteral ReaderName =
+      "__clang_group_names_reader";
+
+  Sema &S;
+  ASTContext &C;
+  Expr *Range;
+  SourceLocation Loc;
+  QualType NameTy;
+
+  /// A local variable of FD, of type T, initialized from Init if there is
+  /// one; null if the initialization does not form.
+  VarDecl *local(FunctionDecl *FD, StringRef Name, QualType T, Expr *Init) {
+    auto *VD = VarDecl::Create(C, FD, Loc, Loc, &C.Idents.get(Name), T,
+                               C.getTrivialTypeSourceInfo(T, Loc), SC_None);
+    VD->setImplicit();
+    if (Init)
+      S.AddInitializerToDecl(VD, Init, /*DirectInit=*/false);
+    else
+      S.ActOnUninitializedDecl(VD);
+    return VD->isInvalidDecl() ? nullptr : VD;
+  }
+
+  Expr *ref(ValueDecl *D) {
+    return S.BuildDeclRefExpr(D, D->getType().getNonReferenceType(),
+                              VK_LValue, Loc);
+  }
+
+  Expr *lit(uint64_t V) {
+    QualType SizeTy = C.getSizeType();
+    return IntegerLiteral::Create(
+        C, llvm::APInt(C.getTypeSize(SizeTy), V), SizeTy, Loc);
+  }
+
+  /// E as a full-expression; null if it does not form.
+  Expr *full(ExprResult E) {
+    if (!E.isInvalid())
+      E = S.ActOnFinishFullExpr(E.get(), Loc, /*DiscardedValue=*/false);
+    return E.isInvalid() ? nullptr : E.get();
+  }
+
+  CompoundStmt *block(ArrayRef<Stmt *> Stmts) {
+    return CompoundStmt::Create(C, Stmts, FPOptionsOverride(), Loc, Loc);
+  }
+
+  /// `while (Cond) { Body }', or null if Cond is.
+  Stmt *loop(Expr *Cond, ArrayRef<Stmt *> Body) {
+    if (!Cond)
+      return nullptr;
+    return WhileStmt::Create(C, /*Var=*/nullptr, Cond, block(Body), Loc, Loc,
+                             Loc);
+  }
+
+  /// `++V' as a full-expression.
+  Expr *increment(VarDecl *V) {
+    return full(S.BuildUnaryOp(/*S=*/nullptr, Loc, UO_PreInc, ref(V)));
+  }
+
+  /// `E.Member()' for a member of the name type.
+  Expr *callNameMember(Expr *E, StringRef Member) {
+    const auto *RD = NameTy->getAsCXXRecordDecl();
+    LookupResult R(S, &S.Context.Idents.get(Member), Loc,
+                   Sema::LookupMemberName);
+    if (!S.LookupQualifiedName(R, const_cast<CXXRecordDecl *>(RD))) {
+      R.suppressDiagnostics();
+      return nullptr;
+    }
+    ExprResult Obj = S.TemporaryMaterializationConversion(E);
+    if (Obj.isInvalid())
+      return nullptr;
+    ExprResult Ref = buildFacetMemberRef(S, Obj.get(), NameTy, R, Loc);
+    if (Ref.isInvalid())
+      return nullptr;
+    ExprResult Call = S.BuildCallExpr(/*Scope=*/nullptr, Ref.get(), Loc, {},
+                                      Loc, /*ExecConfig=*/nullptr);
+    return Call.isInvalid() ? nullptr : Call.get();
+  }
+
+  /// The statement of a LengthsPass or CharsPass reader that reads the name
+  /// *Begin, the Index-th: Result.v[Index] = its length, or its characters
+  /// appended to Result.v from Out on.  One full-expression, so that the
+  /// temporaries of the dereference live until the name has been read:
+  ///
+  ///   Name = &<*Begin as the name type>,
+  ///   ({ Char = 0; while (<Char within *Name>) { [Result.v[Out++] =
+  ///      <character Char of *Name>;] ++Char; } [Result.v[Index] = Char;]
+  ///      0; })
+  Expr *readName(Pass P, VarDecl *Begin, VarDecl *Index, VarDecl *Result,
+                 FieldDecl *Field, VarDecl *Name, VarDecl *Char,
+                 VarDecl *Out) {
+    auto ResultAt = [&](VarDecl *I) -> ExprResult {
+      Expr *Arr = MemberExpr::CreateImplicit(C, ref(Result), /*IsArrow=*/false,
+                                             Field, Field->getType(),
+                                             VK_LValue, OK_Ordinary);
+      return S.CreateBuiltinArraySubscriptExpr(Arr, Loc, ref(I), Loc);
+    };
+    auto NameObj = [&]() {
+      return S.BuildUnaryOp(/*S=*/nullptr, Loc, UO_Deref, ref(Name));
+    };
+    // Character Char of *Name, and whether Char is within *Name: below its
+    // size() for a string_view, before its NUL for a const char*.
+    auto CharAt = [&]() -> ExprResult {
+      ExprResult N = NameObj();
+      if (N.isInvalid())
+        return ExprError();
+      Expr *Ptr = N.get();
+      if (NameTy->isRecordType()) {
+        Ptr = callNameMember(N.get(), "data");
+        if (!Ptr || !Ptr->getType()->isPointerType())
+          return ExprError();
+      }
+      return S.CreateBuiltinArraySubscriptExpr(Ptr, Loc, ref(Char), Loc);
+    };
+    ExprResult Within;
+    if (NameTy->isRecordType()) {
+      ExprResult N = NameObj();
+      Expr *Size = N.isInvalid() ? nullptr : callNameMember(N.get(), "size");
+      if (!Size)
+        return nullptr;
+      Within = S.BuildBinOp(/*S=*/nullptr, Loc, BO_NE, ref(Char), Size);
+    } else {
+      ExprResult Ch = CharAt();
+      if (Ch.isInvalid())
+        return nullptr;
+      Within = S.BuildBinOp(
+          /*S=*/nullptr, Loc, BO_NE, Ch.get(),
+          IntegerLiteral::Create(C, llvm::APInt(C.getIntWidth(C.IntTy), 0),
+                                 C.IntTy, Loc));
+    }
+    if (!Within.isInvalid())
+      Within = S.PerformContextuallyConvertToBool(Within.get());
+
+    SmallVector<Stmt *, 4> Each;
+    Expr *Reset = full(S.BuildBinOp(/*S=*/nullptr, Loc, BO_Assign, ref(Char),
+                                    lit(0)));
+    Expr *CharInc = increment(Char);
+    if (!Reset || !CharInc)
+      return nullptr;
+    Each.push_back(Reset);
+    SmallVector<Stmt *, 3> Inner;
+    if (P == CharsPass) {
+      ExprResult Dst = ResultAt(Out), Ch = CharAt();
+      if (Dst.isInvalid() || Ch.isInvalid())
+        return nullptr;
+      Expr *Copy = full(
+          S.BuildBinOp(/*S=*/nullptr, Loc, BO_Assign, Dst.get(), Ch.get()));
+      Expr *OutInc = increment(Out);
+      if (!Copy || !OutInc)
+        return nullptr;
+      Inner.push_back(Copy);
+      Inner.push_back(OutInc);
+    }
+    Inner.push_back(CharInc);
+    Stmt *Walk = loop(full(Within), Inner);
+    if (!Walk)
+      return nullptr;
+    Each.push_back(Walk);
+    if (P == LengthsPass) {
+      ExprResult Dst = ResultAt(Index);
+      Expr *Len = Dst.isInvalid() ? nullptr
+                                  : full(S.BuildBinOp(/*S=*/nullptr, Loc,
+                                                      BO_Assign, Dst.get(),
+                                                      ref(Char)));
+      if (!Len)
+        return nullptr;
+      Each.push_back(Len);
+    }
+    Expr *Zero = IntegerLiteral::Create(
+        C, llvm::APInt(C.getIntWidth(C.IntTy), 0), C.IntTy, Loc);
+    Each.push_back(Zero);
+    Expr *ReadIt = new (C) StmtExpr(block(Each), C.IntTy, Loc, Loc,
+                                    /*TemplateDepth=*/0);
+
+    // Built after the statements above, which are full-expressions of their
+    // own, so that this one keeps the cleanups of its temporaries.
+    ExprResult Elt = S.BuildUnaryOp(/*S=*/nullptr, Loc, UO_Deref, ref(Begin));
+    if (Elt.isInvalid())
+      return nullptr;
+    ExprResult NameVal = S.PerformCopyInitialization(
+        InitializedEntity::InitializeTemporary(NameTy), Loc, Elt.get());
+    if (NameVal.isInvalid())
+      return nullptr;
+    Expr *Tmp = S.CreateMaterializeTemporaryExpr(
+        NameTy, NameVal.get(), /*BoundToLvalueReference=*/true);
+    Expr *Addr = UnaryOperator::Create(
+        C, Tmp, UO_AddrOf, C.getPointerType(NameTy), VK_PRValue, OK_Ordinary,
+        Loc, /*CanOverflow=*/false, FPOptionsOverride());
+    ExprResult Set =
+        S.BuildBinOp(/*S=*/nullptr, Loc, BO_Assign, ref(Name), Addr);
+    if (Set.isInvalid())
+      return nullptr;
+    return full(BinaryOperator::Create(C, Set.get(), ReadIt, BO_Comma,
+                                       C.IntTy, VK_PRValue, OK_Ordinary, Loc,
+                                       FPOptionsOverride()));
+  }
+
+  /// The body of reader FD, whose parameter is Param, for pass P; Field is
+  /// the result struct's array, for LengthsPass and CharsPass.  Null if some
+  /// part does not form.
+  ///
+  ///   auto __begin = begin-expr;
+  ///   [auto __end = end-expr;]          (CountPass)
+  ///   size_t __index = 0;
+  ///   while (<more>) { [read name;] ++__begin; ++__index; }
+  ///   return __index;                   (CountPass), or __result
+  ///
+  /// where <more> is `__index != MaxNames + 1 && __begin != __end' for
+  /// CountPass, and `__index != Count' otherwise.
+  CompoundStmt *buildBody(Pass P, FunctionDecl *FD, ParmVarDecl *Param,
+                          QualType RetTy, FieldDecl *Field, uint64_t Count) {
+    QualType SizeTy = C.getSizeType();
+    ExprResult B, E;
+    if (!buildRangeBeginEnd(S, ref(Param), Loc, &B,
+                            P == CountPass ? &E : nullptr))
+      return nullptr;
+    auto IterTy = [](Expr *X) {
+      return X->getType().getNonReferenceType().getUnqualifiedType();
+    };
+
+    SmallVector<Stmt *, 8> Body;
+    auto Declare = [&](VarDecl *V) {
+      if (V)
+        Body.push_back(new (C) DeclStmt(DeclGroupRef(V), Loc, Loc));
+      return V;
+    };
+    VarDecl *Begin = Declare(local(FD, "__begin", IterTy(B.get()), B.get()));
+    VarDecl *End =
+        P == CountPass
+            ? Declare(local(FD, "__end", IterTy(E.get()), E.get()))
+            : nullptr;
+    VarDecl *Index = Declare(local(FD, "__index", SizeTy, lit(0)));
+    if (!Begin || !Index || (P == CountPass && !End))
+      return nullptr;
+
+    Expr *More;
+    SmallVector<Stmt *, 3> Step;
+    VarDecl *Result = nullptr;
+    if (P == CountPass) {
+      ExprResult NotCap = S.BuildBinOp(/*S=*/nullptr, Loc, BO_NE, ref(Index),
+                                       lit(MaxNames + 1));
+      ExprResult NotEnd =
+          S.BuildBinOp(/*S=*/nullptr, Loc, BO_NE, ref(Begin), ref(End));
+      if (!NotEnd.isInvalid())
+        NotEnd = S.PerformContextuallyConvertToBool(NotEnd.get());
+      if (NotCap.isInvalid() || NotEnd.isInvalid())
+        return nullptr;
+      More = full(S.BuildBinOp(/*S=*/nullptr, Loc, BO_LAnd, NotCap.get(),
+                               NotEnd.get()));
+    } else {
+      // The result, value-initialized; the name read, as a pointer to it;
+      // the index of a character in it; and for CharsPass the index of the
+      // next character in the result.
+      ExprResult Init = S.ActOnInitList(Loc, {}, Loc);
+      Result = Init.isInvalid()
+                   ? nullptr
+                   : Declare(local(FD, "__result", RetTy, Init.get()));
+      VarDecl *Name = Declare(local(
+          FD, "__name", C.getPointerType(NameTy.withConst()), nullptr));
+      VarDecl *Char = Declare(local(FD, "__char", SizeTy, nullptr));
+      VarDecl *Out =
+          P == CharsPass ? Declare(local(FD, "__out", SizeTy, lit(0))) : nullptr;
+      if (!Result || !Name || !Char || (P == CharsPass && !Out))
+        return nullptr;
+      More = full(
+          S.BuildBinOp(/*S=*/nullptr, Loc, BO_NE, ref(Index), lit(Count)));
+      Expr *Read = readName(P, Begin, Index, Result, Field, Name, Char, Out);
+      if (!Read)
+        return nullptr;
+      Step.push_back(Read);
+    }
+    Expr *BeginInc = increment(Begin), *IndexInc = increment(Index);
+    if (!BeginInc || !IndexInc)
+      return nullptr;
+    Step.push_back(BeginInc);
+    Step.push_back(IndexInc);
+    Stmt *Walk = loop(More, Step);
+    if (!Walk)
+      return nullptr;
+    Body.push_back(Walk);
+
+    StmtResult Ret =
+        S.BuildReturnStmt(Loc, ref(P == CountPass ? Index : Result));
+    if (Ret.isInvalid())
+      return nullptr;
+    Body.push_back(Ret.get());
+    return block(Body);
+  }
+
+  /// A call of a reader for pass P, with group_names as its argument; null
+  /// if the reader does not form.  For LengthsPass it returns a struct whose
+  /// one member is an array of the lengths of the first Count names; for
+  /// CharsPass, an array of their Total characters.
+  Expr *buildReader(Pass P, uint64_t Count, uint64_t Total) {
+    QualType SizeTy = C.getSizeType();
+    QualType RangeRefTy = C.getLValueReferenceType(Range->getType());
+
+    // A function cannot return an array; it returns a struct holding one.
+    QualType RetTy = SizeTy;
+    FieldDecl *Field = nullptr;
+    if (P != CountPass) {
+      QualType ArrTy = C.getConstantArrayType(
+          P == LengthsPass ? SizeTy : C.CharTy,
+          llvm::APInt(64, P == LengthsPass ? Count : Total), nullptr,
+          ArraySizeModifier::Normal, 0);
+      RecordDecl *RD = C.buildImplicitRecord("__clang_group_names_result");
+      RD->startDefinition();
+      Field = FieldDecl::Create(C, RD, Loc, Loc, &C.Idents.get("v"), ArrTy,
+                                C.getTrivialTypeSourceInfo(ArrTy, Loc),
+                                /*BW=*/nullptr, /*Mutable=*/false,
+                                ICIS_NoInit);
+      Field->setAccess(AS_public);
+      RD->addDecl(Field);
+      RD->completeDefinition();
+      RetTy = C.getCanonicalTagType(RD);
+    }
+
+    QualType FnTy =
+        C.getFunctionType(RetTy, {RangeRefTy}, FunctionProtoType::ExtProtoInfo());
+    FunctionDecl *FD = FunctionDecl::Create(
+        C, C.getTranslationUnitDecl(), Loc, Loc, &C.Idents.get(ReaderName),
+        FnTy, C.getTrivialTypeSourceInfo(FnTy, Loc), SC_Static,
+        S.getCurFPFeatures().isFPConstrained(), /*isInlineSpecified=*/false,
+        /*hasWrittenPrototype=*/true, ConstexprSpecKind::Constexpr);
+    FD->setImplicit();
+    auto *Param = ParmVarDecl::Create(C, FD, Loc, Loc,
+                                      &C.Idents.get("__range"), RangeRefTy,
+                                      C.getTrivialTypeSourceInfo(RangeRefTy,
+                                                                 Loc),
+                                      SC_None, /*DefArg=*/nullptr);
+    Param->setScopeInfo(0, 0);
+    FD->setParams(Param);
+    {
+      // Built as FD's body, in a scope of its own and potentially evaluated.
+      Sema::ContextRAII SavedContext(S, FD);
+      Sema::FunctionScopeRAII FunctionScope(S);
+      S.PushFunctionScope();
+      EnterExpressionEvaluationContext PotentiallyEvaluated(
+          S, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+      CompoundStmt *Body = buildBody(P, FD, Param, RetTy, Field, Count);
+      if (!Body)
+        return nullptr;
+      FD->setBody(Body);
+    }
+
+    // Not through BuildCallExpr: nothing is to mark FD used, since it is
+    // only ever constant-evaluated here.
+    Expr *Fn = DeclRefExpr::Create(C, NestedNameSpecifierLoc(),
+                                   SourceLocation(), FD,
+                                   /*RefersToEnclosingVariableOrCapture=*/false,
+                                   Loc, FnTy, VK_LValue);
+    Fn = ImplicitCastExpr::Create(C, C.getPointerType(FnTy),
+                                  CK_FunctionToPointerDecay, Fn, nullptr,
+                                  VK_PRValue, FPOptionsOverride());
+    return CallExpr::Create(C, Fn, {Range}, RetTy, VK_PRValue, Loc,
+                            FPOptionsOverride());
+  }
+
+  /// Constant-evaluate Call into Out; if it is not a constant expression,
+  /// record that (NotConstant) with the evaluator's notes, less the
+  /// reader's own frame.
+  bool evaluate(Expr *Call, APValue &Out) {
+    Expr::EvalResult Eval;
+    SmallVector<PartialDiagnosticAt, 4> EvalNotes;
+    Eval.Diag = &EvalNotes;
+    sema::EvalProxy SProxy(S);
+    if (Call->EvaluateAsMandatedConstantExpr(Eval, C, SProxy)) {
+      Out = std::move(Eval.Val);
+      return true;
+    }
+    NotConstant = true;
+    for (PartialDiagnosticAt &Note : EvalNotes) {
+      if (Note.second.getDiagID() == diag::note_constexpr_call_here) {
+        SmallString<64> Text;
+        Note.second.EmitToString(S.getDiagnostics(), Text);
+        if (StringRef(Text).contains(ReaderName))
+          continue;
+      }
+      Notes.push_back(std::move(Note));
+    }
+    return false;
+  }
+
+  /// The N integers of the array in V, a reader's struct result.
+  static bool arrayValues(const APValue &V, uint64_t N,
+                          SmallVectorImpl<uint64_t> &Out) {
+    if (!V.isStruct() || V.getStructNumFields() != 1)
+      return false;
+    const APValue &A = V.getStructField(0);
+    if (!A.isArray() || A.getArraySize() != N)
+      return false;
+    for (uint64_t I = 0; I != N; ++I) {
+      if (I >= A.getArrayInitializedElts() && !A.hasArrayFiller())
+        return false;
+      const APValue &E = I < A.getArrayInitializedElts()
+                             ? A.getArrayInitializedElt(I)
+                             : A.getArrayFiller();
+      if (!E.isInt())
+        return false;
+      Out.push_back(E.getInt().getZExtValue());
+    }
+    return true;
+  }
+
+public:
+  /// No label has more group names than this; a range that has not ended by
+  /// then is not read, and is diagnosed.
+  static constexpr uint64_t MaxNames = 4096;
+
+  /// A read formed but was not a constant expression; Notes say why.
+  bool NotConstant = false;
+  /// The range had not ended after MaxNames names.
+  bool TooMany = false;
+  SmallVector<PartialDiagnosticAt, 4> Notes;
+
+  GroupNamesReader(Sema &S, Expr *Range, SourceLocation Loc)
+      : S(S), C(S.Context), Range(Range), Loc(Loc),
+        NameTy(getGroupNameType(S, Loc)) {}
+
+  /// The names, each read whole: a string_view name is its size() bytes,
+  /// NUL bytes included (notadragon_wg21 DECISIONS.md E191 (a)), a const
+  /// char* name the bytes before its NUL.  The configuration matches a name
+  /// hierarchically on all of its bytes, so "safety\0x" is not the safety
+  /// group, while "safety.x\0y" is within it.  std::nullopt if a reader
+  /// does not form, is not a constant expression (NotConstant), or the range
+  /// does not end within MaxNames names (TooMany).  The count is read, and
+  /// checked against the cap, before any name is.
+  std::optional<SmallVector<std::string>> read() {
+    uint64_t Count;
+    if (const ConstantArrayType *AT = C.getAsConstantArrayType(Range->getType()))
+      Count = AT->getZExtSize();
+    else {
+      Expr *Call = buildReader(CountPass, 0, 0);
+      APValue V;
+      if (!Call || !evaluate(Call, V) || !V.isInt())
+        return std::nullopt;
+      Count = V.getInt().getZExtValue();
+    }
+    if (Count > MaxNames) {
+      TooMany = true;
+      return std::nullopt;
+    }
+    SmallVector<std::string> Names;
+    if (Count == 0)
+      return Names;
+
+    SmallVector<uint64_t, 16> Lengths;
+    Expr *Call = buildReader(LengthsPass, Count, 0);
+    APValue V;
+    if (!Call || !evaluate(Call, V) || !arrayValues(V, Count, Lengths))
+      return std::nullopt;
+    uint64_t Total = 0;
+    for (uint64_t L : Lengths)
+      Total += L;
+
+    SmallVector<uint64_t, 64> Chars;
+    if (Total) {
+      Call = buildReader(CharsPass, Count, Total);
+      if (!Call || !evaluate(Call, V) || !arrayValues(V, Total, Chars))
+        return std::nullopt;
+    }
+    uint64_t Pos = 0;
+    for (uint64_t L : Lengths) {
+      std::string Str;
+      Str.reserve(L);
+      for (uint64_t I = 0; I != L; ++I)
+        Str.push_back(static_cast<char>(Chars[Pos + I]));
+      Pos += L;
+      Names.push_back(std::move(Str));
+    }
+    return Names;
+  }
+};
+} // namespace
+
+/// Extract group names from label's group_names member (identification_label).
+/// Returns a vector of group name strings; empty if no group_names member.
+static SmallVector<std::string> extractGroupNames(Sema &S, Expr *LabelExpr,
+                                                  QualType LabelTy,
+                                                  const CXXRecordDecl *RD,
+                                                  SourceLocation Loc) {
+  // As for the function facets: a member this context cannot name is not a
+  // facet, and must not be an error.
+  LookupResult R = makeFacetLookup(S, LabelFacet::GroupNames, Loc);
+  if (!lookupFacetMember(S, RD, LabelTy, R))
+    return {};
+
+  // P3400 requires is_const_v<decltype(t.group_names)>, so that nothing
+  // implies a label's group membership could change at run time and have an
+  // effect -- the names are read during translation and never again.  An
+  // array of const elements is itself a const-qualified type, so both the
+  // `static constexpr' and the const-non-static spellings qualify.
+  bool AnyConst = false;
+  for (NamedDecl *D : R)
+    if (auto *VD = dyn_cast<ValueDecl>(D->getUnderlyingDecl()))
+      if (VD->getType().isConstQualified())
+        AnyConst = true;
+  if (!AnyConst)
+    return {};
+
+  // Read the names as the concept has them ([support.contract.control.ident]):
+  // each element of the range group_names converted to string_view -- a static
+  // or a non-static member, or one inherited from a combined label's base.  If
+  // group_names is not such a range the label has no groups.  If it is but a
+  // read is not a constant expression, or the range does not end within
+  // GroupNamesReader::MaxNames names, the label is diagnosed, once (the
+  // reading stops), and has no groups (notadragon_wg21 DECISIONS.md E189 (a),
+  // E187 (a)).  An empty name is skipped.  A label that is still dependent
+  // is not read.
+  if (LabelExpr->isInstantiationDependent())
+    return {};
+  SmallVector<std::string> Groups;
+  std::optional<GroupNamesReader> Reader;
+  {
+    Sema::SFINAETrap Trap(S);
+    ExprResult GN = buildFacetMemberRef(S, LabelExpr, LabelTy, R, Loc);
+    if (GN.isInvalid() || GN.get()->getType()->isDependentType())
+      return {};
+    Reader.emplace(S, GN.get(), Loc);
+    if (std::optional<SmallVector<std::string>> Names = Reader->read())
+      for (std::string &Str : *Names)
+        if (!Str.empty())
+          Groups.push_back(std::move(Str));
+  }
+  // Diagnosed outside the SFINAE trap, which would swallow the notes.
+  if (Reader->TooMany) {
+    S.Diag(Loc, diag::err_contract_group_names_too_many)
+        << getLabelFacetName(LabelFacet::GroupNames)
+        << LabelTy.getUnqualifiedType() << unsigned(GroupNamesReader::MaxNames);
+    return {};
+  }
+  if (Reader->NotConstant) {
+    S.Diag(Loc, diag::err_contract_facet_not_constant)
+        << getLabelFacetName(LabelFacet::GroupNames)
+        << LabelTy.getUnqualifiedType();
+    for (const PartialDiagnosticAt &Note : Reader->Notes)
+      S.Diag(Note.first, Note.second);
+    return {};
+  }
+  return Groups;
+}
+
 /// Resolve the contract config of CS, in groups Groups, via the P3595 ordered
 /// config system and D4405's steps 1 to 5 (ContractOptions::resolveContract),
 /// recording the runtime evaluation's semantic and the analysis evaluation's,

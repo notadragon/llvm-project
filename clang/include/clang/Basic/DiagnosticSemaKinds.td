@@ -13384,6 +13384,9 @@ def note_contract_invalid_label_facet : Note<"declared here">;
 def err_contract_facet_not_constant : Error<
   "%0 facet of assertion-control object %1 must be usable in a constant "
   "expression">, NoSFINAE;
+def err_contract_group_names_too_many : Error<
+  "%0 facet of assertion-control object %1 holds more than %2 names">,
+  NoSFINAE;
 def err_contract_invalid_label : Error<
   "value of type %0 is not a valid assertion-control label; its type must be a "
   "class type with an 'assertion_control_object' member type">;
