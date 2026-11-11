@@ -1,0 +1,9 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.div.by.zero.int"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.representable.type.result"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.shift.neg.and.width"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"kind": "implicit", "group": "ub:conv.fpint.float.not.represented"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.expr.eval.signed.integer"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.add.out.of.bounds.known"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.unary.dereference.nullptr"}, "output": {"semantic": "noexcept_observe"}}
+]
