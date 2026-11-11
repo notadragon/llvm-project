@@ -1,0 +1,38 @@
+# CLANG-8: `this` incorrectly accepted in the declaration of an explicit-object member function
+
+**Status:** Open
+**Component:** clang / Sema
+**Upstream Link:** None found. Searched GitHub Issues 2026-09-05, including
+closed ones: Clang's own message
+`"cannot be used in a static member function declaration"` (zero hits
+anywhere), `"explicit object" this` in title, `"explicit object"
+"trailing return"`. The deducing-this issues that come back -- #105737,
+#84163, #99744, #140194 -- are all other defects in that feature
+been attempted yet
+
+## Bug Report
+
+[expr.prim.this]/3 forbids `this` "within the declaration" of an
+explicit-object member function, but Clang accepts it in both the trailing
+return type and the noexcept-specifier, while correctly rejecting the
+identical shapes on `static` member functions (the control). Clang is worse
+than GCC here: GCC only misses the trailing-return-type row. This is not
+contracts-related, and reproduces from Clang 18.1.0 through trunk.
+
+## Reproducer
+
+See [`clang-08-this-in-xobj-declaration.cpp`](clang-08-this-in-xobj-declaration.cpp) in this directory.
+
+## Our Fix
+
+None -- genuinely upstream's. The contracts-specific analog was fixed at the
+contracts call site only (not in the shared
+`InitCXXThisScopeForDeclaratorIfRelevant` helper), deliberately, so this bug
+stays reproducible and untouched on the branch.
+
+## Notes
+
+Shares its root cause with GCC-17 in the `gnu_gcc` fork. GCC-17 is filed
+as [PR127290](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=127290)
+(2026-09-09); this one is not yet filed. When it is, reference PR127290 in
+the new issue, and add a comment to PR127290 linking back to it.
