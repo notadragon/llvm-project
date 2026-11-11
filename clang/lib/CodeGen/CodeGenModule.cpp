@@ -4728,7 +4728,7 @@ ConstantAddress CodeGenModule::GetAddrOfMSGuidDecl(const MSGuidDecl *GD) {
 }
 
 ConstantAddress CodeGenModule::GetAddrOfUnnamedGlobalConstantDecl(
-    const UnnamedGlobalConstantDecl *GCD) {
+    const UnnamedGlobalConstantDecl *GCD, StringRef Name) {
   CharUnits Alignment = getContext().getTypeAlignInChars(GCD->getType());
 
   llvm::GlobalVariable **Entry = nullptr;
@@ -4745,10 +4745,9 @@ ConstantAddress CodeGenModule::GetAddrOfUnnamedGlobalConstantDecl(
   Init = Emitter.emitForInitializer(V, GCD->getType().getAddressSpace(),
                                     GCD->getType());
 
-  auto *GV = new llvm::GlobalVariable(getModule(), Init->getType(),
-                                      /*isConstant=*/true,
-                                      llvm::GlobalValue::PrivateLinkage, Init,
-                                      ".constant");
+  auto *GV = new llvm::GlobalVariable(
+      getModule(), Init->getType(),
+      /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage, Init, Name);
   GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
   GV->setAlignment(Alignment.getAsAlign());
 

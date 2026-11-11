@@ -56,6 +56,12 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   if (!D->hasTrivialBody())
     return true;
 
+  // Contracts: a destructor's contract assertions are evaluated in its own
+  // body, which an alias would drop.
+  if (llvm::any_of(D->redecls(),
+                   [](const FunctionDecl *R) { return R->hasContracts(); }))
+    return true;
+
   const CXXRecordDecl *Class = D->getParent();
 
   // We are going to instrument this destructor, so give up even if it is
