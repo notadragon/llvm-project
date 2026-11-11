@@ -1853,6 +1853,12 @@ def fcontract_configuration_file_EQ : Joined<["-"], "fcontract-configuration-fil
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Load contract configuration from a JSON file">;
 
+defm contracts_p3850 : BoolFOption<"contracts-p3850",
+  LangOpts<"ContractsP3850">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable all P3850 contract extensions for C++29 (implies -fcontracts-p3097, -fcontracts-p3098, -fcontracts-p3099, -fcontracts-p3100, -fcontracts-p3290, -fcontracts-p3400, -fcontracts-p4283, -fcontracts-p4298, -fcontracts-p4301, -fcontracts-p4405, -fcontracts-p4451; in C, -fcontracts-p3100, -fcontracts-p4298, -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,
