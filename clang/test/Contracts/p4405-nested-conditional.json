@@ -1,0 +1,4 @@
+[
+  {"match": {"analysis": true, "namespace": "pp"}, "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "location": "p4405-nested-conditional.cpp:31"}, "output": {"semantic": "prove"}}
+]

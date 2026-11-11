@@ -1841,6 +1841,18 @@ def fcontract_evaluation_semantic_EQ : Joined<["-"], "fcontract-evaluation-seman
   NormalizedValues<["Ignore", "Enforce", "Observe", "QuickEnforce", "Assume", "NoexceptEnforce", "NoexceptObserve", "Prove", "Diagnose"]>,
   MarshallingInfoEnum<LangOpts<"ContractOpts.DefaultSemantic">, "Enforce">;
 
+// D4405: the semantic of the analysis evaluation of every contract assertion,
+// an entry {"match": {"analysis": true}, "output": {"semantic": S}} after the
+// configuration sources (ContractOptions::initConfig).
+def fcontract_analysis_semantic_EQ : Joined<["-"], "fcontract-analysis-semantic=">,
+  HelpText<"Select the semantic of the analysis evaluation of every contract "
+           "assertion. The default value is 'ignore'.">,
+  Values<"ignore,diagnose,prove">,
+  Visibility<[ClangOption, CC1Option]>,
+  NormalizedValuesScope<"LangOptions::ContractEvaluationSemantic">,
+  NormalizedValues<["Ignore", "Diagnose", "Prove"]>,
+  MarshallingInfoEnum<LangOpts<"ContractOpts.AnalysisSemantic">, "Ignore">;
+
 def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Set the evaluation semantic for contracts in a specific group. "
@@ -1937,6 +1949,13 @@ def fcontracts_prove_optimize_EQ : Joined<["-"], "fcontracts-prove-optimize=">,
            "proofs are optimized at that level. 'follow' selects the "
            "optimization level, where -Os, -Oz and -Og count as 2; the "
            "default is the optimization level, but at least 2">;
+
+defm contract_analysis_skip_dead_calls :
+  BoolFOption<"contract-analysis-skip-dead-calls",
+  LangOpts<"ContractAnalysisSkipDeadCalls">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Make no analysis evaluation at a call that code generation does not emit because it is never evaluated, such as one in an arm of a constant condition never taken (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
 defm contracts_prove_assume : BoolFOption<"contracts-prove-assume",
   LangOpts<"ContractsProveAssume">, DefaultFalse,

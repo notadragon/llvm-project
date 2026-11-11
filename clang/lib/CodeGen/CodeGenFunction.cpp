@@ -1994,6 +1994,7 @@ bool CodeGenFunction::ConstantFoldsToSimpleInteger(const Expr *Cond,
     return false;  // Contains a label.
 
   PGO->markStmtMaybeUsed(Cond);
+  analyzeContractDeadCalls(Cond); // P4405
   ResultInt = std::move(Int);
   return true;
 }

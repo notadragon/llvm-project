@@ -77,6 +77,7 @@ void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
       // scope of subsequent reachable statements.
       assert(!isa<DeclStmt>(*S) && "Unexpected DeclStmt!");
       PGO->markStmtMaybeUsed(S);
+      analyzeContractDeadCalls(S); // P4405
       return;
     }
 
@@ -957,6 +958,7 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
         EmitStmt(Executed);
       }
       PGO->markStmtMaybeUsed(Skipped);
+      analyzeContractDeadCalls(Skipped); // P4405
       return;
     }
   }
@@ -2386,6 +2388,7 @@ void CodeGenFunction::EmitSwitchStmt(const SwitchStmt &S) {
         EmitStmt(CaseStmt);
       incrementProfileCounter(&S);
       PGO->markStmtMaybeUsed(S.getBody());
+      analyzeContractDeadCalls(S.getBody()); // P4405
 
       // Now we want to restore the saved switch instance so that nested
       // switches continue to function properly

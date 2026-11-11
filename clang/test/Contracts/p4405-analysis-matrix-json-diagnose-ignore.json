@@ -1,0 +1,4 @@
+[
+  {"match": {"analysis": true}, "output": {"semantic": "diagnose"}},
+  {"output": {"semantic": "ignore"}}
+]

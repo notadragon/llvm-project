@@ -4473,6 +4473,131 @@ C++14, and C++17, and most of C++20 and C++23.
 See the [C++ support in Clang](https://clang.llvm.org/cxx_status.html) page
 for detailed information on C++ feature support across Clang versions.
 
+(p4405-analysis-evaluation)=
+
+### The analysis evaluation of a contract assertion
+
+These options belong to the proposed C++ contracts extensions this branch
+implements (P3850).
+
+:::{option} -fcontract-analysis-semantic=<semantic>
+
+Select the semantic of the analysis evaluation of every contract assertion:
+`ignore` (the default, no analysis), `diagnose` or `prove` (D4405).  The
+analysis evaluation is an evaluation of its own, the only one `prove` and
+`diagnose` apply to, made at compile time: under `prove` an assertion whose
+predicate cannot be proven is an error, under `diagnose` a warning
+(`-Wcontract-unproven`; one located in a system header, as at a library
+template's call of a closure, is shown when the assertion itself is not in
+one).  The semantics of the assertion's other, runtime,
+evaluations are selected as before (`-fcontract-evaluation-semantic=` and
+the configuration), and never are `prove` or `diagnose`: one configured
+with either moves it to the analysis evaluation, which takes the stronger
+(`ignore`, then `diagnose`, then `prove`), and is itself `ignore`.  Needs
+`-fcontracts-p4405` (implied by `-fcontracts-p3850`); without it Clang
+warns and the analysis evaluation is `ignore`.
+:::
+
+The option stands for the configuration entry
+`{"match": {"analysis": true}, "output": {"semantic": "<semantic>"}}`
+after those of `-fcontract-configuration=` and
+`-fcontract-configuration-file=`.  Only an entry whose `match` has
+`"analysis": true` matches the analysis evaluation, in a lookup of its own
+through the same list, and every other lookup skips such entries
+(`"analysis": false` is the same as no key).  It never matches with
+`"constexpr": true`; with a `caller` key, a `dynamic` output, or a semantic
+other than `ignore`, `diagnose` and `prove`, the entry is an error and is
+skipped.
+
+A label's `allowed_semantics` splits into the runtime semantics R and `prove`
+and `diagnose`.  The analysis evaluation may be `ignore` only when R is not
+empty; a callee-side runtime evaluation is limited to R, or to `ignore` when
+R is empty, so only a label, never the configuration, lets a check in the
+function be skipped; a caller-side one may always be `ignore`.  A label's
+`analysis_semantic()` facet strengthens the analysis evaluation, and a
+`compute_semantic()` result of `prove` or `diagnose` moves to it.  The
+library's `terminating` label also allows `prove`, and `symbolic` also
+`diagnose` and `prove`.  With `-fcontracts-p3400`, `<contracts>` declares
+four such labels in `std::contracts::labels`: `prove` and `diagnose`, whose
+`analysis_semantic()` returns that semantic and which leave the other
+evaluations to the configuration, and `always_prove` and `always_diagnose`,
+which allow only `prove` (or `diagnose`), so their assertions are always
+analyzed with it and never checked at run time.
+
+Constant evaluation is never analyzed: a configuration entry for it alone
+(`"constexpr": true`) whose semantic is `prove` or `diagnose` is an error,
+and a `prove` that constant evaluation reaches otherwise -- from an entry
+without the key, a flag, or a label -- is evaluated as `enforce` there, a
+`diagnose` as `observe`.
+
+The analysis evaluation is the first evaluation of an assertion, placed on
+its own ahead of every runtime evaluation, so a proof never relies on the
+assertion's own check.  A precondition's is made at each call, in the
+caller, with the call's arguments for the parameters (and the object for
+`this`): a call of a function, a member function (a virtual call analyzes
+the precondition of the function it names), a constructor (an inheriting
+one's inherited constructor), and an implicit call of a destructor, which
+is diagnosed at the variable going out of scope, the temporary, or the
+delete-expression (at the end of the function for a member, a base or an
+array element).  It takes the stronger of the precondition's own semantic,
+resolved as for the function's definition, and what the caller-side
+configuration moves into it; the function itself never analyzes its
+preconditions, and a function nobody calls is not analyzed.  A
+postcondition's and a `contract_assert`'s are made in the function body,
+ahead of the check.  An earlier evaluation is a premise of the proofs after
+it (a function's own preconditions in its body among them), its predicate
+assumed to hold unless that has side effects of its own; a proof resting on
+one the code does not guarantee (`ignore`, `observe`, an unproven analysis
+evaluation) is conditional, and so is one resting on a predicate that the
+code does not evaluate and that calls a function not found free of side
+effects, returning and not throwing (one whose definition another
+translation unit's may replace and whose code holds a contract evaluation
+that copy may make differently never is).  Under `-fcontracts-prove-assume` a soundly proven
+analysis evaluation becomes an assumption at that point, which may remove
+the checks after it in the same code, but never a check in a function the
+proof's caller calls (unless the optimizers inline it).  With `-g`, the
+debug information under `-fcontracts-prove-assume` can describe the types a
+predicate names -- an explicit conversion's type, the class of a
+constructor or the closure type of a lambda only the predicate calls --
+even when its assumption is removed; the code and the line table are
+unchanged.  In C, which knows a function's preconditions only where it is
+defined, a precondition's analysis evaluation is made in the function's
+body, ahead of its check.
+
+A call through a pointer or a reference to a function cannot identify the
+function, so it has no analysis evaluation, and a precondition can be
+proven for it only if it is tautological.  Clang diagnoses taking the
+address of a function -- the unary `&`, the function-to-pointer
+conversion, forming a pointer to member function, binding a reference to
+it, converting a lambda to a pointer to function (which takes the address
+of its call operator) -- only where it is known that calls through the
+address need a proof: when a precondition's labels allow no runtime
+semantic (a label allowing only `prove` and `diagnose`) and its analysis
+evaluation is `prove` or `diagnose`.  Such a precondition is folded with
+nothing known of the arguments (`-fcontracts-prove-fold`; with
+`-fno-contracts-prove-fold` nothing is proven); if that does not prove it,
+"contract assertion cannot be proven for a call through the address of
+'F'" (or "contract predicate is always false ...") is an error under
+`prove` and a `-Wcontract-unproven` warning under `diagnose`, the first
+such precondition under `prove` reported, else the first under `diagnose`,
+with a note at it (C++ only, also under `-fsyntax-only`).  A precondition
+that only the configuration analyzes is not diagnosed: the configuration
+of the translation unit taking the address does not determine what the
+calls through it are.  Not diagnosed in a template definition (its
+instantiations are) or in an unevaluated operand.  A default argument is
+diagnosed where it is written (a template's where it is instantiated), not
+at the calls that use it.  The definition of an object of static or thread
+storage duration takes the address of its destructor, which the
+implementation calls at exit or thread end, so it is diagnosed in the same
+way (not for `[[clang::no_destroy]]` or constant destruction), and so is a
+temporary whose lifetime is extended to static or thread storage duration,
+at the temporary.  Clang does not destroy a non-`constexpr` object whose
+destruction is a constant expression, so it is not diagnosed; a
+destructor contract assertion that is violated or is not a core constant
+expression makes the destruction non-constant.  The destructor calls the
+implementation generates for the elements of such an array are analyzed
+like any other call.
+
 :::{option} -fcontracts-prove-callee-premises
 
 * D4405's callee premise copies, a proving strategy implied by
@@ -4556,6 +4681,28 @@ for detailed information on C++ feature support across Clang versions.
   elsewhere, and the code shapes `-O0` chooses (the trap at the end of a
   function flowing off its end, `llvm.expect`, the choice between a math
   library call and its intrinsic).
+:::
+
+:::{option} -fcontract-analysis-skip-dead-calls
+
+Make no analysis evaluation at a call that is never evaluated, implied by
+`-fcontracts-p4405` (`-fno-contract-analysis-skip-dead-calls` analyzes
+those calls too).  Clang makes the analysis evaluations at calls as it
+generates code, so a call is skipped exactly when code generation leaves
+it out because it can never run: in an operand of `?:`, or the second
+operand of `&&` or `||`, that a condition folding to a constant never
+selects; in a substatement of `if`, or a case of `switch`, that such a
+condition never reaches; in a discarded statement; or in a statement no
+path reaches (after a `return`, without a label).  The dead arm of a
+conditional operator of class type is generated, so its calls are
+analyzed either way.  Under the `-fno-` form each call in such code is
+analyzed all the same, decided by folding (no proof shadow holds code that
+is not generated); a lambda's body there is a function never generated,
+and the discarded statement of a template is never instantiated, so their
+calls are not.  The calls in a contract predicate are unaffected: the
+analysis evaluations of the preconditions of the calls a predicate
+evaluates skip such operands whatever the option says.  Without
+`-fcontracts-p4405` the option has no effect.
 :::
 
 ### Controlling implementation limits

@@ -6226,6 +6226,7 @@ std::optional<LValue> HandleConditionalOperatorLValueSimpleCase(
                                                : CGF.UseSkipPath,
                                   E, /*UseBoth=*/true);
       CGF.markStmtMaybeUsed(Dead);
+      CGF.analyzeContractDeadCalls(Dead); // P4405
       // If a throw expression we emit it and return an undefined lvalue
       // because it can't be used.
       if (auto *ThrowExpr = dyn_cast<CXXThrowExpr>(Live->IgnoreParens())) {
@@ -7045,6 +7046,7 @@ CodeGenFunction::EmitCXXBindTemporaryLValue(const CXXBindTemporaryExpr *E) {
   AggValueSlot Slot = CreateAggTemp(E->getType(), "temp.lvalue");
   Slot.setExternallyDestructed();
   EmitAggExpr(E->getSubExpr(), Slot);
+  noteContractDestroySite(Slot.getAddress(), E); // D4405
   EmitCXXTemporary(E->getTemporary(), E->getType(), Slot.getAddress());
   return MakeAddrLValue(Slot.getAddress(), E->getType(), AlignmentSource::Decl);
 }

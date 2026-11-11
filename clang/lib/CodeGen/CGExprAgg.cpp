@@ -40,6 +40,50 @@ using namespace CodeGen;
 //===----------------------------------------------------------------------===//
 
 namespace {
+/// D4405 (notadragon_wg21 DECISIONS.md E160 (a)): the destructor of each
+/// subobject of an aggregate is potentially invoked by the aggregate's
+/// initialization ([dcl.init.aggr]).  Once a later subobject is initialized,
+/// the destructor call that would destroy an already-built one were that
+/// initialization to throw has its analysis evaluation, whether or not the
+/// partial-destruction cleanup is ever emitted (it is only when something
+/// after the subobject can throw).  Analysis only: nothing is emitted.  A
+/// later subobject left to implicit value-initialization without a
+/// constructor does not count, as in gnu_gcc, whose cleanup covers only the
+/// initializations it emits one by one.
+class PartialDtorAnalysis {
+  CodeGenFunction &CGF;
+  SmallVector<std::pair<QualType, Address>, 2> Built;
+
+  static bool isImplicitTrivialInit(const Expr *Init) {
+    if (!Init || isa<ImplicitValueInitExpr, NoInitExpr>(Init))
+      return true;
+    const auto *ILE = dyn_cast<InitListExpr>(Init);
+    if (!ILE || ILE->isExplicit() ||
+        (ILE->hasArrayFiller() && !isImplicitTrivialInit(ILE->getArrayFiller())))
+      return false;
+    return llvm::all_of(ILE->inits(), [](const Expr *E) {
+      return isImplicitTrivialInit(E);
+    });
+  }
+
+public:
+  explicit PartialDtorAnalysis(CodeGenFunction &CGF) : CGF(CGF) {}
+  /// The subobject of type \p Ty at \p Addr has been built.
+  void built(QualType Ty, Address Addr) {
+    if (CGF.getLangOpts().ContractsP4405 &&
+        Ty.isDestructedType() == QualType::DK_cxx_destructor)
+      Built.push_back({Ty, Addr});
+  }
+  /// A later subobject is about to be initialized by \p Init.
+  void next(const Expr *Init) {
+    if (Built.empty() || isImplicitTrivialInit(Init))
+      return;
+    for (const auto &[Ty, Addr] : Built)
+      CGF.DiagnosePartialAggregateDtorProvingContracts(Ty, Addr);
+    Built.clear();
+  }
+};
+
 class AggExprEmitter : public StmtVisitor<AggExprEmitter> {
   CodeGenFunction &CGF;
   CGBuilderTy &Builder;
@@ -636,7 +680,13 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
 
   llvm::Value *one = llvm::ConstantInt::get(CGF.SizeTy, 1);
 
+  // D4405: the elements already built when the next is initialized.
+  PartialDtorAnalysis Partial(CGF);
+  Partial.built(ArrayQTy, DestPtr);
+
   auto Emit = [&](Expr *Init, uint64_t ArrayIndex) {
+    if (ArrayIndex == 1)
+      Partial.next(Init);
     llvm::Value *element = begin;
     if (ArrayIndex > 0) {
       if (CGF.getLangOpts().EmitLogicalPointer)
@@ -687,6 +737,9 @@ void AggExprEmitter::EmitArrayInit(Address DestPtr, llvm::ArrayType *AType,
 
     // Use an actual loop.  This is basically
     //   do { *array++ = filler; } while (array != end);
+
+    if (NumInitElements || NumArrayElements >= 2)
+      Partial.next(ArrayFiller); // D4405
 
     // Advance to the start of the rest of the array.
     llvm::Value *element = begin;
@@ -1443,6 +1496,7 @@ void AggExprEmitter::VisitCXXBindTemporaryExpr(CXXBindTemporaryExpr *E) {
   Visit(E->getSubExpr());
 
   // Push that destructor we promised.
+  CGF.noteContractDestroySite(Dest.getAddress(), E); // D4405
   if (!wasExternallyDestructed)
     CGF.EmitCXXTemporary(E->getTemporary(), E->getType(), Dest.getAddress());
 }
@@ -1467,6 +1521,7 @@ void AggExprEmitter::VisitLambdaExpr(LambdaExpr *E) {
   // We'll need to enter cleanup scopes in case any of the element
   // initializers throws an exception or contains branch out of the expressions.
   CodeGenFunction::CleanupDeactivationScope scope(CGF);
+  PartialDtorAnalysis Partial(CGF); // D4405
 
   CXXRecordDecl::field_iterator CurField = E->getLambdaClass()->field_begin();
   for (LambdaExpr::const_capture_init_iterator i = E->capture_init_begin(),
@@ -1479,6 +1534,7 @@ void AggExprEmitter::VisitLambdaExpr(LambdaExpr *E) {
       continue;
     }
 
+    Partial.next(*i); // D4405
     EmitInitializationToLValue(*i, LV);
 
     // Push a destructor if necessary.
@@ -1489,6 +1545,7 @@ void AggExprEmitter::VisitLambdaExpr(LambdaExpr *E) {
         CGF.pushDestroyAndDeferDeactivation(NormalAndEHCleanup, LV.getAddress(),
                                             CurField->getType(),
                                             CGF.getDestroyer(DtorKind), false);
+      Partial.built(CurField->getType(), LV.getAddress()); // D4405
     }
   }
 }
@@ -1773,6 +1830,7 @@ void AggExprEmitter::VisitCXXParenListOrInitListExpr(
   // We'll need to enter cleanup scopes in case any of the element
   // initializers throws an exception.
   CodeGenFunction::CleanupDeactivationScope DeactivateCleanups(CGF);
+  PartialDtorAnalysis Partial(CGF); // D4405
 
   unsigned curInitIndex = 0;
 
@@ -1790,11 +1848,13 @@ void AggExprEmitter::VisitCXXParenListOrInitListExpr(
           V, Qualifiers(), AggValueSlot::IsDestructed,
           AggValueSlot::DoesNotNeedGCBarriers, AggValueSlot::IsNotAliased,
           CGF.getOverlapForBaseInit(CXXRD, BaseRD, Base.isVirtual()));
+      Partial.next(InitExprs[curInitIndex]); // D4405
       CGF.EmitAggExpr(InitExprs[curInitIndex++], AggSlot);
 
       if (QualType::DestructionKind dtorKind =
               Base.getType().isDestructedType())
         CGF.pushDestroyAndDeferDeactivation(dtorKind, V, Base.getType());
+      Partial.built(Base.getType(), V); // D4405
     }
   }
 
@@ -1875,6 +1935,7 @@ void AggExprEmitter::VisitCXXParenListOrInitListExpr(
 
     if (curInitIndex < NumInitElements) {
       // Store the initializer into the field.
+      Partial.next(InitExprs[curInitIndex]); // D4405
       EmitInitializationToLValue(InitExprs[curInitIndex++], LV);
     } else {
       // We're out of initializers; default-initialize to null
@@ -1891,6 +1952,7 @@ void AggExprEmitter::VisitCXXParenListOrInitListExpr(
         CGF.pushDestroyAndDeferDeactivation(NormalAndEHCleanup, LV.getAddress(),
                                             field->getType(),
                                             CGF.getDestroyer(dtorKind), false);
+        Partial.built(field->getType(), LV.getAddress()); // D4405
       }
     }
   }
