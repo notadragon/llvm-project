@@ -688,7 +688,8 @@ public:
                          bool Recover = false, bool UseGlobalsGC = true,
                          bool UseOdrIndicator = true,
                          AsanDtorKind DestructorKind = AsanDtorKind::Global,
-                         AsanCtorKind ConstructorKind = AsanCtorKind::Global)
+                         AsanCtorKind ConstructorKind = AsanCtorKind::Global,
+                         StringRef ModuleNameOverride = "")
       : Opts(Opts), M(M), Inserter(M),
         CompileKernel(valueOr(Opts.asan_kernel, CompileKernel)),
         InsertVersionCheck(valueOr(Opts.asan_guard_against_version_mismatch,
@@ -710,7 +711,8 @@ public:
         UseCtorComdat(UseGlobalsGC && Opts.asan_with_comdat &&
                       !this->CompileKernel),
         DestructorKind(Opts.asan_destructor_kind.value_or(DestructorKind)),
-        ConstructorKind(Opts.asan_constructor_kind.value_or(ConstructorKind)) {
+        ConstructorKind(Opts.asan_constructor_kind.value_or(ConstructorKind)),
+        ModuleNameOverride(ModuleNameOverride) {
     C = &(M.getContext());
     int LongSize = M.getDataLayout().getPointerSizeInBits();
     IntptrTy = Type::getIntNTy(*C, LongSize);
@@ -791,6 +793,9 @@ private:
   Function *AsanCtorFunction = nullptr;
   Function *AsanDtorFunction = nullptr;
   GlobalVariable *ModuleName = nullptr;
+  // The name getOrCreateModuleName records instead of the module identifier,
+  // if not empty.
+  std::string ModuleNameOverride;
 };
 
 // Stack poisoning does not play well with exception handling.
@@ -1062,7 +1067,8 @@ PreservedAnalyses AddressSanitizerPass::run(Module &M,
   ModuleAddressSanitizer ModuleSanitizer(Opts, M, Options.InsertVersionCheck,
                                          Options.CompileKernel, Options.Recover,
                                          UseGlobalGC, UseOdrIndicator,
-                                         DestructorKind, ConstructorKind);
+                                         DestructorKind, ConstructorKind,
+                                         Options.ModuleName);
   bool Modified = false;
   auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   const StackSafetyGlobalInfo *const SSGI =
@@ -2609,7 +2615,10 @@ GlobalVariable *ModuleAddressSanitizer::getOrCreateModuleName() {
     // We shouldn't merge same module names, as this string serves as unique
     // module ID in runtime.
     ModuleName =
-        createPrivateGlobalForString(M, M.getModuleIdentifier(),
+        createPrivateGlobalForString(M,
+                                     ModuleNameOverride.empty()
+                                         ? M.getModuleIdentifier()
+                                         : ModuleNameOverride,
                                      /*AllowMerging*/ false, genName("module"));
   }
   return ModuleName;

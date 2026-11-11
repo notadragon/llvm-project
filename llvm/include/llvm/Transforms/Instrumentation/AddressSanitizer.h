@@ -16,6 +16,7 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
+#include <string>
 
 namespace llvm {
 class Module;
@@ -30,6 +31,10 @@ struct AddressSanitizerOptions {
   int InstrumentationWithCallsThreshold = 7000;
   uint32_t MaxInlinePoisoningSize = 64;
   bool InsertVersionCheck = true;
+  /// The module name recorded in the globals' descriptors and passed to
+  /// __asan_before_dynamic_init; the module identifier when empty.  A front
+  /// end that remaps the filenames it embeds passes the remapped name.
+  std::string ModuleName;
 };
 
 /// Public interface to the address sanitizer module pass for instrumenting code
