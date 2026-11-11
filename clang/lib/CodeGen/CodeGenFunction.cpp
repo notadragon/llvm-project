@@ -416,6 +416,21 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
   // Emit function epilog (to return).
   llvm::DebugLoc Loc = EmitReturnBlock();
 
+  // P3100: a [[noreturn]] function must not return
+  // (ub:dcl.attr.noreturn.eventually.returns).  Check it here, after the
+  // locals are destroyed, or after the postconditions where the epilogue
+  // evaluates them.
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl);
+      FD && getLangOpts().ContractsP3100 && FD->isNoReturn() &&
+      !CurFuncIsThunk && !structorVariantDelegates() &&
+      !isa_and_nonnull<CoroutineBodyStmt>(FD->getBody())) {
+    if (!PostContractsHandledByPrologueCleanup && !CurFnInfo->isNoReturn() &&
+        FD->hasContracts() && !FD->postconditions().empty())
+      P3100NoreturnCheckAfterPosts = true;
+    else
+      EmitImplicitNoreturnCheck();
+  }
+
   if (ShouldInstrumentFunction()) {
     if (CGM.getCodeGenOpts().InstrumentFunctions)
       CurFn->addFnAttr("instrument-function-exit", "__cyg_profile_func_exit");
