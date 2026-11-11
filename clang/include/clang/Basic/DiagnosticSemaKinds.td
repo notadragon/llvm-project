@@ -13402,6 +13402,15 @@ def err_contract_facet_not_constant : Error<
 def err_contract_group_names_too_many : Error<
   "%0 facet of assertion-control object %1 holds more than %2 names">,
   NoSFINAE;
+def err_contract_terminating_not_declared : Error<
+  "no declaration of 'std::contracts::labels::terminating' precedes this "
+  "assertion-control-specifier">;
+def note_contract_terminating_declared_by : Note<
+  "'std::contracts::labels::terminating' is declared by <contracts>">;
+def err_contract_terminating_lookup : Error<
+  "unqualified lookup of 'terminating' from this assertion-control-specifier "
+  "finds %select{a declaration other than|an ambiguous result instead of}0 "
+  "'std::contracts::labels::terminating'">;
 def err_contract_invalid_label : Error<
   "value of type %0 is not a valid assertion-control label; its type must be a "
   "class type with an 'assertion_control_object' member type">;

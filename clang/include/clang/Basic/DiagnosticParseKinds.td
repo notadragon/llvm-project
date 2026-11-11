@@ -1780,6 +1780,12 @@ def err_contract_requires_clause_require_flag : Error<
 // P3400 assertion-control label diagnostics
 def err_contract_label_require_flag : Error<
   "assertion-control labels require '-fcontracts-p3400'">;
+def err_contract_terminating_require_flag : Error<
+  "assertion-control-specifier '<terminating>' requires '-fcontracts-p4451'">;
+def err_contract_label_only_terminating : Error<
+  "only '<terminating>' is allowed as an assertion-control-specifier without "
+  "'-fcontracts-p3400'">;
+
 def warn_contract_on_parameter_declarator : Warning<
   "contract on a parameter declarator is ignored">,
   InGroup<IgnoredAttributes>;

@@ -892,6 +892,18 @@ _LIBCPP_HIDE_FROM_ABI constexpr auto operator|(const _Lhs& __lhs, const _Rhs& __
 } // namespace labels
 #  endif // __cpp_contracts_labels
 
+#  if defined(__clang_contracts_p4451) && !defined(__cpp_contracts_labels)
+// P4451 without P3400: labels declares terminating alone, of an internal type
+// and in an inline namespace, so never P3400's labels::terminating.
+struct __terminating_label_t {
+  _LIBCPP_HIDE_FROM_ABI explicit __terminating_label_t() = default;
+};
+namespace labels::inline __p4451 {
+inline constexpr __terminating_label_t terminating{};
+} // namespace labels::inline __p4451
+#  endif // __clang_contracts_p4451 && !__cpp_contracts_labels
+
+} // namespace contracts
 _LIBCPP_END_NAMESPACE_STD
 
 #  ifdef __cpp_contracts_labels

@@ -551,6 +551,16 @@ void Parser::DiagnoseUnattachedLateParsedContracts(Declarator &D,
   D.getLateParsedContracts().clear();
 }
 
+/// Whether the next tokens are P4451's assertion-control-specifier
+/// `< terminating >', Tok being the '<'.
+bool Parser::isTerminatingSpecifier() {
+  assert(Tok.is(tok::less) && "Not a '<'");
+  const Token &Name = NextToken();
+  return Name.is(tok::identifier) &&
+         Name.getIdentifierInfo()->isStr("terminating") &&
+         GetLookAheadToken(2).is(tok::greater);
+}
+
 /// Parse a contract assertion's optional P3400 label (or P4451
 /// `< terminating >', which sets \p IsTerminating) and P4283
 /// requires-clause.  Returns false after a diagnostic the caller cannot

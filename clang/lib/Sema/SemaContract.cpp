@@ -2635,6 +2635,59 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
   return Res;
 }
 
+bool Sema::CheckTerminatingSpecifier(SourceLocation Loc, Scope *S) {
+  // The entity is whatever qualified lookup finds -- under -fcontracts-p4451
+  // alone libc++ declares it in an inline namespace -- and lookup finds only
+  // what is visible: declared earlier, or exported from an imported unit.
+  auto LookupIn = [&](DeclContext *DC, StringRef Name,
+                      LookupNameKind Kind) -> NamedDecl * {
+    LookupResult R(*this, &Context.Idents.get(Name), Loc, Kind);
+    bool Found = LookupQualifiedName(R, DC);
+    R.suppressDiagnostics();
+    if (!Found || !R.isSingleResult())
+      return nullptr;
+    return R.getFoundDecl()->getUnderlyingDecl();
+  };
+  DeclContext *Std = getStdNamespace();
+  if (!Std)
+    Std = dyn_cast_if_present<NamespaceDecl>(LookupIn(
+        Context.getTranslationUnitDecl(), "std", LookupNamespaceName));
+  VarDecl *Entity = nullptr;
+  if (Std)
+    if (auto *Contracts = dyn_cast_if_present<NamespaceDecl>(
+            LookupIn(Std, "contracts", LookupNamespaceName)))
+      if (auto *Labels = dyn_cast_if_present<NamespaceDecl>(
+              LookupIn(Contracts, "labels", LookupNamespaceName)))
+        Entity = dyn_cast_if_present<VarDecl>(
+            LookupIn(Labels, "terminating", LookupOrdinaryName));
+  if (!Entity) {
+    Diag(Loc, diag::err_contract_terminating_not_declared);
+    Diag(Loc, diag::note_contract_terminating_declared_by);
+    return false;
+  }
+
+  // Unqualified lookup from the specifier: for a function's contract the
+  // function's parameters are in scope, and a member function's are parsed
+  // in complete-class context, so a member declared later is found.
+  LookupResult R(*this, &Context.Idents.get("terminating"), Loc,
+                 LookupOrdinaryName);
+  LookupName(R, S);
+  R.suppressDiagnostics();
+  if (R.empty())
+    return true;
+  bool Ambiguous = R.isAmbiguous();
+  if (!Ambiguous &&
+      llvm::all_of(R, [&](NamedDecl *D) {
+        return D->getUnderlyingDecl()->getCanonicalDecl() ==
+               Entity->getCanonicalDecl();
+      }))
+    return true;
+  Diag(Loc, diag::err_contract_terminating_lookup) << Ambiguous;
+  for (NamedDecl *D : R)
+    Diag(D->getLocation(), diag::note_entity_declared_at) << D;
+  return false;
+}
+
 /// Whether \p PVD is a parameter of the function whose contract is being
 /// parsed in the contract scope \p S: one declared between \p S and the
 /// nearest function boundary.  That boundary is a function prototype scope
