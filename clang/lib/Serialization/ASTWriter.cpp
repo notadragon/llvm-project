@@ -7601,6 +7601,7 @@ void ASTRecordWriter::AddCXXDefinitionData(const CXXRecordDecl *D) {
       BitsPacker CaptureBits;
       CaptureBits.addBit(Capture.isImplicit());
       CaptureBits.addBits(Capture.getCaptureKind(), /*Width=*/3);
+      CaptureBits.addBit(Capture.isCapturedAcrossContract());
       Record->push_back(CaptureBits);
 
       switch (Capture.getCaptureKind()) {
