@@ -140,6 +140,11 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
     return LangOpts.ZVector ? KS_Enabled : KS_Unknown;
   case KEYCOROUTINES:
     return LangOpts.Coroutines ? KS_Enabled : KS_Unknown;
+  case KEYCONTRACTS:
+    // C spells it _ContractAssert (P4299; <stdcontracts.h> maps the C++
+    // spelling to it), and before C++11 it is an ordinary identifier.
+    return (LangOpts.Contracts && LangOpts.CPlusPlus11) ? KS_Enabled
+                                                        : KS_Unknown;
   case KEYMODULES:
     return KS_Unknown;
   case KEYOPENCLCXX:
@@ -173,7 +178,7 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
 }
 
 KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
-                                      unsigned Flags) {
+                                      uint64_t Flags) {
   // KEYALL means always enabled, so special case this one.
   if (Flags == KEYALL) return KS_Enabled;
   // These are tests that need to 'always win', as they are special in that they
@@ -187,7 +192,7 @@ KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
   KeywordStatus CurStatus = KS_Unknown;
 
   while (Flags != 0) {
-    unsigned CurFlag = Flags & ~(Flags - 1);
+    uint64_t CurFlag = Flags & ~(Flags - 1);
     Flags = Flags & ~CurFlag;
     CurStatus = std::max(
         CurStatus,
@@ -199,7 +204,7 @@ KeywordStatus clang::getKeywordStatus(const LangOptions &LangOpts,
   return CurStatus;
 }
 
-static bool IsKeywordInCpp(unsigned Flags) {
+static bool IsKeywordInCpp(uint64_t Flags) {
   return (Flags & (KEYCXX | KEYCXX11 | KEYCXX20 | BOOLSUPPORT | WCHARSUPPORT |
                    CHAR8SUPPORT)) != 0;
 }
@@ -214,9 +219,9 @@ static void MarkIdentifierAsKeywordInCpp(IdentifierTable &Table,
 /// AddKeyword - This method is used to associate a token ID with specific
 /// identifiers because they are language keywords.  This causes the lexer to
 /// automatically map matching identifiers to specialized token codes.
-static void AddKeyword(StringRef Keyword,
-                       tok::TokenKind TokenCode, unsigned Flags,
-                       const LangOptions &LangOpts, IdentifierTable &Table) {
+static void AddKeyword(StringRef Keyword, tok::TokenKind TokenCode,
+                       uint64_t Flags, const LangOptions &LangOpts,
+                       IdentifierTable &Table) {
   KeywordStatus AddResult = getKeywordStatus(LangOpts, Flags);
 
   // Don't add this keyword if disabled in this language and isn't otherwise
@@ -829,7 +834,7 @@ IdentifierTable::getFutureCompatDiagKind(const IdentifierInfo &II,
                                          const LangOptions &LangOpts) {
   assert(II.isFutureCompatKeyword() && "diagnostic should not be needed");
 
-  constexpr llvm::EnumStringDef<uint32_t> FlagsDefs[] = {
+  constexpr llvm::EnumStringDef<uint64_t> FlagsDefs[] = {
 #define KEYWORD(NAME, FLAGS) {{#NAME}, FLAGS},
 #include "clang/Basic/TokenKinds.def"
 #undef KEYWORD
@@ -837,7 +842,7 @@ IdentifierTable::getFutureCompatDiagKind(const IdentifierInfo &II,
   static constexpr auto FlagsData = BUILD_ENUM_STRINGS(FlagsDefs);
   const auto *Entry = llvm::EnumStrings(FlagsData).fromString(II.getName());
   assert(Entry && "future compat keyword should be in keyword list");
-  uint32_t Flags = Entry->value();
+  uint64_t Flags = Entry->value();
 
   if (LangOpts.CPlusPlus) {
     if ((Flags & KEYCXX11) == KEYCXX11)
