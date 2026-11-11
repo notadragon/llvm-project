@@ -1,0 +1,8 @@
+[
+  {"match": {"kind": "implicit", "namespace": "t_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "f_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "s_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "c_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "p_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "o_enf", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "enforce"}}
+]

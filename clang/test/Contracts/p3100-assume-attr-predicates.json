@@ -1,0 +1,14 @@
+[
+  {"match": {"kind": "implicit", "namespace": "t_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "f_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "s_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "c_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "p_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "o_obs", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "t_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "f_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "s_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "c_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "p_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "namespace": "o_ign", "group": "ub:dcl.attr.assume.false"}, "output": {"semantic": "ignore"}}
+]
