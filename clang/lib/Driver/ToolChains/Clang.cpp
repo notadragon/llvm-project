@@ -8367,6 +8367,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  // -fcontract-violation-information= applies in every language and whatever
+  // the other contracts options are: it also selects a predefined macro the
+  // libraries' own violation records follow.
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_violation_information_EQ);
+
   // The default new alignment can be specified using a dedicated option or via
   // a GCC-compatible option that also turns on aligned allocation.
   if (Arg *A = Args.getLastArg(options::OPT_fnew_alignment_EQ,

@@ -913,6 +913,13 @@ using contract_control namespace std::contracts::labels;
 #  ifdef __cpp_lib_contracts_api
 // The default location of a P3290 manual contract violation.
 #    define _LIBCPP_CONTRACTS_DEFAULT_LOCATION std::source_location::current()
+#    ifdef __clang_contracts_violation_information_none
+// -fcontract-violation-information=none: an empty default location, as the
+// compiler records for the contract violations it emits.  A location passed
+// explicitly is kept.
+#      undef _LIBCPP_CONTRACTS_DEFAULT_LOCATION
+#      define _LIBCPP_CONTRACTS_DEFAULT_LOCATION std::source_location()
+#    endif
 _LIBCPP_BEGIN_NAMESPACE_STD
 namespace contracts {
 

@@ -50,6 +50,14 @@ int __assert_single_argument(const _Tp&) noexcept;
 #    define assert(...)                                                                                                \
       ((void)sizeof(__assert_single_argument(__VA_ARGS__)),                                                            \
        (__VA_ARGS__) ? (void)0 : __cxa_handle_cassert_violation(#__VA_ARGS__, ::std::source_location::current()))
+// -fcontract-violation-information=none: an empty location and comment, as the
+// compiler records for the contract violations it emits.
+#    ifdef __clang_contracts_violation_information_none
+#      undef assert
+#      define assert(...)                                                                                              \
+        ((void)sizeof(__assert_single_argument(__VA_ARGS__)),                                                          \
+         (__VA_ARGS__) ? (void)0 : __cxa_handle_cassert_violation("", ::std::source_location()))
+#    endif
 #  endif // !NDEBUG && __STDC_WANT_ASSERT_USES_CONTRACTS__
 
 #endif // C++20 && __clang_contracts_p3290

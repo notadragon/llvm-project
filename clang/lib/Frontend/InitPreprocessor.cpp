@@ -1051,6 +1051,13 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   // revision until P4299 is adopted.
   if (LangOpts.ContractsP4299)
     Builder.defineMacro("__clang_contracts_p4299", "202611L");
+  // -fcontract-violation-information=none: <cassert>'s contract path, the
+  // P3290 manual API and <contracts.h>'s P3290 convenience macros then pass
+  // an empty location and comment, as the compiler does for the violations it
+  // emits.  Like the option, in every language and whichever contracts flags
+  // are on; a configuration rather than a feature, so it has no value.
+  if (LangOpts.ContractViolationInformationNone)
+    Builder.defineMacro("__clang_contracts_violation_information_none");
 
   // darwin_constant_cfstrings controls this. This is also dependent
   // on other things like the runtime I believe.  This is set even for C code.

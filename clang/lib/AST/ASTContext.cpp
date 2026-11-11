@@ -10469,6 +10469,20 @@ ASTContext::BuildViolationObject(SourceLocation Loc, StringRef Comment,
   // Null for no message (see above).
   Value.getStructField(VIF_Message) =
       Message ? MakeStringLiteral(*Message) : MakeNullPtr();
+  // -fcontract-violation-information=none: the record carries an empty
+  // location, an empty comment and no message, as if the contract had none.
+  // Only the emitted record: the contract keeps its comment and message, so
+  // constant evaluation's diagnostics are unchanged.
+  if (Ctx.getLangOpts().ContractViolationInformationNone) {
+    Value.getStructField(VIF_File) = MakeStringLiteral("");
+    Value.getStructField(VIF_Function) = MakeStringLiteral("");
+    Value.getStructField(VIF_Line) =
+        APValue(Ctx.MakeIntValue(0, Ctx.UnsignedIntTy));
+    Value.getStructField(VIF_Column) =
+        APValue(Ctx.MakeIntValue(0, Ctx.UnsignedIntTy));
+    Value.getStructField(VIF_Comment) = MakeStringLiteral("");
+    Value.getStructField(VIF_Message) = MakeNullPtr();
+  }
   QualType QT =
       Ctx.getBuiltinContractViolationRecordType().getUnqualifiedType();
   UnnamedGlobalConstantDecl *GV = Ctx.getUnnamedGlobalConstantDecl(QT, Value);
