@@ -10592,6 +10592,102 @@ TEST_P(ImportTemplateParmDeclDefaultValue,
       FromD, FromDInherited);
 }
 
+// The contract tests need contracts enabled, which the extension spellings
+// (__pre, __post) they use require as the standard ones do.
+class ASTImporterContractsTest : public ASTImporterOptionSpecificTestBase {
+protected:
+  std::vector<std::string> getExtraArgs() const override {
+    std::vector<std::string> Args = GetParam();
+    Args.push_back("-fcontracts");
+    return Args;
+  }
+};
+
+TEST_P(ASTImporterContractsTest, BasicImportTest) {
+  Decl *FromTU = getTuDecl(
+      "int foo(const int x) __pre(x) __post(x) { return x; }", Lang_CXX23);
+  auto From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("foo")));
+
+  FunctionDecl *To = Import(From, Lang_CXX23);
+  ASSERT_TRUE(To->hasContracts());
+}
+
+TEST_P(ASTImporterContractsTest, ImportDeclarationWithContracts) {
+  Decl *FromTU =
+      getTuDecl("int foo(const int x) __pre(x) __post(x);", Lang_CXX23);
+  auto From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("foo")));
+
+  FunctionDecl *To = Import(From, Lang_CXX23);
+  ASSERT_TRUE(To->hasContracts());
+}
+
+// Test that a non-template function with an placeholder return type has its
+// return type and contracts rebuilt prior to export (because we can't/don't
+// export that representation).
+TEST_P(ASTImporterContractsTest, AutoResultName) {
+  Decl *FromTU = getTuDecl("auto foo(const int x) __post(r : r) { return x; }",
+                           Lang_CXX23);
+  auto From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("foo")));
+
+  FunctionDecl *To = Import(From, Lang_CXX23);
+  ASSERT_TRUE(To->hasContracts());
+  ContractSpecifierDecl *CSD = To->getContracts();
+  ASSERT_TRUE(CSD->hasCanonicalResultName());
+  EXPECT_FALSE(CSD->hasInventedPlaceholderTypes());
+  const ResultNameDecl *RND = CSD->getCanonicalResultName();
+  EXPECT_TRUE(RND->getType()->isIntegerType());
+}
+
+// A lambda capture made across a contract keeps that mark (CLANG-656).
+TEST_P(ASTImporterContractsTest, LambdaCaptureAcrossContract) {
+  Decl *FromTU =
+      getTuDecl("int foo(int x) __pre([&] { return x > 0; }()) { return x; }",
+                Lang_CXX23);
+  auto *FromLambda = FirstDeclMatcher<CXXRecordDecl>().match(
+      FromTU, cxxRecordDecl(isLambda()));
+  ASSERT_EQ(FromLambda->capture_size(), 1u);
+  ASSERT_TRUE(FromLambda->captures().begin()->isCapturedAcrossContract());
+
+  auto *From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("foo")));
+  FunctionDecl *To = Import(From, Lang_CXX23);
+  ASSERT_TRUE(To);
+  auto *ToLambda = FirstDeclMatcher<CXXRecordDecl>().match(
+      To->getTranslationUnitDecl(), cxxRecordDecl(isLambda()));
+  ASSERT_EQ(ToLambda->capture_size(), 1u);
+  EXPECT_TRUE(ToLambda->captures().begin()->isCapturedAcrossContract());
+}
+
+// Ensure we correctly import a sequence's result names, the first of which
+// is the sequence's canonical result name, into the imported function.
+TEST_P(ASTImporterContractsTest, CanonicalResultName) {
+  Decl *FromTU = getTuDecl(
+      "int foo(const int x) __post(r : r) __post(r1 : r1) { return x; }",
+      Lang_CXX23);
+  auto From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("foo")));
+
+  FunctionDecl *To = Import(From, Lang_CXX23);
+  ASSERT_TRUE(To->hasContracts());
+  ContractSpecifierDecl *CSD = To->getContracts();
+  ASSERT_NE(CSD->getDeclContext(), nullptr);
+  if (CSD->getDeclContext() != To) {
+    CSD->getDeclContext()->dumpAsDecl();
+  }
+  ASSERT_EQ(dyn_cast_or_null<FunctionDecl>(CSD->getDeclContext()), To);
+  ASSERT_TRUE(CSD->hasCanonicalResultName());
+  SmallVector<const ResultNameDecl *> ResultNames(CSD->result_names().begin(),
+                                                  CSD->result_names().end());
+  ASSERT_EQ(ResultNames.size(), 2ul);
+  ASSERT_EQ(CSD->getCanonicalResultName(), ResultNames[0]);
+  ASSERT_EQ(ResultNames[0]->getDeclContext(), CSD->getDeclContext());
+  ASSERT_EQ(ResultNames[1]->getDeclContext(), CSD->getDeclContext());
+}
+
+
 TEST_P(ASTImporterOptionSpecificTestBase, ImportIntoReopenedNamespaceNoMatch1) {
   const char *ToCode =
       R"(
@@ -11001,6 +11097,9 @@ INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ImportDecl,
                          DefaultTestValuesForRunOptions);
 
 INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ASTImporterOptionSpecificTestBase,
+                         DefaultTestValuesForRunOptions);
+
+INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ASTImporterContractsTest,
                          DefaultTestValuesForRunOptions);
 
 INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ErrorHandlingTest,

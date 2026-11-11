@@ -2670,6 +2670,28 @@ void TextNodeDumper::VisitBindingDecl(const BindingDecl *D) {
   dumpType(D->getType());
 }
 
+void TextNodeDumper::VisitResultNameDecl(const ResultNameDecl *D) {
+  dumpName(D);
+  dumpType(D->getType());
+}
+
+void TextNodeDumper::VisitPostconditionCaptureDecl(
+    const PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  if (D->isParameterCapture())
+    OS << " parameter_capture";
+  if (D->isPackExpansion())
+    OS << " pack";
+}
+
+void TextNodeDumper::VisitContractSpecifierDecl(
+    const ContractSpecifierDecl *D) {
+  OS << " pre " << llvm::range_size(D->preconditions()) << " post "
+     << llvm::range_size(D->postconditions());
+  if (D->hasCaptures())
+    OS << " captures";
+}
+
 void TextNodeDumper::VisitCapturedDecl(const CapturedDecl *D) {
   if (D->isNothrow())
     OS << " nothrow";
@@ -3434,6 +3456,17 @@ void TextNodeDumper::VisitOMPCaptureKindAttr(const OMPCaptureKindAttr *A) {
 void TextNodeDumper::VisitEmbedExpr(const EmbedExpr *S) {
   AddChild("begin", [=] { OS << S->getStartingElementPos(); });
   AddChild("number of elements", [=] { OS << S->getDataElementCount(); });
+}
+
+void TextNodeDumper::VisitContractStmt(const ContractStmt *S) {
+  VisitStmt(S);
+  OS << ' ' << S->getContractKindString();
+  if (Context)
+    OS << ' ' << contractSemanticName(S->getSemantic(*Context));
+  if (S->isTerminating())
+    OS << " terminating";
+  if (S->isInvalid())
+    OS << " invalid";
 }
 
 void TextNodeDumper::VisitAtomicExpr(const AtomicExpr *AE) {
