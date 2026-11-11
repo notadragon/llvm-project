@@ -1916,6 +1916,10 @@ Sema::BuildImplicitMemberExpr(const CXXScopeSpec &SS,
                               bool IsKnownInstance, const Scope *S) {
   assert(!R.empty() && !R.isAmbiguous());
 
+  if (std::optional<ExprResult> Res =
+          BuildImplicitMemberExprInContract(SS, TemplateKWLoc, R, TemplateArgs))
+    return *Res;
+
   SourceLocation loc = R.getNameLoc();
 
   // If this is known to be an instance access, go ahead and build an
