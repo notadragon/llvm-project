@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "prove"}},
+  {"match": {"kind": "post"}, "output": {"semantic": "diagnose"}},
+  {"match": {"kind": "contract_assert"}, "output": {"semantic": "diagnose"}}
+]

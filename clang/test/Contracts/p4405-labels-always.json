@@ -1,0 +1,11 @@
+[
+  {"match": {"namespace": "c_ignore"}, "output": {"semantic": "ignore"}},
+  {"match": {"namespace": "c_observe"}, "output": {"semantic": "observe"}},
+  {"match": {"namespace": "c_enforce"}, "output": {"semantic": "enforce"}},
+  {"match": {"namespace": "c_quick_enforce"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"namespace": "c_noexcept_observe"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"namespace": "c_noexcept_enforce"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"namespace": "c_assume"}, "output": {"semantic": "assume"}},
+  {"match": {"namespace": "c_prove"}, "output": {"semantic": "prove"}},
+  {"match": {"namespace": "c_diagnose"}, "output": {"semantic": "diagnose"}}
+]
