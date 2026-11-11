@@ -121,6 +121,9 @@ namespace clang {
     void VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D);
     void VisitTemplateDecl(TemplateDecl *D);
     void VisitConceptDecl(ConceptDecl *D);
+    void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
+    void VisitResultNameDecl(ResultNameDecl *D);
+    void VisitContractSpecifierDecl(ContractSpecifierDecl *CSD);
     void VisitImplicitConceptSpecializationDecl(
         ImplicitConceptSpecializationDecl *D);
     void VisitRequiresExprBodyDecl(RequiresExprBodyDecl *D);
@@ -880,6 +883,7 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   FunctionDeclBits.addBit(D->isInstantiatedFromMemberTemplate());
   FunctionDeclBits.addBit(D->FriendConstraintRefersToEnclosingTemplate());
   FunctionDeclBits.addBit(D->usesSEHTry());
+  FunctionDeclBits.addBit(D->hasContracts());
   FunctionDeclBits.addBit(D->isDestroyingOperatorDelete());
   FunctionDeclBits.addBit(D->isTypeAwareOperatorNewOrDelete());
   Record.push_back(FunctionDeclBits);
@@ -929,7 +933,26 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   Record.push_back(D->param_size());
   for (auto *P : D->parameters())
     Record.AddDeclRef(P);
+
+  if (D->hasContracts())
+    Record.AddDeclRef(D->getContracts());
+
   Code = serialization::DECL_FUNCTION;
+}
+
+void ASTDeclWriter::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
+  assert(!CSD->hasInventedPlaceholderTypes() &&
+         "Cannot have invented placeholders on a serializable declaration");
+
+  // Record the number of contracts first to simplify deserialization: it is
+  // read in ReadDeclRecord (before the decl is created, to size the trailing
+  // storage), so it must precede the fields written by VisitDecl.
+  Record.push_back(CSD->NumContracts);
+  VisitDecl(CSD);
+  for (auto *C : CSD->contracts())
+    Record.AddStmt(C);
+
+  Code = serialization::DECL_CONTRACT_SPECIFIER;
 }
 
 static void addExplicitSpecifier(ExplicitSpecifier ES,
@@ -1638,6 +1661,7 @@ void ASTDeclWriter::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
   Record.AddDeclRef(D->getNominatedNamespace());
   Record.AddDeclRef(dyn_cast<Decl>(D->getCommonAncestor()));
+  Record.push_back(D->isContractControl());
   Code = serialization::DECL_USING_DIRECTIVE;
 }
 
@@ -1894,6 +1918,22 @@ void ASTDeclWriter::VisitConceptDecl(ConceptDecl *D) {
   VisitTemplateDecl(D);
   Record.AddStmt(D->getConstraintExpr());
   Code = serialization::DECL_CONCEPT;
+}
+
+void ASTDeclWriter::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  Record.push_back(D->isParameterCapture());
+  Record.push_back(D->isPackExpansion());
+  Code = serialization::DECL_POSTCONDITION_CAPTURE;
+}
+
+void ASTDeclWriter::VisitResultNameDecl(ResultNameDecl *D) {
+  // ResultNameDecl is a ValueDecl: use VisitValueDecl so the result type is
+  // serialized (VisitNamedDecl would drop it, leaving a null type that crashes
+  // template instantiation of the postcondition after a module import).
+  VisitValueDecl(D);
+  Record.push_back(D->getFunctionScopeDepth());
+  Code = serialization::DECL_RESULT_NAME;
 }
 
 void ASTDeclWriter::VisitImplicitConceptSpecializationDecl(
