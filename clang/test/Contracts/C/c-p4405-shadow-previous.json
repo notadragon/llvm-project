@@ -1,0 +1,5 @@
+[
+  {"match": {"location": "c-p4405-shadow-previous.c:14"}, "output": {"semantic": "enforce"}},
+  {"match": {"location": "c-p4405-shadow-previous.c:21"}, "output": {"semantic": "observe"}},
+  {"match": {}, "output": {"semantic": "prove"}}
+]
