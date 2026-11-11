@@ -84,6 +84,12 @@ def add_version_header(tc):
 #                   is only used when a feature isn't fully implemented. Once
 #                   you've fully implemented the feature, you should remove
 #                   this field.
+# raised            An optional pair (guard, value): under the preprocessor
+#                   condition `guard`, the macro takes `value` instead of the
+#                   one in `values` -- an unadopted extension that raises it.
+#                   Requires `test_suite_guard`; `guard` serves both <version>
+#                   and the tests, so it may depend only on macros the
+#                   compiler defines.
 # ================  ============================================================
 feature_test_macros = [
     add_version_header(x)
@@ -147,6 +153,17 @@ feature_test_macros = [
             "name": "__cpp_lib_as_const",
             "values": {"c++17": 201510},
             "headers": ["utility"],
+        },
+        {
+            "name": "__cpp_lib_assert_can_use_contracts",
+            # P3290; like every contracts macro, defined from C++20 (what
+            # <contracts> needs is <source_location>) whenever the compiler
+            # predefines the language macro of the facility, since
+            # -fcontracts and the per-paper flags reach dialects below C++26.
+            "values": {"c++20": 202611},
+            "headers": ["cassert"],
+            "test_suite_guard": "defined(__clang_contracts_p3290)",
+            "libcxx_guard": "defined(__clang_contracts_p3290)",
         },
         {
             "name": "__cpp_lib_associative_heterogeneous_erasure",
@@ -549,9 +566,55 @@ feature_test_macros = [
         },
         {
             "name": "__cpp_lib_contracts",
-            "values": {"c++26": 202502},
+            # P2900; see __cpp_lib_assert_can_use_contracts for the C++20 floor
+            "values": {"c++20": 202502},
             "headers": ["contracts"],
-            "unimplemented": True,
+            "test_suite_guard": "defined(__cpp_contracts)",
+            "libcxx_guard": "defined(__cpp_contracts)",
+            # P4451 (-fcontracts-p4451): D4451R0's wording gives 202611,
+            # used as is (not a private date), keyed on the compiler's
+            # vendor macro.
+            "raised": ("defined(__clang_contracts_p4451)", 202611),
+        },
+        {
+            "name": "__cpp_lib_contracts_api",
+            # P3290
+            "values": {"c++20": 202611},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__clang_contracts_p3290)",
+            "libcxx_guard": "defined(__clang_contracts_p3290)",
+        },
+        {
+            "name": "__cpp_lib_contracts_implicit",
+            # P3100
+            "values": {"c++20": 202611},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__clang_contracts_p3100)",
+            "libcxx_guard": "defined(__clang_contracts_p3100)",
+        },
+        {
+            "name": "__cpp_lib_contracts_labels",
+            # P3400
+            "values": {"c++20": 202611},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_labels)",
+            "libcxx_guard": "defined(__cpp_contracts_labels)",
+        },
+        {
+            "name": "__cpp_lib_contracts_message",
+            # P3099
+            "values": {"c++20": 202611},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_message)",
+            "libcxx_guard": "defined(__cpp_contracts_message)",
+        },
+        {
+            "name": "__cpp_lib_contracts_report",
+            # P4301
+            "values": {"c++20": 202611},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts_report)",
+            "libcxx_guard": "defined(__cpp_contracts_report)",
         },
         {
             "name": "__cpp_lib_copyable_function",
@@ -1475,6 +1538,15 @@ feature_test_macros = [
             "headers": ["type_traits"],
         },
         {
+            "name": "__cpp_lib_replaceable_contract_violation_handler",
+            # Replaceable where the weak default can be overridden, as for
+            # libstdc++: an ELF target.
+            "values": {"c++20": 202603},
+            "headers": ["contracts"],
+            "test_suite_guard": "defined(__cpp_contracts) && defined(__ELF__)",
+            "libcxx_guard": "defined(__cpp_contracts) && defined(__ELF__)",
+        },
+        {
             "name": "__cpp_lib_result_of_sfinae",
             "values": {"c++14": 201210},
             "headers": ["functional", "type_traits"],
@@ -1832,8 +1904,9 @@ assert feature_test_macros == sorted(feature_test_macros, key=lambda tc: tc["nam
 for tc in feature_test_macros:
     assert tc["headers"] == sorted(tc["headers"]), tc
     assert ("libcxx_guard" in tc) == ("test_suite_guard" in tc), tc
-    valid_keys = ["name", "values", "headers", "libcxx_guard", "test_suite_guard", "unimplemented"]
+    valid_keys = ["name", "values", "headers", "libcxx_guard", "test_suite_guard", "unimplemented", "raised"]
     assert all(key in valid_keys for key in tc.keys()), tc
+    assert "raised" not in tc or "test_suite_guard" in tc, tc
 
 # Map from each header to the Lit annotations that should be used for
 # tests that include that header.
@@ -1940,13 +2013,21 @@ def produce_macros_definition_for_std(std):
         if get_value_before(tc["values"], std) is not None:
             assert "test_suite_guard" not in tc.keys()
             result += "# undef  %s\n" % tc["name"]
-        line = "#%sdefine %s" % ((" " * inner_indent), tc["name"])
-        line += " " * (indent - len(line))
-        line += " %sL" % tc["values"][std]
-        if "unimplemented" in tc.keys():
-            line = "// " + line
-        result += line
-        result += "\n"
+        def define(value, inner_indent):
+            line = "#%sdefine %s" % ((" " * inner_indent), tc["name"])
+            line += " " * (indent - len(line))
+            line += " %sL" % value
+            if "unimplemented" in tc.keys():
+                line = "// " + line
+            return line + "\n"
+        if "raised" in tc.keys():
+            result += "#   if %s\n" % tc["raised"][0]
+            result += define(tc["raised"][1], inner_indent + 2)
+            result += "#   else\n"
+            result += define(tc["values"][std], inner_indent + 2)
+            result += "#   endif\n"
+        else:
+            result += define(tc["values"][std], inner_indent)
         if "test_suite_guard" in tc.keys():
             result += "# endif\n"
     return result.strip()
@@ -2088,6 +2169,24 @@ test_types = {
 #    endif
 #  endif
 """,
+    "test_suite_guard_raised": """
+#  if {test_suite_guard}
+#    ifndef {name}
+#      error "{name} should be defined in {std}"
+#    endif
+#    if {raised_guard}
+#      if {name} != {raised_value}
+#        error "{name} should have the value {raised_value} in {std} when the requirement '{raised_guard}' is met"
+#      endif
+#    elif {name} != {value}
+#      error "{name} should have the value {value} in {std}"
+#    endif
+#  else
+#    ifdef {name}
+#      error "{name} should not be defined when the requirement '{test_suite_guard}' is not met!"
+#    endif
+#  endif
+""",
     "unimplemented": """
 #  if !defined(_LIBCPP_VERSION)
 #    ifndef {name}
@@ -2126,6 +2225,15 @@ def generate_std_test(test_list, std):
         elif "unimplemented" in tc.keys():
             result += test_types["unimplemented"].format(
                 name=tc["name"], value=val, std=std
+            )
+        elif "raised" in tc.keys():
+            result += test_types["test_suite_guard_raised"].format(
+                name=tc["name"],
+                value=val,
+                std=std,
+                test_suite_guard=tc["test_suite_guard"],
+                raised_guard=tc["raised"][0],
+                raised_value="%sL" % tc["raised"][1],
             )
         elif "test_suite_guard" in tc.keys():
             result += test_types["test_suite_guard"].format(
