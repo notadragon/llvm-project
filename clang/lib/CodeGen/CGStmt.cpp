@@ -60,6 +60,9 @@ void CodeGenFunction::EmitStopPoint(const Stmt *S) {
 void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
   assert(S && "Null statement?");
   PGO->setCurrentStmt(S);
+  // P3100: a cast's alignment requirement not used by its own full
+  // expression (&*(int *)(buf + o)) is not carried into the next statement.
+  P3100CastAlign = {};
 
   // These statements have their own debug info handling.
   if (EmitSimpleStmt(S, Attrs))
