@@ -4287,6 +4287,148 @@ It is also possible to use `-fcomment-block-commands` several times; e.g.
 as above.
 :::
 
+(contracts-options)=
+
+### Contracts extension options
+
+The options below belong to the proposed C++ contracts extensions this
+branch implements (P3850).  The analysis evaluation, implicit contract
+assertions and `-fcontract-violation-information=` are described in
+their own sections ({ref}`analysis evaluation <p4405-analysis-evaluation>`,
+{ref}`implicit assertions <p3100-implicit-assertions>`,
+{ref}`violation information <contract-violation-information>`).
+
+#### How the contracts options combine
+
+Each rule is decided from the final values of all the options, whatever
+their order.
+
+* In C++, contracts are enabled by `-fcontracts`, by `-std=c++26` or a
+  later standard, or by any per-paper option given positively
+  (`-fcontracts-pNNNN`, the `-fcontracts-p3850` umbrella included).  Only
+  an explicit, final `-fno-contracts` turns them off, and then each
+  per-paper option left on is an error ("'-fcontracts-p3400' cannot be
+  combined with '-fno-contracts'").  The negative forms are always
+  accepted.
+* The options are additive: a per-paper option is on when its last form
+  is positive or, when it is not given, when `-fcontracts-p3850` is on, so
+  `-fno-contracts-p3850` never turns off an option given explicitly.
+* P4451 is on when `-fcontracts-p4451`, `-fcontracts-p3400` or
+  `-fcontracts-p3850` is on.  P3400 subsumes it, so `-fno-contracts-p4451`
+  with P3400 on (given, or from the umbrella) is an error.
+* In C, `-fcontracts-p3100`, `-fcontracts-p4298` and `-fcontracts-p4405`
+  relate to `-fcontracts-p4299` as the per-paper options relate to
+  `-fcontracts` in C++: each turns C contracts on, and is an error with a
+  final `-fno-contracts-p4299`.  So does `-fcontracts-p3850`, which in C
+  implies those three.  `-fno-contracts` does not apply to C, and in C++
+  `-fcontracts-p4299` is outside these rules.
+* The other per-paper options are C++ only, as are `-fcontracts` itself,
+  `-fcontract-bypass-rethrowing-local-handler` and
+  `-fcontract-analysis-skip-dead-calls`: on a C input either form warns
+  that it is valid for C++ but not for C, and is ignored.
+* An option that means nothing with contracts off warns that it has no
+  effect when contracts end up off: `-fcontracts-allow-assume`,
+  `-fcontract-evaluation-semantic=`, `-fcontract-analysis-semantic=`,
+  `-fcontract-bypass-rethrowing-local-handler` (C++), and, in one warning,
+  `-fcontract-group-evaluation-semantic=`, `-fcontract-configuration=` and
+  `-fcontract-configuration-file=`.  So do the P4405 proving strategies
+  (`-fcontracts-prove-fold`, `-fcontracts-prove-shadow`,
+  `-fcontracts-prove-override`, `-fcontracts-prove-callee-premises`,
+  `-fcontracts-prove-assume`), `-fcontracts-prove-optimize=` and
+  `-fcontract-analysis-skip-dead-calls` (C++) without `-fcontracts-p4405`,
+  and `-fsanitize-noncontract-callbacks` without `-fcontracts-p3100`.  A
+  negative form asks for nothing and never warns; an option with a value
+  warns for any value, its default included.
+  `-fcontract-violation-information=` has an effect whatever the contracts
+  options and never warns.  The warnings are in
+  `-Wunused-command-line-argument`.
+
+(contracts-runtime-library)=
+
+#### Running a program that uses contracts
+
+A C++ program that Clang links with contracts enabled (by `-std=c++26` or
+a later standard, `-fcontracts`, or a per-paper option) depends on
+`libcontracts.so.1`, the shared contracts runtime this branch installs
+beside libc++, in `<prefix>/lib/x86_64-unknown-linux-gnu` on x86-64 Linux.
+With `-stdlib=libc++` every C++ program depends on it, whatever the
+options, since libc++'s `libc++.so` names it.  When Clang is installed
+outside the system's library path the dynamic loader does not find it,
+and the program fails to start ("libcontracts.so.1: cannot open shared
+object file"), just as one linked against the installation's
+`libc++.so.1` does.  Any of these makes the directory known:
+
+* `-frtlib-add-rpath` when linking, which adds the installation's runtime
+  directories to the program's `RUNPATH`;
+* `-Wl,-rpath,<prefix>/lib/x86_64-unknown-linux-gnu` when linking;
+* `LD_LIBRARY_PATH=<prefix>/lib/x86_64-unknown-linux-gnu` when running.
+
+With libstdc++ these cover `libcontracts.so.1` only: a libstdc++ from a
+GCC installation outside the system's library path needs that
+installation's library directory as well.
+
+(p4451-terminating)=
+
+#### Terminating contract assertions
+
+:::{option} -fcontracts-p4451, -fno-contracts-p4451
+
+Enable D4451's terminating contract assertions in C++ ("Early Adoption of
+an Always-Enforced Label").  Implied by `-fcontracts-p3400` and
+`-fcontracts-p3850`; like the other per-paper options it enables
+`-fcontracts`.
+:::
+
+The assertion-control-specifier `< terminating >`, written after `pre`,
+`post` or `contract_assert` and before any requires-clause, attributes and
+postcondition captures, makes a contract assertion a *terminating* one:
+
+```c++
+#include <contracts>
+
+int f(int x)
+  pre <terminating> (x > 0);
+```
+
+Every evaluation of a terminating contract assertion uses a terminating
+semantic, `enforce` or `quick_enforce`.  A semantic selected for it by
+`-fcontract-evaluation-semantic=`, by a configuration
+(`-fcontract-configuration=`, `-fcontract-configuration-file=`), or at run
+time by dynamic selection is adjusted as for P3400's
+`std::contracts::labels::terminating`: `ignore` and `observe` become
+`enforce`, and `quick_enforce` is kept.  Constant evaluation is adjusted
+the same way, but whether a variable is constant-initialized is still
+decided with every contract assertion ignored.  Under `-fcontracts-p4405`
+its analysis evaluation may be `prove`; a configured `diagnose`, which
+`terminating` does not allow, becomes `ignore`.  The violation is reported
+as an unlabeled contract assertion's.
+
+A declaration of `std::contracts::labels::terminating` must precede the
+specifier -- from `#include <contracts>`, `import <contracts>;`,
+`import std;` or `import std.compat;` -- and unqualified lookup of
+`terminating` from the specifier must find nothing or only that
+declaration, so a parameter, a member (a member function's contract
+assertions see its complete class) or a variable named `terminating` makes
+it an error.  `terminating` is not otherwise looked up.  Two declarations
+of a function must agree: of each pair of corresponding contract
+assertions, both have the specifier or neither does.
+
+Without `-fcontracts-p3400` no other assertion-control-specifier is
+accepted, and `<terminating>` without `-fcontracts-p4451` is an error that
+names the option.  With `-fcontracts-p3400` the specifier is an ordinary
+P3400 assertion-control label and the program means the same.
+`-fno-contracts-p4451` with P3400 on is an error, so with
+`-fcontracts-p3850` it also needs `-fno-contracts-p3400`.
+
+Under `-fcontracts-p4451` Clang raises `__cpp_contracts` to D4451R0's
+`202611L` (or higher, when `-fcontracts-p3097` raises it further) and
+defines `__clang_contracts_p4451`, and libc++ raises `__cpp_lib_contracts`
+to `202611L`.  Without `-fcontracts-p3400`
+libc++'s `<contracts>` and `std` module declare
+`std::contracts::labels::terminating` alone, of an internal type in an
+inline namespace; the rest of the P3400 labels library is there only under
+`-fcontracts-p3400`.
+
 (ccc-override-options)=
 
 ### CCC_OVERRIDE_OPTIONS
