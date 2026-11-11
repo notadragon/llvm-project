@@ -95,6 +95,25 @@ enum class ContractAssertionKind {
   Implicit = 7
 };
 
+/// The assertion kind a violation of a contract of kind \p Kind reports;
+/// \p IsPostCapture selects the initialization of a postcondition's captures.
+inline ContractAssertionKind getContractAssertionKind(ContractKind Kind,
+                                                      bool IsPostCapture) {
+  if (IsPostCapture)
+    return ContractAssertionKind::PostCapture;
+  switch (Kind) {
+  case ContractKind::Pre:
+    return ContractAssertionKind::Pre;
+  case ContractKind::Post:
+    return ContractAssertionKind::Post;
+  case ContractKind::Assert:
+    return ContractAssertionKind::Assert;
+  case ContractKind::Implicit:
+    return ContractAssertionKind::Implicit;
+  }
+  llvm_unreachable("unknown ContractKind");
+}
+
 /// Contract evaluation mode. Determines whether to check contracts, and
 /// whether contract failures cause compile errors.
 ///
