@@ -1,0 +1,4 @@
+[
+  { "match": { "group": "safety\u0000x" },
+    "output": { "semantic": "ignore" } }
+]

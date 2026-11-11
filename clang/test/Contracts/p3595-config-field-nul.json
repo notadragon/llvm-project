@@ -1,0 +1,11 @@
+[
+  { "match": { "kind": "pre\u0000x" }, "output": { "semantic": "ignore" } },
+  { "match": { "group": "g\u0000x" }, "output": { "semantic": "ignore" } },
+  { "match": { "namespace": "n\u0000x" }, "output": { "semantic": "ignore" } },
+  { "match": { "location": "t.C\u0000x" }, "output": { "semantic": "ignore" } },
+  { "match": { "caller": { "location": "t.C\u0000x" } }, "output": { "semantic": "ignore" } },
+  { "match": { "caller": { "namespace": "n\u0000x" } }, "output": { "semantic": "ignore" } },
+  { "output": { "semantic": "ignore\u0000x" } },
+  { "output": { "semantic": "ignore", "dynamic": { "name": "sel\u0000x" } } },
+  { "output": { "semantic": "ignore", "dynamic": { "name": "sel", "linkage": "C\u0000x" } } }
+]

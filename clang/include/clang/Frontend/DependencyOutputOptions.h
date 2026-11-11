@@ -25,6 +25,7 @@ enum ExtraDepKind {
   EDK_ProfileList,
   EDK_ModuleFile,
   EDK_DepFileEntry,
+  EDK_ContractConfiguration,
 };
 
 /// ModuleFileDepsKind - Whether to include module file dependencies.

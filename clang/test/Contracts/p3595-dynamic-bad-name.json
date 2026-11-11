@@ -1,0 +1,8 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "enforce",
+    "dynamic": {"linkage": "C++", "name": "a::::sel"}}},
+  {"match": {"kind": "post"}, "output": {"semantic": "enforce",
+    "dynamic": {"linkage": "C++", "name": "ns::"}}},
+  {"match": {"kind": "assert"}, "output": {"semantic": "enforce",
+    "dynamic": {"linkage": "C++", "name": "::"}}}
+]

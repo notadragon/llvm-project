@@ -1,0 +1,4 @@
+[
+  { "match": { "constexpr": true  }, "output": { "semantic": "observe" } },
+  { "match": { "constexpr": false }, "output": { "semantic": "enforce" } }
+]

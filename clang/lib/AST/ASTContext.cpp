@@ -10407,6 +10407,8 @@ ASTContext::BuildViolationObject(const ContractStmt *CS,
   std::string MsgStorage;
   std::optional<StringRef> Message;
   bool HasMessage = CS->hasMessage() || CS->hasTransformedMessage();
+  if (CS->getAttr<ContractMessageAttr>())
+    HasMessage = true;
   if (HasMessage) {
     MsgStorage = CS->getUserMessage(*this);
     Message = MsgStorage;

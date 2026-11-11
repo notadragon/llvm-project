@@ -1,0 +1,3 @@
+[
+  {"match": {"caller": {"namespace": "app"}}, "output": {"semantic": "observe"}}
+]
