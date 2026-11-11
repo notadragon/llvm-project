@@ -783,6 +783,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
       CppContracts = std::max(CppContracts, 202611L);
     Builder.defineMacro("__cpp_contracts", Twine(CppContracts) + "L");
   }
+  if (LangOpts.ContractsP3099)
+    Builder.defineMacro("__cpp_contracts_message", "202611L");
   if (LangOpts.ContractsP3290)
     Builder.defineMacro("__clang_contracts_p3290", "202611L");
   if (LangOpts.Char8)
