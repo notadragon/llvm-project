@@ -17,7 +17,7 @@
 
 using namespace clang;
 
-void Scope::setFlags(Scope *parent, unsigned flags) {
+void Scope::setFlags(Scope *parent, uint64_t flags) {
   AnyParent = parent;
   Flags = flags;
 
@@ -92,11 +92,12 @@ void Scope::setFlags(Scope *parent, unsigned flags) {
   }
 }
 
-void Scope::Init(Scope *parent, unsigned flags) {
+void Scope::Init(Scope *parent, uint64_t flags) {
   setFlags(parent, flags);
 
   DeclsInScope.clear();
   UsingDirectives.clear();
+  ContractControlUsingDirectives.clear();
   Entity = nullptr;
   ErrorTrap.reset();
   PrecedingLabel = nullptr;
@@ -202,13 +203,13 @@ void Scope::applyNRVO() {
 LLVM_DUMP_METHOD void Scope::dump() const { dumpImpl(llvm::errs()); }
 
 void Scope::dumpImpl(raw_ostream &OS) const {
-  unsigned Flags = getFlags();
+  uint64_t Flags = getFlags();
   bool HasFlags = Flags != 0;
 
   if (HasFlags)
     OS << "Flags: ";
 
-  std::pair<unsigned, const char *> FlagInfo[] = {
+  std::pair<uint64_t, const char *> FlagInfo[] = {
       {FnScope, "FnScope"},
       {BreakScope, "BreakScope"},
       {ContinueScope, "ContinueScope"},
@@ -241,7 +242,8 @@ void Scope::dumpImpl(raw_ostream &OS) const {
       {TypeAliasScope, "TypeAliasScope"},
       {FriendScope, "FriendScope"},
       {OpenACCComputeConstructScope, "OpenACCComputeConstructScope"},
-      {OpenACCLoopConstructScope, "OpenACCLoopConstructScope"}};
+      {OpenACCLoopConstructScope, "OpenACCLoopConstructScope"},
+      {ContractAssertScope, "ContractAssertScope"}};
 
   for (auto Info : FlagInfo) {
     if (Flags & Info.first) {
