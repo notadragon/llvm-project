@@ -22,6 +22,7 @@ using namespace CodeGen;
 static const ContractProofStrategy *const ContractProofStrategies[] = {
     &ContractProveFoldStrategy,
     &ContractProveShadowStrategy,
+    &ContractProveOverrideStrategy,
     nullptr,
 };
 
