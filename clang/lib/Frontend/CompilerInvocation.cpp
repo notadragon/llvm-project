@@ -1583,6 +1583,11 @@ void CompilerInvocationBase::GenerateCodeGenArgs(const CodeGenOptions &Opts,
       GenerateArg(Consumer, OPT_finline_hint_functions);
     else if (Opts.Inlining == CodeGenOptions::OnlyAlwaysInlining)
       GenerateArg(Consumer, OPT_fno_inline);
+  } else if (Opts.ContractProofInlining == CodeGenOptions::OnlyHintInlining) {
+    GenerateArg(Consumer, OPT_finline_hint_functions);
+  } else if (Opts.ContractProofInlining ==
+             CodeGenOptions::OnlyAlwaysInlining) {
+    GenerateArg(Consumer, OPT_fno_inline);
   }
 
   if (Opts.DirectAccessExternalData && LangOpts->PICLevel != 0)
@@ -1645,6 +1650,9 @@ void CompilerInvocationBase::GenerateCodeGenArgs(const CodeGenOptions &Opts,
     GenerateArg(Consumer, OPT_funroll_loops);
   else if (!Opts.UnrollLoops && Opts.OptimizationLevel > 1)
     GenerateArg(Consumer, OPT_fno_unroll_loops);
+  else if (Opts.UnrollLoopsGiven)
+    GenerateArg(Consumer, Opts.UnrollLoops ? OPT_funroll_loops
+                                           : OPT_fno_unroll_loops);
 
   if (Opts.InterchangeLoops)
     GenerateArg(Consumer, OPT_floop_interchange);
@@ -1891,6 +1899,23 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
     Opts.setInlining(CodeGenOptions::NormalInlining);
   }
 
+  // D4405: the inlining the flags ask for, which O0 ignores and its proofs
+  // follow (ContractProofInlining).
+  Opts.setContractProofInlining(Opts.getInlining());
+  if (Opts.OptimizationLevel == 0) {
+    Opts.setContractProofInlining(CodeGenOptions::NormalInlining);
+    if (const Arg *A = Args.getLastArg(options::OPT_finline_functions,
+                                       options::OPT_finline_hint_functions,
+                                       options::OPT_fno_inline_functions,
+                                       options::OPT_fno_inline)) {
+      if (A->getOption().matches(options::OPT_fno_inline_functions) ||
+          A->getOption().matches(options::OPT_fno_inline))
+        Opts.setContractProofInlining(CodeGenOptions::OnlyAlwaysInlining);
+      else if (A->getOption().matches(options::OPT_finline_hint_functions))
+        Opts.setContractProofInlining(CodeGenOptions::OnlyHintInlining);
+    }
+  }
+
   // PIC defaults to -fno-direct-access-external-data while non-PIC defaults to
   // -fdirect-access-external-data.
   Opts.DirectAccessExternalData =
@@ -1957,6 +1982,9 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
   Opts.UnrollLoops =
       Args.hasFlag(OPT_funroll_loops, OPT_fno_unroll_loops,
                    (Opts.OptimizationLevel > 1));
+  // D4405: the proof optimization level follows -f[no-]unroll-loops only if
+  // given (ContractShadowDecide.cpp).
+  Opts.UnrollLoopsGiven = Args.hasArg(OPT_funroll_loops, OPT_fno_unroll_loops);
   // Match the LLVM pipeline default (PipelineTuningOptions::LoopInterchange),
   // which enables the pass whenever the optimization pipeline runs.
   Opts.InterchangeLoops =

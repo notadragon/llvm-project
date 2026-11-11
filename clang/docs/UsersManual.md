@@ -4473,6 +4473,91 @@ C++14, and C++17, and most of C++20 and C++23.
 See the [C++ support in Clang](https://clang.llvm.org/cxx_status.html) page
 for detailed information on C++ feature support across Clang versions.
 
+:::{option} -fcontracts-prove-callee-premises
+
+* D4405's callee premise copies, a proving strategy implied by
+  `-fcontracts-p4405` (`-fno-contracts-prove-callee-premises` turns it off).
+  A proof shadow takes an `observe`, `noexcept_observe` or `ignore`
+  evaluation it holds as a premise -- a proof relying on it is conditional,
+  so not diagnosed, and never an assumption -- but the functions the shadow
+  calls, and inlines, are the real ones, which hold no such premise: after
+  `int i = idx(x);`, a postcondition `r == 0` of `idx` that is only observed
+  or ignored says nothing about `i`, nor does a `contract_assert` in an
+  inline callee.  With this option, each function whose code holds such an
+  evaluation also gets a *premise copy*, optimized but never emitted, in
+  which the evaluation is assumed and no analysis evaluation is made, and an
+  evaluation the proof shadows leave unproven (or always false) is decided
+  once more with every function that has a copy replaced by it, in the
+  shadow and in everything it uses; one proven so is proven conditionally
+  (`-Rcontract-proof`: "proven, conditional").  The shadows are decided first
+  as without the option, so the output, and every proof that becomes an
+  assumption under `-fcontracts-prove-assume`, is the same with the option
+  on or off; the cost is the copies and, only when an evaluation is left
+  unproven, a second optimization of the shadows holding one.  Copies are
+  made only when proof shadows are.
+:::
+
+:::{option} -fcontracts-prove-optimize=<level>
+
+* D4405's *proof optimization level*, `0`, `1`, `2`, `3` or `follow`: how
+  hard Clang tries to prove the `prove` and `diagnose` evaluations,
+  independently of the optimization level the code is generated at.  There
+  is no `-fno-` form; the last one given wins, and a value other than these
+  is an error.  Each proving strategy `-fcontracts-p4405` implies is enabled
+  from a proof level up, and one given explicitly, in either form, is
+  enabled or disabled whatever the level:
+
+  | Strategy | Enabled at proof level |
+  |---|---|
+  | `-fcontracts-prove-fold` | 0 and up |
+  | `-fcontracts-prove-shadow` | 1 and up |
+  | `-fcontracts-prove-assume` | 1 and up |
+  | `-fcontracts-prove-override` | 2 and up |
+  | `-fcontracts-prove-callee-premises` | 2 and up |
+
+  So at level 0 only folding runs, below level 2 a virtual function's
+  contract assertions are proven as with `-fno-contracts-prove-override`,
+  and the premise copies, which work through the proof shadows, never run
+  without them.  By default the proof level is the optimization level, but
+  at least 2: `-O3`, `-O4` and `-Ofast` give 3, and `-O0`, `-O1`, `-O2`,
+  `-Os`, `-Oz` and `-Og` give 2.  `follow` selects the optimization level
+  itself, where `-Os`, `-Oz` and `-Og` count as 2.  The option is accepted
+  for C too.
+* The proof shadows, override shadows and premise copies are optimized at
+  the proof level (at level 0, as at `-O0`, where a strategy given
+  explicitly at level 0 makes them), with the tuning options it implies,
+  unless given: loop
+  unrolling and interleaving from level 2 (`-f[no-]unroll-loops`) and the
+  vectorizers from level 2 (`-f[no-]vectorize`, `-f[no-]slp-vectorize`; one
+  that only restates the optimization level's default cannot be told from
+  it, and counts as not given).  What the optimization level alone puts in
+  the code -- the `llvm.loop.unroll.disable` of every loop at `-O1`, and the
+  `optsize` and `minsize` attributes of `-Os` and `-Oz` -- is replaced in
+  the proof module by what the proof level implies, on every function there
+  and its calls, while what the program asks for itself is kept: a loop
+  pragma, a function's own `cold` or `minsize` attribute,
+  `-fno-inline-functions`, `-fno-strict-aliasing` and every other flag
+  given.  Identical-function merging (`-fmerge-functions`) is never applied
+  to proofs.  The code generated is the same whatever the proof level.
+* At `-O0` too the proofs are made at the proof level, 2 by default (`follow`
+  gives 0 there), so an `-O0` build proves what an `-O2` build does, at the
+  cost of optimizing the proofs.  What `-O0` alone implies is replaced for
+  them: no `optnone` and no `noinline` but a function's own (and those
+  `-fno-inline`, `-fno-inline-functions` or `-finline-hint-functions`
+  give); TBAA and the range of a `bool` or `enum` load are made as when
+  optimizing; and the bodies of `available_externally` functions (the inline
+  members of an `extern template` instantiation) are generated as when
+  optimizing -- for the proofs only: the code generated at `-O0` is the
+  same as without the proofs, whose assumptions (`-fcontracts-prove-assume`)
+  the end of the pipeline deletes -- but a call a sound proof relied on
+  inlining is inlined there too.  With `-g`, an assumption kept can leave
+  line-table entries.  Not done for the proofs at `-O0`:
+  the `available_externally` vtables of classes whose key function is
+  elsewhere, and the code shapes `-O0` chooses (the trap at the end of a
+  function flowing off its end, `llvm.expect`, the choice between a math
+  library call and its intrinsic).
+:::
+
 ### Controlling implementation limits
 
 :::{option} -fbracket-depth=N

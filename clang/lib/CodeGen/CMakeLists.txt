@@ -112,6 +112,9 @@ add_clang_library(clangCodeGen
   ConstantInitBuilder.cpp
   ContractProve.cpp
   ContractProveFold.cpp
+  ContractProvePremises.cpp
+  ContractProveShadow.cpp
+  ContractShadowDecide.cpp
   CoverageMappingGen.cpp
   ItaniumCXXABI.cpp
   HLSLBufferLayoutBuilder.cpp

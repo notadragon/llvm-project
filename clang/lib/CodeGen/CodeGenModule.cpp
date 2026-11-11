@@ -633,9 +633,14 @@ CodeGenModule::CodeGenModule(ASTContext &C,
   if (LangOpts.HLSL)
     createHLSLRuntime();
 
+  // D4405: an -O0 module proving at a proof level above 0 makes TBAA for
+  // its proofs (ContractProveShadow.cpp).
+  initContractProofsAtO0();
+
   // Enable TBAA unless it's suppressed. TSan and TySan need TBAA even at O0.
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Thread | SanitizerKind::Type) ||
-      (!CodeGenOpts.RelaxedAliasing && CodeGenOpts.OptimizationLevel > 0))
+      (!CodeGenOpts.RelaxedAliasing && CodeGenOpts.OptimizationLevel > 0) ||
+      ContractProofTBAA)
     TBAA.reset(new CodeGenTBAA(Context, getTypes(), TheModule, CodeGenOpts,
                                getLangOpts()));
 
@@ -1204,6 +1209,8 @@ void CodeGenModule::Release() {
   if (CXX20ModuleInits && Primary && !Primary->isHeaderLikeModule())
     EmitModuleInitializers(Primary);
   EmitDeferred();
+  // P4405 proving hook.
+  emitContractProofShadows();
   DeferredDecls.insert_range(EmittedDeferredDecls);
   EmittedDeferredDecls.clear();
   EmitVTablesOpportunistically();
@@ -5099,7 +5106,9 @@ bool CodeGenModule::shouldEmitFunction(GlobalDecl GD) {
   if (F->isInlineBuiltinDeclaration())
     return true;
 
-  if (CodeGenOpts.OptimizationLevel == 0 && !F->hasAttr<AlwaysInlineAttr>())
+  // D4405: unless it is emitted for the proofs (ContractProveShadow.cpp).
+  if (CodeGenOpts.OptimizationLevel == 0 && !F->hasAttr<AlwaysInlineAttr>() &&
+      !shouldEmitContractExternalBody(GD))
     return false;
 
   // We don't import function bodies from other named module units since that

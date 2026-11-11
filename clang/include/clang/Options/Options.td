@@ -1913,6 +1913,31 @@ defm contracts_prove_fold : BoolFOption<"contracts-prove-fold",
           "Prove the predicates of prove and diagnose evaluations that fold to true, and diagnose those that fold to false as always false (implied by -fcontracts-p4405)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_prove_shadow : BoolFOption<"contracts-prove-shadow",
+  LangOpts<"ContractsProveShadow">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "When optimizing, prove the predicates of prove and diagnose evaluations in an optimized copy of each function holding one, never emitted (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+defm contracts_prove_callee_premises :
+  BoolFOption<"contracts-prove-callee-premises",
+  LangOpts<"ContractsProveCalleePremises">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "When a proof shadow leaves an evaluation unproven, try it again with each function the shadow uses replaced by a copy that assumes its observed and ignored contract assertions hold; a proof found so is conditional (implied by -fcontracts-p4405)">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
+// D4405: the proof optimization level, 0-3 or follow (DECISIONS.md
+// E162-E168, E205); resolved by the front end (ParseLangArgs) into
+// LangOpts.ContractsProveOptimize.  No -fno- form.
+def fcontracts_prove_optimize_EQ : Joined<["-"], "fcontracts-prove-optimize=">,
+  Visibility<[ClangOption, CC1Option]>, MetaVarName<"<level>">,
+  Values<"0,1,2,3,follow">,
+  HelpText<"Select the optimization level of the P4405 proving strategies: "
+           "each is enabled from a level up unless given explicitly, and the "
+           "proofs are optimized at that level. 'follow' selects the "
+           "optimization level, where -Os, -Oz and -Og count as 2; the "
+           "default is the optimization level, but at least 2">;
+
 defm contracts_prove_assume : BoolFOption<"contracts-prove-assume",
   LangOpts<"ContractsProveAssume">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],

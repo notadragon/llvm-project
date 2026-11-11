@@ -21,6 +21,7 @@ using namespace CodeGen;
 /// Every strategy, in the order they are asked; null-terminated.
 static const ContractProofStrategy *const ContractProofStrategies[] = {
     &ContractProveFoldStrategy,
+    &ContractProveShadowStrategy,
     nullptr,
 };
 
