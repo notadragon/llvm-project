@@ -1,0 +1,3 @@
+[
+  {"match": {}, "output": {"semantic": "noexcept_enforce"}}
+]
