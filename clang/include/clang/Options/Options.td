@@ -1853,6 +1853,12 @@ def fcontract_configuration_file_EQ : Joined<["-"], "fcontract-configuration-fil
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Load contract configuration from a JSON file">;
 
+defm contracts_p3099 : BoolFOption<"contracts-p3099",
+  LangOpts<"ContractsP3099">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3099 user-defined diagnostic messages for contract assertions">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p3290 : BoolFOption<"contracts-p3290",
   LangOpts<"ContractsP3290">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
