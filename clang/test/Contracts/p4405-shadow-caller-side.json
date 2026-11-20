@@ -1,0 +1,4 @@
+[
+  {"match": {"caller": true, "kind": "pre"}, "output": {"semantic": "prove"}},
+  {"match": {"caller": false}, "output": {"semantic": "ignore"}}
+]

@@ -2266,6 +2266,35 @@ public:
       const struct ContractOverridePair *Override = nullptr,
       bool OverrideShadow = false);
 
+  /// P4405 proof shadows (ContractProveShadow.cpp): the strategy's state,
+  /// created on first use.
+  struct ContractShadowModuleState &getContractShadowState();
+  /// D4405: an -O0 module proving at a proof level above 0
+  /// (contractProofsAtO0): it makes what the proofs need as at -O1 --
+  /// !range and !noundef, TBAA (ContractProofTBAA), available_externally
+  /// bodies -- which the real code does not keep.
+  bool ContractProofsAtO0 = false;
+  bool ContractProofTBAA = false;
+  /// D4405: set while the code made for the proofs only is emitted in such a
+  /// module (emitContractProofShadows).
+  bool ContractProofEmission = false;
+  /// D4405: set ContractProofsAtO0 and ContractProofTBAA.
+  void initContractProofsAtO0();
+  /// D4405: whether \p GD, an available_externally function whose body -O0
+  /// does not emit, is emitted for the proofs (noting it either way).
+  bool shouldEmitContractExternalBody(GlobalDecl GD);
+  /// Emit the proof shadow of every function that deferred an evaluation to
+  /// one, and whatever they need emitted; from Release.
+  void emitContractProofShadows();
+  /// Diagnose now every evaluation left for the back end to decide, which an
+  /// error keeps from running; deferred ones are unproven.
+  void reportContractProofsNow();
+  /// D4405: the expression an implicit call of a destructor -- one no
+  /// expression of the program names -- is diagnosed at: one per \p Key (the
+  /// object's declaration, or the function holding the call), located at
+  /// \p Loc, so that each emission of the call is the same evaluation.
+  const Expr *getContractImplicitCallSite(const void *Key, SourceLocation Loc);
+
 private:
   /// P4405: the evaluations with prove or diagnose already diagnosed, as
   /// (contract, call) -- the call null for a callee-side evaluation -- so
@@ -2286,6 +2315,17 @@ private:
   /// D4405: getContractImplicitCallSite's expressions.
   llvm::DenseMap<const void *, const Expr *> ContractImplicitCallSites;
 
+  /// P4405: the proof shadow strategy's state.
+  /// (A shared_ptr, which needs the type complete only where it is made.)
+  std::shared_ptr<ContractShadowModuleState> ContractShadowData;
+  /// P4405: emit the proof shadow of \p GD, whose definition is \p Name --
+  /// or, for a non-zero \p Pair, its override shadow for that override pair
+  /// (D4405).
+  void emitContractProofShadow(GlobalDecl GD, llvm::StringRef Name,
+                               unsigned Pair = 0);
+  /// D4405 (-fcontracts-prove-callee-premises): emit the premise copy of
+  /// \p GD, whose definition is \p Name (ContractProvePremises.cpp).
+  void emitContractPremiseCopy(GlobalDecl GD, llvm::StringRef Name);
 };
 
 }  // end namespace CodeGen

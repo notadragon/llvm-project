@@ -1,0 +1,3 @@
+[
+  {"match": {"namespace": "sure"}, "output": {"semantic": "quick_enforce"}}
+]

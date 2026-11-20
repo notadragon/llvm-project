@@ -1,0 +1,8 @@
+[
+  {"match": {"location": "p4405-shadow-previous.cpp:19"}, "output": {"semantic": "enforce"}},
+  {"match": {"location": "p4405-shadow-previous.cpp:25"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "p4405-shadow-previous.cpp:31"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-shadow-previous.cpp:37,53"}, "output": {"semantic": "observe"}},
+  {"match": {"location": "p4405-shadow-previous.cpp:43"}, "output": {"semantic": "ignore"}},
+  {"match": {}, "output": {"semantic": "prove"}}
+]

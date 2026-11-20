@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CGLoopInfo.h"
+#include "ContractProveShadow.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
@@ -17,6 +18,7 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include <optional>
 using namespace clang::CodeGen;
 using namespace llvm;
@@ -552,6 +554,13 @@ void clang::CodeGen::LoopInfo::finish() {
   LoopID->replaceOperandWith(0, LoopID);
 
   TempLoopID->replaceAllUsesWith(LoopID);
+
+  // D4405: the proof module drops the llvm.loop.unroll.disable the -O level
+  // alone implies when the proof level unrolls.
+  if (CurLoopAttr.UnrollDisableImplied)
+    Header->getModule()
+        ->getOrInsertNamedMetadata(contract_shadow::ImpliedUnrollMD)
+        ->addOperand(LoopID);
 }
 
 void LoopInfoStack::push(BasicBlock *Header, const llvm::DebugLoc &StartLoc,

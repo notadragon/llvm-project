@@ -8,6 +8,7 @@
 
 #include "clang/CodeGen/BackendUtil.h"
 #include "BackendConsumer.h"
+#include "ContractProveShadow.h"
 #include "LinkInModulesPass.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
@@ -1025,6 +1026,61 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   PB.registerFunctionAnalyses(FAM);
   PB.registerLoopAnalyses(LAM);
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  // P4405 proving hook: decide the contract proof shadows, in a module of
+  // their own, and remove them from this one, before it is optimized.
+  // An assumption is not kept when an instrumenting sanitizer would check
+  // its predicate's memory accesses, nor when this module is not optimized
+  // (-save-temps' first step), which would leave it to whatever compiles
+  // the output.
+  if (CodeGen::moduleHasContractProofs(*TheModule)) {
+    bool AllowAssumptions =
+        !CodeGenOpts.DisableLLVMPasses &&
+        !LangOpts.Sanitize.hasOneOf(
+            SanitizerKind::Address | SanitizerKind::KernelAddress |
+            SanitizerKind::HWAddress | SanitizerKind::KernelHWAddress |
+            SanitizerKind::Memory | SanitizerKind::KernelMemory |
+            SanitizerKind::Thread | SanitizerKind::Type |
+            SanitizerKind::DataFlow | SanitizerKind::NumericalStability);
+    // D4405: the proofs are optimized at the proof optimization level
+    // (-fcontracts-prove-optimize=, LangOpts.ContractsProveOptimize; a
+    // strategy given explicitly at level 0 runs at level 0, DECISIONS.md
+    // E208 (a)), whatever the -O level, -O0 included, with the tuning
+    // options that level implies unless given: loop
+    // unrolling and interleaving (-f[no-]unroll-loops) and the vectorizers
+    // (the driver resolves -f[no-]vectorize and -f[no-]slp-vectorize
+    // against the -O level, so a setting other than the -O level's default
+    // counts as given).  The settings the -O level implies in the module are
+    // replaced in the proof module (ContractShadowDecide.cpp).
+    unsigned ProofLevel = LangOpts.ContractsProveOptimize;
+    OptimizationLevel ProofOptLevel = ProofLevel == 0   ? OptimizationLevel::O0
+                                      : ProofLevel == 1 ? OptimizationLevel::O1
+                                      : ProofLevel == 2 ? OptimizationLevel::O2
+                                                        : OptimizationLevel::O3;
+    PipelineTuningOptions ProofPTO = PTO;
+    ProofPTO.LoopUnrolling = ProofPTO.LoopInterleaving =
+        CodeGenOpts.UnrollLoopsGiven ? CodeGenOpts.UnrollLoops
+                                     : ProofLevel >= 2;
+    auto LevelVectorizes = [&](bool SLP) {
+      if (CodeGenOpts.OptimizationLevel == 0)
+        return false;
+      if (CodeGenOpts.OptimizeSize)
+        return CodeGenOpts.OptimizeSize == 1 || SLP;
+      return CodeGenOpts.OptimizationLevel > 1;
+    };
+    if (CodeGenOpts.VectorizeLoop == LevelVectorizes(false))
+      ProofPTO.LoopVectorization = ProofLevel >= 2;
+    if (CodeGenOpts.VectorizeSLP == LevelVectorizes(true))
+      ProofPTO.SLPVectorization = ProofLevel >= 2;
+    if (CodeGen::decideContractProofs(
+            *TheModule, TM.get(), ProofPTO, *TLII, ProofOptLevel,
+            CodeGenOpts.VerifyModule, AllowAssumptions,
+            CI.getVirtualFileSystemPtr(), Diags,
+            CI.hasASTContext() ? &CI.getASTContext() : nullptr))
+      CodeGen::registerContractAssumeCleanup(PB);
+    if (Diags.hasErrorOccurred())
+      return;
+  }
 
   ModulePassManager MPM;
   // Add a verifier pass, before any other passes, to catch CodeGen issues.

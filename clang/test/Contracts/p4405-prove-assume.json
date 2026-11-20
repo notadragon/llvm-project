@@ -1,0 +1,6 @@
+[
+  {"match": {"location": "p4405-prove-assume.cpp:30"}, "output": {"semantic": "assume"}},
+  {"match": {"location": "p4405-prove-assume.cpp:36"}, "output": {"semantic": "observe"}},
+  {"match": {"location": "p4405-prove-assume.cpp:42"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {}, "output": {"semantic": "prove"}}
+]

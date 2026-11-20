@@ -1,0 +1,4 @@
+[
+  {"match": {"location": "p4405-shadow-assume.cpp:22,29"}, "output": {"semantic": "assume"}},
+  {"match": {}, "output": {"semantic": "prove"}}
+]

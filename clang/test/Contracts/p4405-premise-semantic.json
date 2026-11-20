@@ -1,0 +1,22 @@
+[
+  {"match": {"caller": false, "namespace": "sem_ignore_always"}, "output": {"semantic": "ignore"}},
+  {"match": {"caller": false, "namespace": "sem_ignore_never"}, "output": {"semantic": "ignore"}},
+  {"match": {"caller": false, "namespace": "sem_observe_always"}, "output": {"semantic": "observe"}},
+  {"match": {"caller": false, "namespace": "sem_observe_never"}, "output": {"semantic": "observe"}},
+  {"match": {"caller": false, "namespace": "sem_enforce_always"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "sem_enforce_never"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "sem_quick_enforce_always"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"caller": false, "namespace": "sem_quick_enforce_never"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"caller": false, "namespace": "sem_assume_always"}, "output": {"semantic": "assume"}},
+  {"match": {"caller": false, "namespace": "sem_assume_never"}, "output": {"semantic": "assume"}},
+  {"match": {"caller": false, "namespace": "sem_noexcept_enforce_always"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"caller": false, "namespace": "sem_noexcept_enforce_never"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"caller": false, "namespace": "sem_noexcept_observe_always"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"caller": false, "namespace": "sem_noexcept_observe_never"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"caller": false, "namespace": "sem_prove_always"}, "output": {"semantic": "prove"}},
+  {"match": {"caller": false, "namespace": "sem_prove_never"}, "output": {"semantic": "prove"}},
+  {"match": {"caller": false, "namespace": "sem_diagnose_always"}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false, "namespace": "sem_diagnose_never"}, "output": {"semantic": "diagnose"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]
