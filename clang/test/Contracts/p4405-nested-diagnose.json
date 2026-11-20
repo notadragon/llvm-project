@@ -1,0 +1,3 @@
+[
+  {"match": {"analysis": true, "namespace": "dd"}, "output": {"semantic": "diagnose"}}
+]

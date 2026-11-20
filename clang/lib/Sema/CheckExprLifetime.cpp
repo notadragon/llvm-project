@@ -1181,6 +1181,9 @@ checkExprLifetimeImpl(Sema &SemaRef, const InitializedEntity *InitEntity,
         // FIXME: Rebuild the expression instead of mutating it.
         MTE->setExtendingDecl(ExtendingEntity->getDecl(),
                               ExtendingEntity->allocateManglingNumber());
+        // D4405: a temporary of static or thread storage duration is
+        // destroyed through its destructor's address.
+        SemaRef.CheckContractStaticTemporary(MTE);
         // Also visit the temporaries lifetime-extended by this initializer.
         return true;
 

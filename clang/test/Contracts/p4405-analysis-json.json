@@ -1,0 +1,15 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true, "namespace": "thirdparty"},
+   "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true, "kind": "pre"},
+   "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "constexpr": true},
+   "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "constexpr": false, "kind": "post"},
+   "output": {"semantic": "prove"}},
+  {"match": {"analysis": false, "kind": "contract_assert"},
+   "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true}, "output": {"semantic": "diagnose"}},
+  {"output": {"semantic": "ignore"}}
+]

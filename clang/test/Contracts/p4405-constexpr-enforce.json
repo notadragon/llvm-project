@@ -1,0 +1,6 @@
+[
+  {"match": {"constexpr": false}, "output": {"semantic": "ignore"}},
+  {"match": {"namespace": "d"}, "output": {"semantic": "diagnose"}},
+  {"match": {"namespace": "lab"}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "prove"}}
+]

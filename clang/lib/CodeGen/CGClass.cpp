@@ -2574,6 +2574,8 @@ void CodeGenFunction::EmitCXXDestructorCall(const CXXDestructorDecl *DD,
                                             bool ForVirtualBase,
                                             bool Delegating, Address This,
                                             QualType ThisTy) {
+  // D4405: an implicit call's analysis evaluations.
+  DiagnoseImplicitDtorProvingContracts(DD, This);
   CGM.getCXXABI().EmitDestructorCall(*this, DD, Type, ForVirtualBase,
                                      Delegating, This, ThisTy);
 }
