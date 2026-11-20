@@ -15,6 +15,7 @@
 #ifndef MSAN_REPORT_H
 #define MSAN_REPORT_H
 
+#include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_stacktrace.h"
 
@@ -27,6 +28,11 @@ void ReportAtExitStatistics();
 void DescribeMemoryRange(const void *x, uptr size);
 void ReportUMRInsideAddressRange(const char *function, const void *start,
                                  uptr size, uptr offset);
+// The text of a use-of-uninitialized-value report, without colors, for a
+// report routed to the contract-violation handler: the error, its stack, and
+// where the value came from if origin is a valid origin.
+void RenderUMRForContract(InternalScopedString *out, StackTrace *stack,
+                          u32 origin);
 
 }  // namespace __msan
 
