@@ -783,6 +783,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
       CppContracts = std::max(CppContracts, 202611L);
     Builder.defineMacro("__cpp_contracts", Twine(CppContracts) + "L");
   }
+  if (LangOpts.ContractsP3290)
+    Builder.defineMacro("__clang_contracts_p3290", "202611L");
   // P4451 raises __cpp_contracts, which the library cannot key on (another
   // paper may raise it too), so a vendor macro tells <contracts> to declare
   // its enforced label and raise __cpp_lib_contracts.
