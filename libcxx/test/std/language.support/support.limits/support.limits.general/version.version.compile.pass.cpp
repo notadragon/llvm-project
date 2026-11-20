@@ -56,6 +56,10 @@
 #    error "__cpp_lib_as_const should not be defined before c++17"
 #  endif
 
+#  ifdef __cpp_lib_assert_can_use_contracts
+#    error "__cpp_lib_assert_can_use_contracts should not be defined before c++20"
+#  endif
+
 #  ifdef __cpp_lib_associative_heterogeneous_erasure
 #    error "__cpp_lib_associative_heterogeneous_erasure should not be defined before c++23"
 #  endif
@@ -317,7 +321,27 @@
 #  endif
 
 #  ifdef __cpp_lib_contracts
-#    error "__cpp_lib_contracts should not be defined before c++26"
+#    error "__cpp_lib_contracts should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_api
+#    error "__cpp_lib_contracts_api should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_implicit
+#    error "__cpp_lib_contracts_implicit should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_labels
+#    error "__cpp_lib_contracts_labels should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_message
+#    error "__cpp_lib_contracts_message should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_report
+#    error "__cpp_lib_contracts_report should not be defined before c++20"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -900,6 +924,10 @@
 #    error "__cpp_lib_remove_cvref should not be defined before c++20"
 #  endif
 
+#  ifdef __cpp_lib_replaceable_contract_violation_handler
+#    error "__cpp_lib_replaceable_contract_violation_handler should not be defined before c++20"
+#  endif
+
 #  ifdef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should not be defined before c++14"
 #  endif
@@ -1170,6 +1198,10 @@
 #    error "__cpp_lib_as_const should not be defined before c++17"
 #  endif
 
+#  ifdef __cpp_lib_assert_can_use_contracts
+#    error "__cpp_lib_assert_can_use_contracts should not be defined before c++20"
+#  endif
+
 #  ifdef __cpp_lib_associative_heterogeneous_erasure
 #    error "__cpp_lib_associative_heterogeneous_erasure should not be defined before c++23"
 #  endif
@@ -1437,7 +1469,27 @@
 #  endif
 
 #  ifdef __cpp_lib_contracts
-#    error "__cpp_lib_contracts should not be defined before c++26"
+#    error "__cpp_lib_contracts should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_api
+#    error "__cpp_lib_contracts_api should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_implicit
+#    error "__cpp_lib_contracts_implicit should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_labels
+#    error "__cpp_lib_contracts_labels should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_message
+#    error "__cpp_lib_contracts_message should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_report
+#    error "__cpp_lib_contracts_report should not be defined before c++20"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -2059,6 +2111,10 @@
 #    error "__cpp_lib_remove_cvref should not be defined before c++20"
 #  endif
 
+#  ifdef __cpp_lib_replaceable_contract_violation_handler
+#    error "__cpp_lib_replaceable_contract_violation_handler should not be defined before c++20"
+#  endif
+
 #  ifndef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should be defined in c++14"
 #  endif
@@ -2380,6 +2436,10 @@
 #    error "__cpp_lib_as_const should have the value 201510L in c++17"
 #  endif
 
+#  ifdef __cpp_lib_assert_can_use_contracts
+#    error "__cpp_lib_assert_can_use_contracts should not be defined before c++20"
+#  endif
+
 #  ifdef __cpp_lib_associative_heterogeneous_erasure
 #    error "__cpp_lib_associative_heterogeneous_erasure should not be defined before c++23"
 #  endif
@@ -2665,7 +2725,27 @@
 #  endif
 
 #  ifdef __cpp_lib_contracts
-#    error "__cpp_lib_contracts should not be defined before c++26"
+#    error "__cpp_lib_contracts should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_api
+#    error "__cpp_lib_contracts_api should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_implicit
+#    error "__cpp_lib_contracts_implicit should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_labels
+#    error "__cpp_lib_contracts_labels should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_message
+#    error "__cpp_lib_contracts_message should not be defined before c++20"
+#  endif
+
+#  ifdef __cpp_lib_contracts_report
+#    error "__cpp_lib_contracts_report should not be defined before c++20"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -3389,6 +3469,10 @@
 #    error "__cpp_lib_remove_cvref should not be defined before c++20"
 #  endif
 
+#  ifdef __cpp_lib_replaceable_contract_violation_handler
+#    error "__cpp_lib_replaceable_contract_violation_handler should not be defined before c++20"
+#  endif
+
 #  ifndef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should be defined in c++17"
 #  endif
@@ -3762,6 +3846,19 @@
 #  endif
 #  if __cpp_lib_as_const != 201510L
 #    error "__cpp_lib_as_const should have the value 201510L in c++20"
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should be defined in c++20"
+#    endif
+#    if __cpp_lib_assert_can_use_contracts != 202611L
+#      error "__cpp_lib_assert_can_use_contracts should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
 #  endif
 
 #  ifdef __cpp_lib_associative_heterogeneous_erasure
@@ -4153,8 +4250,86 @@
 #    error "__cpp_lib_containers_ranges should not be defined before c++23"
 #  endif
 
-#  ifdef __cpp_lib_contracts
-#    error "__cpp_lib_contracts should not be defined before c++26"
+#  if defined(__cpp_contracts)
+#    ifndef __cpp_lib_contracts
+#      error "__cpp_lib_contracts should be defined in c++20"
+#    endif
+#    if defined(__clang_contracts_p4451)
+#      if __cpp_lib_contracts != 202611L
+#        error "__cpp_lib_contracts should have the value 202611L in c++20 when the requirement 'defined(__clang_contracts_p4451)' is met"
+#      endif
+#    elif __cpp_lib_contracts != 202502L
+#      error "__cpp_lib_contracts should have the value 202502L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts
+#      error "__cpp_lib_contracts should not be defined when the requirement 'defined(__cpp_contracts)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should be defined in c++20"
+#    endif
+#    if __cpp_lib_contracts_api != 202611L
+#      error "__cpp_lib_contracts_api should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3100)
+#    ifndef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should be defined in c++20"
+#    endif
+#    if __cpp_lib_contracts_implicit != 202611L
+#      error "__cpp_lib_contracts_implicit should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should not be defined when the requirement 'defined(__clang_contracts_p3100)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_labels)
+#    ifndef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should be defined in c++20"
+#    endif
+#    if __cpp_lib_contracts_labels != 202611L
+#      error "__cpp_lib_contracts_labels should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should not be defined when the requirement 'defined(__cpp_contracts_labels)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_message)
+#    ifndef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should be defined in c++20"
+#    endif
+#    if __cpp_lib_contracts_message != 202611L
+#      error "__cpp_lib_contracts_message should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should not be defined when the requirement 'defined(__cpp_contracts_message)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_report)
+#    ifndef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should be defined in c++20"
+#    endif
+#    if __cpp_lib_contracts_report != 202611L
+#      error "__cpp_lib_contracts_report should have the value 202611L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should not be defined when the requirement 'defined(__cpp_contracts_report)' is not met!"
+#    endif
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -4986,6 +5161,19 @@
 #    error "__cpp_lib_remove_cvref should have the value 201711L in c++20"
 #  endif
 
+#  if defined(__cpp_contracts) && defined(__ELF__)
+#    ifndef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should be defined in c++20"
+#    endif
+#    if __cpp_lib_replaceable_contract_violation_handler != 202603L
+#      error "__cpp_lib_replaceable_contract_violation_handler should have the value 202603L in c++20"
+#    endif
+#  else
+#    ifdef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should not be defined when the requirement 'defined(__cpp_contracts) && defined(__ELF__)' is not met!"
+#    endif
+#  endif
+
 #  ifndef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should be defined in c++20"
 #  endif
@@ -5418,6 +5606,19 @@
 #    error "__cpp_lib_as_const should have the value 201510L in c++23"
 #  endif
 
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should be defined in c++23"
+#    endif
+#    if __cpp_lib_assert_can_use_contracts != 202611L
+#      error "__cpp_lib_assert_can_use_contracts should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
 #  if !defined(_LIBCPP_VERSION)
 #    ifndef __cpp_lib_associative_heterogeneous_erasure
 #      error "__cpp_lib_associative_heterogeneous_erasure should be defined in c++23"
@@ -5843,8 +6044,86 @@
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++23"
 #  endif
 
-#  ifdef __cpp_lib_contracts
-#    error "__cpp_lib_contracts should not be defined before c++26"
+#  if defined(__cpp_contracts)
+#    ifndef __cpp_lib_contracts
+#      error "__cpp_lib_contracts should be defined in c++23"
+#    endif
+#    if defined(__clang_contracts_p4451)
+#      if __cpp_lib_contracts != 202611L
+#        error "__cpp_lib_contracts should have the value 202611L in c++23 when the requirement 'defined(__clang_contracts_p4451)' is met"
+#      endif
+#    elif __cpp_lib_contracts != 202502L
+#      error "__cpp_lib_contracts should have the value 202502L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts
+#      error "__cpp_lib_contracts should not be defined when the requirement 'defined(__cpp_contracts)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should be defined in c++23"
+#    endif
+#    if __cpp_lib_contracts_api != 202611L
+#      error "__cpp_lib_contracts_api should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3100)
+#    ifndef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should be defined in c++23"
+#    endif
+#    if __cpp_lib_contracts_implicit != 202611L
+#      error "__cpp_lib_contracts_implicit should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should not be defined when the requirement 'defined(__clang_contracts_p3100)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_labels)
+#    ifndef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should be defined in c++23"
+#    endif
+#    if __cpp_lib_contracts_labels != 202611L
+#      error "__cpp_lib_contracts_labels should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should not be defined when the requirement 'defined(__cpp_contracts_labels)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_message)
+#    ifndef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should be defined in c++23"
+#    endif
+#    if __cpp_lib_contracts_message != 202611L
+#      error "__cpp_lib_contracts_message should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should not be defined when the requirement 'defined(__cpp_contracts_message)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_report)
+#    ifndef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should be defined in c++23"
+#    endif
+#    if __cpp_lib_contracts_report != 202611L
+#      error "__cpp_lib_contracts_report should have the value 202611L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should not be defined when the requirement 'defined(__cpp_contracts_report)' is not met!"
+#    endif
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -6820,6 +7099,19 @@
 #    error "__cpp_lib_remove_cvref should have the value 201711L in c++23"
 #  endif
 
+#  if defined(__cpp_contracts) && defined(__ELF__)
+#    ifndef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should be defined in c++23"
+#    endif
+#    if __cpp_lib_replaceable_contract_violation_handler != 202603L
+#      error "__cpp_lib_replaceable_contract_violation_handler should have the value 202603L in c++23"
+#    endif
+#  else
+#    ifdef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should not be defined when the requirement 'defined(__cpp_contracts) && defined(__ELF__)' is not met!"
+#    endif
+#  endif
+
 #  ifndef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should be defined in c++23"
 #  endif
@@ -7295,6 +7587,19 @@
 #  endif
 #  if __cpp_lib_as_const != 201510L
 #    error "__cpp_lib_as_const should have the value 201510L in c++26"
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should be defined in c++26"
+#    endif
+#    if __cpp_lib_assert_can_use_contracts != 202611L
+#      error "__cpp_lib_assert_can_use_contracts should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
 #  endif
 
 #  if !defined(_LIBCPP_VERSION)
@@ -7842,16 +8147,85 @@
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++26"
 #  endif
 
-#  if !defined(_LIBCPP_VERSION)
+#  if defined(__cpp_contracts)
 #    ifndef __cpp_lib_contracts
 #      error "__cpp_lib_contracts should be defined in c++26"
 #    endif
-#    if __cpp_lib_contracts != 202502L
+#    if defined(__clang_contracts_p4451)
+#      if __cpp_lib_contracts != 202611L
+#        error "__cpp_lib_contracts should have the value 202611L in c++26 when the requirement 'defined(__clang_contracts_p4451)' is met"
+#      endif
+#    elif __cpp_lib_contracts != 202502L
 #      error "__cpp_lib_contracts should have the value 202502L in c++26"
 #    endif
 #  else
 #    ifdef __cpp_lib_contracts
-#      error "__cpp_lib_contracts should not be defined because it is unimplemented in libc++!"
+#      error "__cpp_lib_contracts should not be defined when the requirement 'defined(__cpp_contracts)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should be defined in c++26"
+#    endif
+#    if __cpp_lib_contracts_api != 202611L
+#      error "__cpp_lib_contracts_api should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3100)
+#    ifndef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should be defined in c++26"
+#    endif
+#    if __cpp_lib_contracts_implicit != 202611L
+#      error "__cpp_lib_contracts_implicit should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should not be defined when the requirement 'defined(__clang_contracts_p3100)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_labels)
+#    ifndef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should be defined in c++26"
+#    endif
+#    if __cpp_lib_contracts_labels != 202611L
+#      error "__cpp_lib_contracts_labels should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should not be defined when the requirement 'defined(__cpp_contracts_labels)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_message)
+#    ifndef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should be defined in c++26"
+#    endif
+#    if __cpp_lib_contracts_message != 202611L
+#      error "__cpp_lib_contracts_message should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should not be defined when the requirement 'defined(__cpp_contracts_message)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_report)
+#    ifndef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should be defined in c++26"
+#    endif
+#    if __cpp_lib_contracts_report != 202611L
+#      error "__cpp_lib_contracts_report should have the value 202611L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should not be defined when the requirement 'defined(__cpp_contracts_report)' is not met!"
 #    endif
 #  endif
 
@@ -9269,6 +9643,19 @@
 #    error "__cpp_lib_remove_cvref should have the value 201711L in c++26"
 #  endif
 
+#  if defined(__cpp_contracts) && defined(__ELF__)
+#    ifndef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should be defined in c++26"
+#    endif
+#    if __cpp_lib_replaceable_contract_violation_handler != 202603L
+#      error "__cpp_lib_replaceable_contract_violation_handler should have the value 202603L in c++26"
+#    endif
+#  else
+#    ifdef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should not be defined when the requirement 'defined(__cpp_contracts) && defined(__ELF__)' is not met!"
+#    endif
+#  endif
+
 #  ifndef __cpp_lib_result_of_sfinae
 #    error "__cpp_lib_result_of_sfinae should be defined in c++26"
 #  endif
@@ -9818,6 +10205,19 @@
 #    error "__cpp_lib_as_const should have the value 201510L in c++29"
 #  endif
 
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should be defined in c++29"
+#    endif
+#    if __cpp_lib_assert_can_use_contracts != 202611L
+#      error "__cpp_lib_assert_can_use_contracts should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_assert_can_use_contracts
+#      error "__cpp_lib_assert_can_use_contracts should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
 #  if !defined(_LIBCPP_VERSION)
 #    ifndef __cpp_lib_associative_heterogeneous_erasure
 #      error "__cpp_lib_associative_heterogeneous_erasure should be defined in c++29"
@@ -10363,16 +10763,85 @@
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++29"
 #  endif
 
-#  if !defined(_LIBCPP_VERSION)
+#  if defined(__cpp_contracts)
 #    ifndef __cpp_lib_contracts
 #      error "__cpp_lib_contracts should be defined in c++29"
 #    endif
-#    if __cpp_lib_contracts != 202502L
+#    if defined(__clang_contracts_p4451)
+#      if __cpp_lib_contracts != 202611L
+#        error "__cpp_lib_contracts should have the value 202611L in c++29 when the requirement 'defined(__clang_contracts_p4451)' is met"
+#      endif
+#    elif __cpp_lib_contracts != 202502L
 #      error "__cpp_lib_contracts should have the value 202502L in c++29"
 #    endif
 #  else
 #    ifdef __cpp_lib_contracts
-#      error "__cpp_lib_contracts should not be defined because it is unimplemented in libc++!"
+#      error "__cpp_lib_contracts should not be defined when the requirement 'defined(__cpp_contracts)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3290)
+#    ifndef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should be defined in c++29"
+#    endif
+#    if __cpp_lib_contracts_api != 202611L
+#      error "__cpp_lib_contracts_api should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_api
+#      error "__cpp_lib_contracts_api should not be defined when the requirement 'defined(__clang_contracts_p3290)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__clang_contracts_p3100)
+#    ifndef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should be defined in c++29"
+#    endif
+#    if __cpp_lib_contracts_implicit != 202611L
+#      error "__cpp_lib_contracts_implicit should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_implicit
+#      error "__cpp_lib_contracts_implicit should not be defined when the requirement 'defined(__clang_contracts_p3100)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_labels)
+#    ifndef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should be defined in c++29"
+#    endif
+#    if __cpp_lib_contracts_labels != 202611L
+#      error "__cpp_lib_contracts_labels should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_labels
+#      error "__cpp_lib_contracts_labels should not be defined when the requirement 'defined(__cpp_contracts_labels)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_message)
+#    ifndef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should be defined in c++29"
+#    endif
+#    if __cpp_lib_contracts_message != 202611L
+#      error "__cpp_lib_contracts_message should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_message
+#      error "__cpp_lib_contracts_message should not be defined when the requirement 'defined(__cpp_contracts_message)' is not met!"
+#    endif
+#  endif
+
+#  if defined(__cpp_contracts_report)
+#    ifndef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should be defined in c++29"
+#    endif
+#    if __cpp_lib_contracts_report != 202611L
+#      error "__cpp_lib_contracts_report should have the value 202611L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_contracts_report
+#      error "__cpp_lib_contracts_report should not be defined when the requirement 'defined(__cpp_contracts_report)' is not met!"
 #    endif
 #  endif
 
@@ -11815,6 +12284,19 @@
 #  endif
 #  if __cpp_lib_remove_cvref != 201711L
 #    error "__cpp_lib_remove_cvref should have the value 201711L in c++29"
+#  endif
+
+#  if defined(__cpp_contracts) && defined(__ELF__)
+#    ifndef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should be defined in c++29"
+#    endif
+#    if __cpp_lib_replaceable_contract_violation_handler != 202603L
+#      error "__cpp_lib_replaceable_contract_violation_handler should have the value 202603L in c++29"
+#    endif
+#  else
+#    ifdef __cpp_lib_replaceable_contract_violation_handler
+#      error "__cpp_lib_replaceable_contract_violation_handler should not be defined when the requirement 'defined(__cpp_contracts) && defined(__ELF__)' is not met!"
+#    endif
 #  endif
 
 #  ifndef __cpp_lib_result_of_sfinae
