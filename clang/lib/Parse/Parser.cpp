@@ -435,7 +435,17 @@ bool Parser::SkipUntil(ArrayRef<tok::TokenKind> Toks, SkipUntilFlags Flags) {
 // Scope manipulation
 //===----------------------------------------------------------------------===//
 
-void Parser::EnterScope(unsigned ScopeFlags) {
+// Every Parser-side carrier of a scope-flag set must be at least as wide as
+// Scope's own underlying type.  Scope::ContractAssertScope is bit 32, so a
+// 32-bit carrier -- or `unsigned long`, which is 32 bits on LLP64 -- drops it
+// on the way in and every isContractAssertScope() query below then answers
+// false.  Scope.h asserts its own type is wide enough; this asserts that the
+// parameter carrying a value into it did not narrow first.
+static_assert(sizeof(uint64_t) >=
+                  sizeof(std::underlying_type_t<Scope::ScopeFlags>),
+              "Parser's scope-flag carrier is narrower than Scope::ScopeFlags");
+
+void Parser::EnterScope(uint64_t ScopeFlags) {
   if (NumCachedScopes) {
     Scope *N = ScopeCache[--NumCachedScopes];
     N->Init(getCurScope(), ScopeFlags);
@@ -461,9 +471,9 @@ void Parser::ExitScope() {
     ScopeCache[NumCachedScopes++] = OldScope;
 }
 
-Parser::ParseScopeFlags::ParseScopeFlags(Parser *Self, unsigned ScopeFlags,
-                                 bool ManageFlags)
-  : CurScope(ManageFlags ? Self->getCurScope() : nullptr) {
+Parser::ParseScopeFlags::ParseScopeFlags(Parser *Self, uint64_t ScopeFlags,
+                                         bool ManageFlags)
+    : CurScope(ManageFlags ? Self->getCurScope() : nullptr) {
   if (CurScope) {
     OldFlags = CurScope->getFlags();
     CurScope->setFlags(ScopeFlags);
@@ -533,6 +543,10 @@ void Parser::Initialize() {
   Ident_abstract = nullptr;
   Ident_override = nullptr;
   Ident_GNU_final = nullptr;
+  Ident_pre = nullptr;
+  Ident___pre = nullptr;
+  Ident_post = nullptr;
+  Ident___post = nullptr;
 
   Ident_super = &PP.getIdentifierTable().get("super");
 
@@ -1347,6 +1361,20 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
                                                   ? *TemplateInfo.TemplateParams
                                                   : MultiTemplateParamsArg(),
                                               &SkipBody, BodyKind);
+
+  // Replay the late-parsed contract specifiers: C's (P4299), and a C++
+  // function's, which ParseDeclGroup caches so that the function can be named
+  // in its own contracts.
+  if (!D.getLateParsedContracts().empty() &&
+      (getLangOpts().CPlusPlus || getLangOpts().ContractsP4299)) {
+    if (FunctionDecl *FD = Res ? Res->getAsFunction() : nullptr) {
+      ParseLexedFunctionContracts(D.getLateParsedContracts(), Res,
+                                  CES_AllScopes);
+      if (getLangOpts().CPlusPlus)
+        Actions.ActOnLateParsedFunctionContracts(FD, /*IsDefinition=*/true);
+    }
+    D.getLateParsedContracts().clear();
+  }
 
   if (SkipBody.ShouldSkip) {
     // Do NOT enter SkipFunctionBody if we already consumed the tokens.
