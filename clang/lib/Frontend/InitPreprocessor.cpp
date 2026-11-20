@@ -771,6 +771,15 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   if (LangOpts.Reflection)
     Builder.defineMacro("__CLANG_CXX_REFLECTION__");
 
+  if (LangOpts.Contracts) {
+    // The greatest value any enabled paper gives __cpp_contracts, P2900's
+    // 202502L when none raises it.  P3097's value is a private date, which
+    // tracks the month.
+    long CppContracts = 202502L;
+    if (LangOpts.ContractsP3097)
+      CppContracts = std::max(CppContracts, 202611L);
+    Builder.defineMacro("__cpp_contracts", Twine(CppContracts) + "L");
+  }
   if (LangOpts.Char8)
     Builder.defineMacro("__cpp_char8_t", "202207L");
   Builder.defineMacro("__cpp_impl_destroying_delete", "201806L");

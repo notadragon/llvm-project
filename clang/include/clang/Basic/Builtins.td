@@ -1246,6 +1246,14 @@ def IsConstantEvaluated : LangBuiltin<"CXX_LANG"> {
   let Prototype = "bool()";
 }
 
+// P3400: a dependent contract_control (E) in a template, finished when the
+// template is instantiated (Sema::BuildContractControlObject).
+def ContractControl : LangBuiltin<"CXX_LANG"> {
+  let Spellings = ["__builtin_contract_control"];
+  let Attributes = [NoThrow, CustomTypeChecking, Constexpr];
+  let Prototype = "void(...)";
+}
+
 def IsWithinLifetime : LangBuiltin<"CXX_LANG"> {
   let Spellings = ["__builtin_is_within_lifetime"];
   let Attributes = [NoThrow, CustomTypeChecking, Consteval];
