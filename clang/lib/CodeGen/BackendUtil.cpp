@@ -16,6 +16,7 @@
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Lex/HeaderSearchOptions.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/GlobalsModRef.h"
@@ -657,7 +658,8 @@ static void addKCFIPass(const Triple &TargetTriple, const LangOptions &LangOpts,
 
 static void addSanitizers(const Triple &TargetTriple,
                           const CodeGenOptions &CodeGenOpts,
-                          const LangOptions &LangOpts, PassBuilder &PB) {
+                          const LangOptions &LangOpts, const llvm::Module &M,
+                          PassBuilder &PB) {
   auto SanitizersCallback = [&](ModulePassManager &MPM, OptimizationLevel Level,
                                 ThinOrFullLTOPhase) {
     if (CodeGenOpts.hasSanitizeCoverage()) {
@@ -733,6 +735,11 @@ static void addSanitizers(const Triple &TargetTriple,
         Opts.Recover = CodeGenOpts.SanitizeRecover.has(Mask);
         Opts.UseAfterScope = CodeGenOpts.SanitizeAddressUseAfterScope;
         Opts.UseAfterReturn = CodeGenOpts.getSanitizeAddressUseAfterReturn();
+        // The module name ASan records is the main file's name: remap it as
+        // __FILE__ is (-fmacro-prefix-map, which -ffile-prefix-map implies).
+        SmallString<256> ModuleName(M.getModuleIdentifier());
+        LangOpts.remapPathPrefix(ModuleName);
+        Opts.ModuleName = std::string(ModuleName);
         MPM.addPass(AddressSanitizerPass(Opts, UseGlobalGC, UseOdrIndicator,
                                          DestructorKind));
       }
@@ -1090,7 +1097,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
     if (!IsThinLTOPostLink) {
       // Most sanitizers only run during PreLink stage.
-      addSanitizers(TargetTriple, CodeGenOpts, LangOpts, PB);
+      addSanitizers(TargetTriple, CodeGenOpts, LangOpts, *TheModule, PB);
       addKCFIPass(TargetTriple, LangOpts, PB);
       addLowerAllowCheckPass(LibraryOptions, CodeGenOpts, LangOpts, PB);
 

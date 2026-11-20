@@ -37,7 +37,8 @@ enum AccessKinds {
   AK_Construct,
   AK_Destroy,
   AK_IsWithinLifetime,
-  AK_Dereference
+  AK_Dereference,
+  AK_VirtualBaseConversion
 };
 
 /// The order of this enum is important for diagnostics.
