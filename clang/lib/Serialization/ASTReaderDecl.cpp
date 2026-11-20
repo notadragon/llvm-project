@@ -455,6 +455,9 @@ public:
   void VisitOMPDeclareMapperDecl(OMPDeclareMapperDecl *D);
   void VisitOMPRequiresDecl(OMPRequiresDecl *D);
   void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
+  void VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D);
+  void VisitResultNameDecl(ResultNameDecl *RND);
+  void VisitContractSpecifierDecl(ContractSpecifierDecl *CSD);
 };
 } // namespace clang
 
@@ -893,6 +896,18 @@ void ASTDeclReader::VisitValueDecl(ValueDecl *VD) {
     VD->setType(Record.readType());
 }
 
+void ASTDeclReader::VisitPostconditionCaptureDecl(PostconditionCaptureDecl *D) {
+  VisitVarDecl(D);
+  D->setIsParameterCapture(Record.readInt());
+  D->setIsPackExpansion(Record.readInt());
+}
+
+void ASTDeclReader::VisitResultNameDecl(ResultNameDecl *RND) {
+  // Must mirror the writer (VisitValueDecl) so the result type is restored.
+  VisitValueDecl(RND);
+  RND->setFunctionScopeDepth(Record.readInt());
+}
+
 void ASTDeclReader::VisitEnumConstantDecl(EnumConstantDecl *ECD) {
   VisitValueDecl(ECD);
   if (Record.readInt())
@@ -1077,6 +1092,7 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   FD->setFriendConstraintRefersToEnclosingTemplate(
       FunctionDeclBits.getNextBit());
   FD->setUsesSEHTry(FunctionDeclBits.getNextBit());
+  bool HasContracts = FunctionDeclBits.getNextBit();
   FD->setIsDestroyingOperatorDelete(FunctionDeclBits.getNextBit());
   FD->setIsTypeAwareOperatorNewOrDelete(FunctionDeclBits.getNextBit());
 
@@ -1148,6 +1164,15 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     Params.push_back(readDeclAs<ParmVarDecl>());
   FD->setParams(Reader.getContext(), Params);
 
+  // The specifier's DeclContext, and those of its result names and captures,
+  // were serialized with it, so it is not re-parented here.  It may be shared
+  // -- a class template specialization's member declarations share the
+  // pattern's until their contracts are instantiated -- and the function being
+  // read may be the specifier's own DeclContext, loaded while the specifier is
+  // still being read and its contract statements are not yet filled in.
+  if (HasContracts)
+    FD->Contracts = readDeclAs<ContractSpecifierDecl>();
+
   // If the declaration is a SYCL kernel entry point function as indicated by
   // the presence of a sycl_kernel_entry_point attribute, register it so that
   // associated metadata is recreated.
@@ -1167,6 +1192,19 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
       C.registerSYCLEntryPointFunction(FD);
     }
   }
+}
+
+void ASTDeclReader::VisitContractSpecifierDecl(ContractSpecifierDecl *CSD) {
+  // NumContracts was already read in ReadDeclRecord (to size the trailing
+  // storage) and precedes the VisitDecl fields in the record.
+  VisitDecl(CSD);
+  assert(CSD->NumContracts > 0);
+
+  SmallVector<ContractStmt *, 8> Contracts;
+  Contracts.reserve(CSD->NumContracts);
+  for (unsigned I = 0; I < CSD->NumContracts; ++I)
+    Contracts.push_back(cast<ContractStmt>(Record.readStmt()));
+  CSD->setContracts(Contracts);
 }
 
 void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
@@ -1976,6 +2014,7 @@ void ASTDeclReader::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   D->QualifierLoc = Record.readNestedNameSpecifierLoc();
   D->NominatedNamespace = readDeclAs<NamedDecl>();
   D->CommonAncestor = readDeclAs<DeclContext>();
+  D->IsContractControl = Record.readInt();
 }
 
 void ASTDeclReader::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
@@ -2081,14 +2120,12 @@ void ASTDeclReader::ReadCXXDefinitionData(
       case LCK_VLAType:
         new (ToCapture)
             Capture(Loc, IsImplicit, Kind, nullptr, SourceLocation());
-        ToCapture++;
         break;
       case LCK_ByCopy:
       case LCK_ByRef:
         auto *Var = readDeclAs<ValueDecl>();
         SourceLocation EllipsisLoc = readSourceLocation();
         new (ToCapture) Capture(Loc, IsImplicit, Kind, Var, EllipsisLoc);
-        ToCapture++;
         break;
       }
     }
@@ -4278,6 +4315,16 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
     break;
   case DECL_FILE_SCOPE_ASM:
     D = FileScopeAsmDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_RESULT_NAME:
+    D = ResultNameDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_POSTCONDITION_CAPTURE:
+    D = PostconditionCaptureDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_CONTRACT_SPECIFIER:
+    D = ContractSpecifierDecl::CreateDeserialized(
+        Context, ID, /*NumContracts=*/Record.readInt());
     break;
   case DECL_TOP_LEVEL_STMT_DECL:
     D = TopLevelStmtDecl::CreateDeserialized(Context, ID);
