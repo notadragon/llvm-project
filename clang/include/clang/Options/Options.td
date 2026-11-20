@@ -1877,11 +1877,18 @@ defm contracts_p3098 : BoolFOption<"contracts-p3098",
           "Enable P3098 postcondition captures on contract assertions">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p3400 : BoolFOption<"contracts-p3400",
+  LangOpts<"ContractsP3400">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3400 assertion-control labels on contract assertions">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p4451 : BoolFOption<"contracts-p4451",
   LangOpts<"ContractsP4451">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
           "Enable P4451 terminating contract assertions, "
           "`pre<std::contracts::controls::enforced>`"
+          " (implied by -fcontracts-p3400 and -fcontracts-p3850)"
           >,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 

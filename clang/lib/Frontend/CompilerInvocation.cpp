@@ -3867,6 +3867,11 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
   if (Opts.ContractsP3850 && !Opts.ContractsP4451)
     GenerateArg(Consumer, OPT_fno_contracts_p4451);
 
+  // So does -fcontracts-p3400 (recorded once when -fcontracts-p3850 is on
+  // too).
+  if (Opts.ContractsP3400 && !Opts.ContractsP3850 && !Opts.ContractsP4451)
+    GenerateArg(Consumer, OPT_fno_contracts_p4451);
+
   // -fcontracts-p4405 enables each P4405 proving strategy from its proof
   // optimization level up, unless given explicitly; record the resolved
   // level, and each strategy whose state is not the level's.
@@ -4911,6 +4916,13 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
   // -fcontracts-p3850 implies -fcontracts-p4451 too, whatever the order
   // (notadragon_wg21 DECISIONS.md E175), even with -fno-contracts-p3400.
   if (Opts.ContractsP3850)
+    Opts.ContractsP4451 =
+        Args.hasFlag(OPT_fcontracts_p4451, OPT_fno_contracts_p4451, true);
+  // P3400 subsumes P4451: -fcontracts-p3400 implies -fcontracts-p4451,
+  // whatever the order (E175).  With P3400 on, the specifier is an ordinary
+  // P3400 label; P4451 then decides only the feature-test macros and the
+  // library.
+  if (Opts.ContractsP3400)
     Opts.ContractsP4451 =
         Args.hasFlag(OPT_fcontracts_p4451, OPT_fno_contracts_p4451, true);
   // Any per-paper C++ contracts sub-flag implies the base -fcontracts feature.

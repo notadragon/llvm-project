@@ -1771,6 +1771,9 @@ def err_postcondition_captures_require_flag : Error<
 def err_postcondition_captures_on_non_post : Error<
   "captures are only allowed on postconditions, not on '%0'">;
 
+// P3400 assertion-control label diagnostics
+def err_contract_label_require_flag : Error<
+  "assertion-control labels require '-fcontracts-p3400'">;
 def err_contract_terminating_require_flag : Error<
   "assertion-control-specifier naming %0 requires '-fcontracts-p4451'">;
 

@@ -459,6 +459,15 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDirectiveOrDeclaration(
         << FixItHint::CreateRemoval(TemplateLoc);
   }
 
+  // 'using contract_control namespace' means this is a contract-control
+  // using-directive (P3400).
+  if (Tok.is(tok::kw_contract_control) && NextToken().is(tok::kw_namespace)) {
+    ConsumeToken(); // consume 'contract_control'
+    Decl *UsingDir = ParseUsingDirective(Context, UsingLoc, DeclEnd, Attrs,
+                                         /*IsContractControl=*/true);
+    return Actions.ConvertDeclToDeclGroup(UsingDir);
+  }
+
   // 'using namespace' means this is a using-directive.
   if (Tok.is(tok::kw_namespace)) {
     // Template parameters are always an error here.
@@ -480,7 +489,8 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDirectiveOrDeclaration(
 Decl *Parser::ParseUsingDirective(DeclaratorContext Context,
                                   SourceLocation UsingLoc,
                                   SourceLocation &DeclEnd,
-                                  ParsedAttributes &attrs) {
+                                  ParsedAttributes &attrs,
+                                  bool IsContractControl) {
   assert(Tok.is(tok::kw_namespace) && "Not 'namespace' token");
 
   // Eat 'namespace'.
@@ -527,7 +537,7 @@ Decl *Parser::ParseUsingDirective(DeclaratorContext Context,
 
   // Parse (optional) attributes (most likely GNU strong-using extension).
   bool GNUAttr = false;
-  if (Tok.is(tok::kw___attribute)) {
+  if (!IsContractControl && Tok.is(tok::kw___attribute)) {
     GNUAttr = true;
     ParseGNUAttributes(attrs);
   }
@@ -539,6 +549,9 @@ Decl *Parser::ParseUsingDirective(DeclaratorContext Context,
                                : diag::err_expected_semi_after_namespace_name))
     SkipUntil(tok::semi);
 
+  if (IsContractControl)
+    return Actions.ActOnContractControlUsingDirective(
+        getCurScope(), UsingLoc, NamespcLoc, SS, IdentLoc, NamespcName);
   return Actions.ActOnUsingDirective(getCurScope(), UsingLoc, NamespcLoc, SS,
                                      IdentLoc, NamespcName, attrs);
 }
