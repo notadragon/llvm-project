@@ -1,0 +1,5 @@
+[
+  { "match": { "group": "n\nx" }, "output": { "semantic": "ignore" } },
+  { "match": { "group": "s\u0001x" }, "output": { "semantic": "ignore" } },
+  { "match": { "group": "z0" }, "output": { "semantic": "ignore" } }
+]

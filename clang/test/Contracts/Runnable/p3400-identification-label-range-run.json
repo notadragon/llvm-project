@@ -1,0 +1,3 @@
+[
+  {"match": {"group": "safety", "caller": false}, "output": {"semantic": "observe"}}
+]
