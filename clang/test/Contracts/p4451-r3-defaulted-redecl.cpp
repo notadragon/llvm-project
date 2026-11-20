@@ -1,6 +1,8 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 %libcxx_flags -fsyntax-only %s
 //
 // RUN: %{cc} -fcontracts-p4451 -Xclang -verify=expected,p4451
+// RUN: %{cc} -fcontracts-p3400 -Xclang -verify=expected,p3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -Xclang -verify=expected,p3400
 // REQUIRES: contracts-libcxx
 
 // P4451R3 [dcl.contract.func]: two function contract assertions are the

@@ -7,6 +7,11 @@
 // RUN: rm -rf %t
 // RUN: split-file %s %t
 // RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400
+// RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400 -fcontracts-p4451
+// RUN: %{check}
+
 // P4451: a terminating contract assertion on an exported inline function, an
 // exported function and an exported function template keeps its terminating
 // semantics through the BMI: the importer evaluates it with enforce although

@@ -3,6 +3,13 @@
 // RUN: %{run} -fcontracts-p4451 -fcontract-evaluation-semantic=ignore -DSEM_IGNORE && %t
 // RUN: %{run} -fcontracts-p4451 -fcontract-evaluation-semantic=observe -DSEM_OBSERVE && %t
 // RUN: %{run} -fcontracts-p4451 -fcontract-evaluation-semantic=enforce -DSEM_ENFORCE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontract-evaluation-semantic=ignore -DSEM_IGNORE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontract-evaluation-semantic=observe -DSEM_OBSERVE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontract-evaluation-semantic=enforce -DSEM_ENFORCE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=ignore -DSEM_IGNORE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=observe -DSEM_OBSERVE && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=enforce -DSEM_ENFORCE && %t
+
 // P4451R3: a contract assertion whose specifier names
 // std::contracts::controls::defaulted is evaluated with the configured
 // semantic, exactly as one without a specifier: with ignore the handler is

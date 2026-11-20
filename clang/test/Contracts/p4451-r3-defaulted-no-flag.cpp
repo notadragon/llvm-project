@@ -23,3 +23,5 @@ struct S {
 
 auto t = std::contracts::controls::defaulted; // expected-error {{no member named 'controls'}}
 
+void u(int x) pre<(defaulted)>(x > 0); // expected-error {{assertion-control labels require '-fcontracts-p3400'}}
+void v(int x) pre<std::contracts::controls::defaulted_t>(x > 0); // expected-error {{assertion-control labels require '-fcontracts-p3400'}}

@@ -2,6 +2,9 @@
 //
 // RUN: %{run} -fcontracts-p4451 -fcontract-evaluation-semantic=ignore && %t
 // RUN: %{run} -fcontracts-p4451 -fcontract-evaluation-semantic=observe && %t
+// RUN: %{run} -fcontracts-p3400 -fcontract-evaluation-semantic=ignore && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=observe && %t
+
 // P4451: a terminating contract assertion is enforced under a configured
 // ignore or observe in the forms p4451-run.cpp does not cover: after a
 // trailing return type, with a deduced return type, on a class template's

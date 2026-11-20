@@ -11,6 +11,12 @@
 // RUN: mkdir -p %t
 // RUN: %{build}
 // RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400
+// RUN: %{build}
+// RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400 -fcontracts-p4451
+// RUN: %{build}
+// RUN: %{check}
 // REQUIRES: contracts-libcxx, libcxx-std-module
 
 // expected-no-diagnostics

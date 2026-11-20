@@ -6,6 +6,10 @@
 // RUN: rm -rf %t
 // RUN: mkdir -p %t
 // RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400
+// RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400 -fcontracts-p4451
+// RUN: %{check}
 // REQUIRES: contracts-libcxx
 
 // expected-no-diagnostics

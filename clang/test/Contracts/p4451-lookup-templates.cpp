@@ -1,6 +1,8 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 %libcxx_flags -fsyntax-only %s
 //
 // RUN: %{cc} -fcontracts-p4451 -Xclang -verify=p4451
+// RUN: %{cc} -fcontracts-p3400 -Xclang -verify=p3400 -Xclang -verify-ignore-unexpected=note
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -Xclang -verify=p3400 -Xclang -verify-ignore-unexpected=note
 // REQUIRES: contracts-libcxx
 
 // P4451 [basic.contract.control]: the lookup check of an unqualified

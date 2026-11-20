@@ -1,6 +1,9 @@
 // DEFINE: %{run} = %clangxx -std=c++26 %s -fcontract-configuration-file=%S/p4451-dynamic.json %libcxx_flags -o %t
 //
 // RUN: %{run} -fcontracts-p4451 && %t
+// RUN: %{run} -fcontracts-p3400 && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 && %t
+
 // P4451: a semantic selected at run time (P3595 dynamic selection) is
 // adjusted for a terminating contract assertion as for P3400's
 // controls::enforced: a selected ignore or observe is evaluated as

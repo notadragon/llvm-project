@@ -1,6 +1,9 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 %libcxx_flags -fsyntax-only -Xclang -verify %s
 //
 // RUN: %{cc} -fcontracts-p4451
+// RUN: %{cc} -fcontracts-p3400 -DP3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -DP3400
+// RUN: %{cc} -fcontracts-p3850 -DP3400 -DP3097
 // RUN: %{cc} -fcontracts -fcontracts-p4451
 // REQUIRES: contracts-libcxx
 

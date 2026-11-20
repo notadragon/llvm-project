@@ -2,6 +2,10 @@
 //
 // RUN: %{cc} -fcontracts-p4451 -fcontract-evaluation-semantic=ignore -Xclang -verify=ignore
 // RUN: %{cc} -fcontracts-p4451 -fcontract-evaluation-semantic=enforce -Xclang -verify=enforce
+// RUN: %{cc} -fcontracts-p3400 -fcontract-evaluation-semantic=ignore -Xclang -verify=ignore
+// RUN: %{cc} -fcontracts-p3400 -fcontract-evaluation-semantic=enforce -Xclang -verify=enforce
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=ignore -Xclang -verify=ignore
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -fcontract-evaluation-semantic=enforce -Xclang -verify=enforce
 // REQUIRES: contracts-libcxx
 
 // ignore-no-diagnostics

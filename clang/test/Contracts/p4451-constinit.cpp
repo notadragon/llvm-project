@@ -1,6 +1,8 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 -fcontract-evaluation-semantic=ignore %libcxx_flags -fsyntax-only -Xclang -verify %s
 //
 // RUN: %{cc} -fcontracts-p4451
+// RUN: %{cc} -fcontracts-p3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451
 // REQUIRES: contracts-libcxx
 
 // P4451: whether a variable is constant-initialized is decided with every

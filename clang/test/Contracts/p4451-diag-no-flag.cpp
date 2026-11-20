@@ -15,8 +15,10 @@
 #include <contracts>  // `std::contracts`
 
 void f(int x) pre<enforced>(x > 0); // expected-error {{assertion-control-specifier naming 'enforced' requires '-fcontracts-p4451'}}
+void g(int x) pre<other>(x > 0); // expected-error {{assertion-control labels require '-fcontracts-p3400'}}
 void q(int x) pre<std::contracts::controls::enforced>(x > 0); // expected-error {{assertion-control-specifier naming 'enforced' requires '-fcontracts-p4451'}}
 void r(int x) pre<::scl::enforced>(x > 0); // expected-error {{assertion-control-specifier naming 'enforced' requires '-fcontracts-p4451'}}
+void u(int x) pre<(enforced)>(x > 0); // expected-error {{assertion-control labels require '-fcontracts-p3400'}}
 void h(int x) { contract_assert<enforced>(x > 0); } // expected-error {{assertion-control-specifier naming 'enforced' requires '-fcontracts-p4451'}}
 auto l = [](int x) pre<enforced>(x > 0) { return x; }; // expected-error {{assertion-control-specifier naming 'enforced' requires '-fcontracts-p4451'}}
 struct S {

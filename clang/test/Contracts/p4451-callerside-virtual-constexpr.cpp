@@ -4,6 +4,8 @@
 // DEFINE:   %libcxx_flags -fsyntax-only -Xclang -verify %s
 //
 // RUN: %{cc} -fcontracts-p4451
+// RUN: %{cc} -fcontracts-p3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451
 // REQUIRES: contracts-libcxx
 
 // P3097, notadragon_wg21 DECISIONS.md E180 (5), in constant evaluation: the

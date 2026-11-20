@@ -1,6 +1,9 @@
 // DEFINE: %{run} = %clangxx -std=c++26 %s -fcontract-evaluation-semantic=quick_enforce %libcxx_flags -o %t
 //
 // RUN: %{run} -fcontracts-p4451 && not --crash %t
+// RUN: %{run} -fcontracts-p3400 && not --crash %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 && not --crash %t
+
 // P4451: a configured quick_enforce is a terminating semantic and is kept
 // for a terminating contract assertion: the violation traps without calling
 // the handler, which would exit successfully.  Under -fcontracts-p4451
