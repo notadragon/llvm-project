@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:stmt.return.flow.off"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_ns", "group": "ub:stmt.return.flow.off"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "implicit", "namespace": "ign_ns", "group": "ub:stmt.return.flow.off"}, "output": {"semantic": "ignore"}}
+]
