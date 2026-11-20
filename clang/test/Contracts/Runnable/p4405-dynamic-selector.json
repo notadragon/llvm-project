@@ -1,0 +1,4 @@
+[
+  {"match": {}, "output": {"semantic": "observe",
+   "dynamic": {"linkage": "C", "name": "p4405_dynamic_sel"}}}
+]

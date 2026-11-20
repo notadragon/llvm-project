@@ -1,0 +1,5 @@
+[
+  {"output": {"semantic": "prove",
+              "dynamic": {"linkage": "C", "name": "p4405_weak_prove_sel",
+                          "provideweak": true}}}
+]
