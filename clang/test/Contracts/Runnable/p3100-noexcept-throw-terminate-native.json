@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "namespace": "nx_enf"}, "output": {"semantic": "noexcept_enforce"}},
+  {"match": {"kind": "implicit", "namespace": "nx_obs"}, "output": {"semantic": "noexcept_observe"}}
+]
