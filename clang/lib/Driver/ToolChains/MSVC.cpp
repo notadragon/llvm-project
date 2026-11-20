@@ -311,6 +311,12 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  // The contracts runtime, which a translation unit with contracts references
+  // directly (see the GNU linker).
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs) &&
+      needsContractsRuntime(TC, JA, Args))
+    CmdArgs.push_back("-defaultlib:contracts.lib");
+
   if (Args.hasFlag(options::OPT_fopenmp, options::OPT_fopenmp_EQ,
                    options::OPT_fno_openmp, false)) {
     CmdArgs.push_back("-nodefaultlib:vcomp.lib");
