@@ -1,0 +1,25 @@
+// RUN: %clangxx -std=c++26 %s -fcontracts -fcontracts-p3100 \
+// RUN:   -fcontract-group-evaluation-semantic=ub:expr.add.out.of.bounds.pointer.arithmetic:quick_enforce \
+// RUN:   %libcxx_flags -o %t && not --crash %t 2>&1 | FileCheck %s
+// P3100: pointer arithmetic that wraps around the address space
+// (ub:expr.add.out.of.bounds.pointer.arithmetic) configured to
+// "quick_enforce": terminates without calling the handler.
+// (GCC mirror: g++.dg/contracts/cpp26/p3100-ptr-wrap-quick.C)
+
+#include <contracts>
+#include <cstdio>
+#include <cstdint>
+namespace cs = std::contracts;
+void handle_contract_violation(const cs::contract_violation &v) {
+  std::printf("VIOL kind=%d sem=%d comment=[%s]\n", (int)v.kind(),
+              (int)v.semantic(), v.comment());
+  std::fflush(stdout);
+}
+__attribute__((noinline)) char *add(char *p, long i) { return p + i; }
+char *top = reinterpret_cast<char *>(UINTPTR_MAX - 1);
+int main() {
+  std::printf("RESULT=%d\n", (int)(add(top, 4) - top));
+  return 0;
+}
+// CHECK-NOT: VIOL
+// CHECK-NOT: RESULT
