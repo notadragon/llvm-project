@@ -791,6 +791,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__clang_contracts_p3290", "202611L");
   if (LangOpts.ContractsP3400)
     Builder.defineMacro("__cpp_contracts_labels", "202611L");
+  if (LangOpts.ContractsP4283)
+    Builder.defineMacro("__cpp_contracts_requires", "202611L");
   // P4451 raises __cpp_contracts, which the library cannot key on (another
   // paper may raise it too), so a vendor macro tells <contracts> to declare
   // its enforced label and raise __cpp_lib_contracts.
