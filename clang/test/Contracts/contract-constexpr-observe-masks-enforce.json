@@ -1,0 +1,3 @@
+[
+  {"match": {"namespace": "A"}, "output": {"semantic": "observe"}}
+]
