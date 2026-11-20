@@ -777,6 +777,34 @@ void CodeGenFunction::EmitAsanPrologueOrEpilogue(bool Prologue) {
   }
 }
 
+bool CodeGenFunction::structorVariantDelegates() const {
+  // Only the function being generated; another function's contracts emitted
+  // here (a call-site check) are not affected.
+  if (!CurCodeDecl || CurCodeDecl != CurGD.getDecl())
+    return false;
+  // As EmitDestructorBody: the deleting variants call the complete one, and
+  // the complete one calls the base one unless the body is a
+  // function-try-block.
+  if (const auto *Dtor = dyn_cast<CXXDestructorDecl>(CurGD.getDecl())) {
+    switch (CurGD.getDtorType()) {
+    case Dtor_Deleting:
+    case Dtor_VectorDeleting:
+      return true;
+    case Dtor_Complete:
+      return !isa_and_nonnull<CXXTryStmt>(Dtor->getBody());
+    default:
+      return false;
+    }
+  }
+  // As EmitConstructorBody: the complete variant calls the base one when
+  // delegation is valid.
+  if (const auto *Ctor = dyn_cast<CXXConstructorDecl>(CurGD.getDecl()))
+    return CurGD.getCtorType() == Ctor_Complete &&
+           IsConstructorDelegationValid(Ctor) &&
+           CGM.getTarget().getCXXABI().hasConstructorVariants();
+  return false;
+}
+
 /// EmitConstructorBody - Emits the body of the current constructor.
 void CodeGenFunction::EmitConstructorBody(FunctionArgList &Args) {
   EmitAsanPrologueOrEpilogue(true);
