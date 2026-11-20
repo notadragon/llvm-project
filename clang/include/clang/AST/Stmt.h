@@ -75,6 +75,8 @@ enum class CXXNewInitializationStyle;
 enum class PredefinedIdentKind;
 enum class SourceLocIdentKind;
 enum class StringLiteralKind;
+enum class ContractKind;
+enum class ContractEvaluationSemantic;
 
 //===----------------------------------------------------------------------===//
 // AST classes for statements.
@@ -904,6 +906,61 @@ protected:
     SourceLocation RParenLoc;
   };
 
+  class ContractStmtBitfields {
+    friend class ASTStmtReader;
+    friend class ASTStmtWriter;
+    friend class ContractStmt;
+
+    LLVM_PREFERRED_TYPE(StmtBitfields)
+    unsigned : NumStmtBits;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasResultName : 1;
+
+    LLVM_PREFERRED_TYPE(ContractKind)
+    unsigned ContractKind : 2;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasMessage : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasLabel : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasLocalHandler : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasQuery : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasCaptures : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasRequiresClause : 1;
+
+    // Whether evaluating the predicate can throw, as Sema::canThrow answers
+    // it when the contract is built (true until then).  CodeGen guards the
+    // predicate for an evaluation_exception violation only if it can.
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned PredicateCanThrow : 1;
+
+    // P4451: whether the assertion has an assertion-control-specifier
+    // naming std::contracts::controls::enforced without P3400 (with P3400
+    // it is a label).
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned IsTerminating : 1;
+
+    // P4451R3: whether the assertion has an assertion-control-specifier
+    // naming std::contracts::controls::defaulted without P3400.  It changes
+    // no semantic; it is kept for redeclaration matching and printing.
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned HasDefaultedSpecifier : 1;
+
+    enum { NumContractStmtBits = 12 };
+
+    unsigned NumAttrs : 32 - NumStmtBits - NumContractStmtBits;
+  };
+
   class CXXNewExprBitfields {
     friend class ASTStmtReader;
     friend class ASTStmtWriter;
@@ -1409,6 +1466,9 @@ protected:
 
     // C++ Coroutines expressions
     CoawaitExprBitfields CoawaitBits;
+
+    // C++ contracts
+    ContractStmtBitfields ContractStmtBits;
 
     // Obj-C Expressions
     ObjCObjectLiteralBitfields ObjCObjectLiteralBits;
