@@ -1033,6 +1033,25 @@ def err_drv_contract_group_semantic_format : Error<
   "invalid '-fcontract-group-evaluation-semantic=' argument '%0'; expected "
   "'group:semantic'">;
 
+// The contracts option rule (notadragon_wg21 DECISIONS.md E175-E178).
+def err_drv_contracts_paper_option_contracts_off : Error<
+  "'%0' cannot be combined with '%1'">;
+def err_drv_contracts_no_p4451_with_p3400 : Error<
+  "'-fno-contracts-p4451' cannot be combined with "
+  "%select{'-fcontracts-p3400', which subsumes P4451|"
+  "'-fcontracts-p3850', which implies '-fcontracts-p3400'; also pass "
+  "'-fno-contracts-p3400'}0">;
+def warn_drv_contracts_option_no_effect : Warning<
+  "'%0' has no effect without '%1'">,
+  InGroup<UnusedCommandLineArgument>;
+def warn_drv_contract_configuration_no_effect : Warning<
+  "contract configuration options have no effect without '%0'">,
+  InGroup<UnusedCommandLineArgument>;
+def warn_drv_contracts_option_cxx_only : Warning<
+  "command-line option '%0' is valid for C++ but not for "
+  "%select{C|Objective-C}1">,
+  InGroup<UnusedCommandLineArgument>;
+
 def err_drv_malformed_warning_suppression_mapping : Error<
   "failed to process suppression mapping file '%0': %1">;
 

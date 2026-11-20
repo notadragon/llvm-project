@@ -5004,6 +5004,12 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
   if (Opts.ContractsP3400)
     Opts.ContractsP4451 =
         Args.hasFlag(OPT_fcontracts_p4451, OPT_fno_contracts_p4451, true);
+  // An explicit -fno-contracts-p4451 turns off only what the umbrella adds:
+  // with P3400 on it is an error (diagnosed by the driver, which sees the
+  // options as given).
+  if (Opts.ContractsP3400 && !Opts.ContractsP4451)
+    Diags.Report(diag::err_drv_contracts_no_p4451_with_p3400)
+        << (Args.hasArg(OPT_fcontracts_p3400) ? 0 : 1);
   // Any per-paper C++ contracts sub-flag implies the base -fcontracts feature.
   // The driver forwards -fcontracts alongside a sub-flag (tools::
   // wantsCxxContracts), but a direct -cc1 invocation may pass only a sub-flag;
