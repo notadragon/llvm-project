@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:expr.unary.dereference.nullptr", "namespace": "assume_ns"}, "output": {"semantic": "assume"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.unary.dereference.nullptr", "location": "p3100-null-deref-resolution.cpp:22-26"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.unary.dereference.nullptr"}, "output": {"semantic": "assume"}}
+]
