@@ -3862,6 +3862,11 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
       GenerateArg(Consumer, OPT_fno_contracts_p4405);
   }
 
+  // -fcontracts-p3850 enables P4451 unless explicitly disabled; record an
+  // explicit -fno- likewise.
+  if (Opts.ContractsP3850 && !Opts.ContractsP4451)
+    GenerateArg(Consumer, OPT_fno_contracts_p4451);
+
   // -fcontracts-p4405 enables each P4405 proving strategy from its proof
   // optimization level up, unless given explicitly; record the resolved
   // level, and each strategy whose state is not the level's.
@@ -4903,6 +4908,11 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.ContractsP4405 =
         Args.hasFlag(OPT_fcontracts_p4405, OPT_fno_contracts_p4405, true);
   }
+  // -fcontracts-p3850 implies -fcontracts-p4451 too, whatever the order
+  // (notadragon_wg21 DECISIONS.md E175), even with -fno-contracts-p3400.
+  if (Opts.ContractsP3850)
+    Opts.ContractsP4451 =
+        Args.hasFlag(OPT_fcontracts_p4451, OPT_fno_contracts_p4451, true);
   // Any per-paper C++ contracts sub-flag implies the base -fcontracts feature.
   // The driver forwards -fcontracts alongside a sub-flag (tools::
   // wantsCxxContracts), but a direct -cc1 invocation may pass only a sub-flag;
