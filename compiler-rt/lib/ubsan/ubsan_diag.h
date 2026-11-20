@@ -219,6 +219,11 @@ struct ReportOptions {
 
 bool ignoreReport(SourceLocation SLoc, ReportOptions Opts, ErrorType ET);
 
+/// Whether reports of type ET are routed to the contract-violation handler.
+/// A routed report is a contract violation, evaluated on every execution, so
+/// neither per-location dedup nor a suppressions file may drop it.
+bool IsContractRouted(ErrorType ET);
+
 #define GET_REPORT_OPTIONS(unrecoverable_handler)                              \
   GET_CALLER_PC_BP;                                                            \
   ReportOptions Opts = {};                                                     \
@@ -243,6 +248,11 @@ class ScopedReport {
   ReportOptions Opts;
   Location SummaryLoc;
   ErrorType Type;
+  // P3100: the conveyed contract-routing semantic for this report's check
+  // (0 = stock / not routed).  Computed in the constructor from the per-TU weak
+  // table __ubsan_contract_semantic[]; consumed by the destructor to route the
+  // report into the contract-violation handler.  See ubsan_diag.cpp.
+  unsigned char ContractRoute;
 
 public:
   ScopedReport(ReportOptions Opts, Location SummaryLoc, ErrorType Type);
