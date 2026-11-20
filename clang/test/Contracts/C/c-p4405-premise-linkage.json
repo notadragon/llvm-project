@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "contract_assert"}, "output": {"semantic": "diagnose"}},
+  {"match": {}, "output": {"semantic": "enforce"}}
+]

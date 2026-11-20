@@ -1,0 +1,5 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "assume"}},
+  {"match": {"kind": "post"}, "output": {"semantic": "assume"}},
+  {"match": {"kind": "contract_assert"}, "output": {"semantic": "assume"}}
+]

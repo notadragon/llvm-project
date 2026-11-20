@@ -1,0 +1,3 @@
+[
+  {"match": {}, "output": {"dynamic": {"linkage": "C", "name": "c_dyn_sel"}}}
+]

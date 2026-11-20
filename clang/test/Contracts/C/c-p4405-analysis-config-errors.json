@@ -1,0 +1,8 @@
+[
+  {"match": {"analysis": true, "caller": true},
+   "output": {"semantic": "prove"}},
+  {"match": {"analysis": true}, "output": {"semantic": "observe"}},
+  {"match": {"analysis": true},
+   "output": {"semantic": "diagnose", "dynamic": {"name": "sel", "linkage": "C"}}},
+  {"match": {"constexpr": true}, "output": {"semantic": "diagnose"}}
+]
