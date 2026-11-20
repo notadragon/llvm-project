@@ -1765,6 +1765,9 @@ def err_hlsl_number_literal_underflow : Error<
   "float literal has a magnitude that is too small to be represented as a float type">;
 def err_hlsl_rootsig_non_zero_flag : Error<"flag value is neither a literal 0 nor a named value">;
 
+def err_contract_terminating_require_flag : Error<
+  "assertion-control-specifier naming %0 requires '-fcontracts-p4451'">;
+
 def warn_contract_on_parameter_declarator : Warning<
   "contract on a parameter declarator is ignored">,
   InGroup<IgnoredAttributes>;

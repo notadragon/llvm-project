@@ -455,6 +455,55 @@ void Parser::DiagnoseUnattachedLateParsedContracts(Declarator &D,
   D.getLateParsedContracts().clear();
 }
 
+/// Whether the next tokens are an assertion-control-specifier whose
+/// id-expression is a possibly qualified `enforced' or `defaulted', Tok being
+/// the '<': what, without -fcontracts-p4451, is pointed at that option.
+/// Returns that last name, or null.
+const IdentifierInfo *Parser::isTerminatingSpecifier() {
+  assert(Tok.is(tok::less) && "Not a '<'");
+  unsigned N = 1;
+  if (GetLookAheadToken(N).is(tok::coloncolon))
+    ++N;
+  while (true) {
+    Token Name = GetLookAheadToken(N++);
+    if (Name.isNot(tok::identifier))
+      return nullptr;
+    Token Next = GetLookAheadToken(N++);
+    if (Next.is(tok::greater)) {
+      const IdentifierInfo *II = Name.getIdentifierInfo();
+      return II->isStr("enforced") || II->isStr("defaulted") ? II : nullptr;
+    }
+    if (Next.isNot(tok::coloncolon))
+      return nullptr;
+  }
+}
+
+/// Split the tokens of a P4451 assertion-control-specifier, '<' to '>', into
+/// the names of its id-expression when it has the only form that can name a
+/// variable at namespace scope: an optional leading `::', then identifiers
+/// separated by `::'.  False for anything else.
+static bool splitTerminatingSpecifier(ArrayRef<Token> Toks, bool &Global,
+                                      SmallVectorImpl<IdentifierLoc> &Names) {
+  assert(Toks.size() >= 2 && Toks.front().is(tok::less) &&
+         Toks.back().is(tok::greater) && "Not an assertion-control-specifier");
+  ArrayRef<Token> Inner = Toks.drop_front().drop_back();
+  Global = !Inner.empty() && Inner.front().is(tok::coloncolon);
+  if (Global)
+    Inner = Inner.drop_front();
+  while (true) {
+    if (Inner.empty() || Inner.front().isNot(tok::identifier))
+      return false;
+    Names.emplace_back(Inner.front().getLocation(),
+                       Inner.front().getIdentifierInfo());
+    Inner = Inner.drop_front();
+    if (Inner.empty())
+      return true;
+    if (Inner.front().isNot(tok::coloncolon))
+      return false;
+    Inner = Inner.drop_front();
+  }
+}
+
 /// Parse a contract assertion's optional P3400 label (or P4451
 /// assertion-control-specifier, which sets \p IsTerminating or, naming
 /// `defaulted', \p IsDefaulted) and P4283 requires-clause.  Returns false

@@ -268,6 +268,21 @@ _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 _LIBCPP_EXPORTED_FROM_ABI void invoke_default_contract_violation_handler(const contract_violation&) noexcept;
 _LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
 
+#  if defined(__clang_contracts_p4451) && !defined(__cpp_contracts_labels)
+// P4451 without P3400: controls declares defaulted and enforced alone, each of
+// an internal type and in an inline namespace, so never P3400's labels.
+struct __defaulted_label_t {
+  _LIBCPP_HIDE_FROM_ABI explicit __defaulted_label_t() = default;
+};
+struct __enforced_label_t {
+  _LIBCPP_HIDE_FROM_ABI explicit __enforced_label_t() = default;
+};
+namespace controls::inline __p4451 {
+inline constexpr __defaulted_label_t defaulted{};
+inline constexpr __enforced_label_t enforced{};
+} // namespace controls::inline __p4451
+#  endif // __clang_contracts_p4451 && !__cpp_contracts_labels
+
 } // namespace contracts
 _LIBCPP_END_NAMESPACE_STD
 

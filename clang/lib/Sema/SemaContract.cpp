@@ -476,6 +476,124 @@ StmtResult Sema::ActOnContractAssert(ContractKind CK, SourceLocation KeywordLoc,
   return Res;
 }
 
+bool Sema::CheckTerminatingSpecifier(SourceLocation Loc, bool IsName,
+                                     bool Global,
+                                     ArrayRef<IdentifierLoc> Names, Scope *S,
+                                     bool &IsDefaulted) {
+  IsDefaulted = false;
+  // The library declarations are whatever qualified lookup finds -- under
+  // -fcontracts-p4451 alone libc++ declares them in an inline namespace --
+  // and lookup finds only what is visible: declared earlier, or exported from
+  // an imported unit.
+  auto LookupIn = [&](DeclContext *DC, StringRef Name,
+                      LookupNameKind Kind) -> NamedDecl * {
+    LookupResult R(*this, &Context.Idents.get(Name), Loc, Kind);
+    bool Found = LookupQualifiedName(R, DC);
+    R.suppressDiagnostics();
+    if (!Found || !R.isSingleResult())
+      return nullptr;
+    return R.getFoundDecl()->getUnderlyingDecl();
+  };
+  DeclContext *Std = getStdNamespace();
+  if (!Std)
+    Std = dyn_cast_if_present<NamespaceDecl>(LookupIn(
+        Context.getTranslationUnitDecl(), "std", LookupNamespaceName));
+  VarDecl *Entity = nullptr, *Defaulted = nullptr;
+  if (Std)
+    if (auto *Contracts = dyn_cast_if_present<NamespaceDecl>(
+            LookupIn(Std, "contracts", LookupNamespaceName)))
+      if (auto *Controls = dyn_cast_if_present<NamespaceDecl>(
+              LookupIn(Contracts, "controls", LookupNamespaceName))) {
+        Entity = dyn_cast_if_present<VarDecl>(
+            LookupIn(Controls, "enforced", LookupOrdinaryName));
+        Defaulted = dyn_cast_if_present<VarDecl>(
+            LookupIn(Controls, "defaulted", LookupOrdinaryName));
+      }
+
+  // One diagnostic per specifier: why it does not name the label, a note per
+  // declaration lookup found instead, and where the label comes from when it
+  // is not visible at all.
+  enum { NotAName, FindsNothing, FindsOther, FindsAmbiguous, IsDependent };
+  auto Fail = [&](unsigned Why, const LookupResult *R = nullptr) {
+    Diag(Loc, diag::err_contract_terminating_specifier) << Why;
+    if (R)
+      for (NamedDecl *D : *R)
+        Diag(D->getLocation(), diag::note_entity_declared_at) << D;
+    if (!Entity && !Defaulted)
+      Diag(Loc, diag::note_contract_terminating_declared_by);
+    return false;
+  };
+  if (!IsName || Names.empty())
+    return Fail(NotAName);
+
+  // The nested-name-specifier: each name is looked up as one, from the
+  // specifier's scope first (unqualified) and then in the namespace before
+  // it.  Only a namespace (or a namespace alias) can lead to a variable at
+  // namespace scope; a dependent type makes the id-expression dependent, and
+  // any other type names something that is not the label.
+  DeclContext *DC = Global ? Context.getTranslationUnitDecl() : nullptr;
+  for (const IdentifierLoc &Q : Names.drop_back()) {
+    LookupResult R(*this, Q.getIdentifierInfo(), Q.getLoc(),
+                   LookupNestedNameSpecifierName);
+    if (DC)
+      LookupQualifiedName(R, DC);
+    else
+      LookupName(R, S);
+    R.suppressDiagnostics();
+    if (R.isAmbiguous())
+      return Fail(FindsAmbiguous, &R);
+    if (R.empty())
+      return Fail(FindsNothing);
+    NamedDecl *D = R.getRepresentativeDecl()->getUnderlyingDecl();
+    if (auto *Alias = dyn_cast<NamespaceAliasDecl>(D))
+      D = Alias->getNamespace();
+    if (auto *NS = dyn_cast<NamespaceDecl>(D)) {
+      DC = NS;
+      continue;
+    }
+    if (auto *TD = dyn_cast<TypeDecl>(D))
+      if (Context.getCanonicalTypeDeclType(TD)->isDependentType())
+        return Fail(IsDependent, &R);
+    return Fail(FindsOther, &R);
+  }
+
+  // The name itself: ordinary lookup, unqualified from the specifier (for a
+  // function's contract its parameters are in scope, and a member function's
+  // is parsed in complete-class context, so a member declared later is
+  // found) or qualified in the namespace.
+  const IdentifierLoc &Last = Names.back();
+  LookupResult R(*this, Last.getIdentifierInfo(), Last.getLoc(),
+                 LookupOrdinaryName);
+  if (DC)
+    LookupQualifiedName(R, DC);
+  else
+    LookupName(R, S);
+  R.suppressDiagnostics();
+  if (R.isAmbiguous())
+    return Fail(FindsAmbiguous, &R);
+  if (R.empty())
+    return Fail(FindsNothing);
+  auto Denotes = [&](VarDecl *Label) {
+    return Label && llvm::all_of(R, [&](NamedDecl *D) {
+             return D->getUnderlyingDecl()->getCanonicalDecl() ==
+                    Label->getCanonicalDecl();
+           });
+  };
+  if (Denotes(Entity))
+    return true;
+  if (Denotes(Defaulted)) {
+    IsDefaulted = true;
+    return true;
+  }
+  // A template parameter makes the id-expression dependent.
+  if (llvm::any_of(R, [](NamedDecl *D) {
+        return isa<NonTypeTemplateParmDecl, TemplateTypeParmDecl,
+                   TemplateTemplateParmDecl>(D->getUnderlyingDecl());
+      }))
+    return Fail(IsDependent, &R);
+  return Fail(FindsOther, &R);
+}
+
 /// Whether \p PVD is a parameter of the function whose contract is being
 /// parsed in the contract scope \p S: one declared between \p S and the
 /// nearest function boundary.  That boundary is a function prototype scope

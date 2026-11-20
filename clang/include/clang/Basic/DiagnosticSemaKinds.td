@@ -13354,6 +13354,16 @@ def err_keyword_not_allowed_in_contract : Error<
 def err_contract_lambda_decl_ref_not_modifiable_lvalue : Error<
   "cannot assign to a variable captured by %select{reference|copy}0 which was "
   "captured as const because it is inside a contract">;
+def err_contract_terminating_specifier : Error<
+  "assertion-control-specifier must name "
+  "'std::contracts::controls::enforced' or "
+  "'std::contracts::controls::defaulted'%select{|; name lookup finds nothing|"
+  "; name lookup finds another declaration|; name lookup is ambiguous|"
+  ", not a dependent name}0">;
+def note_contract_terminating_declared_by : Note<
+  "no declaration of 'std::contracts::controls::enforced' or "
+  "'std::contracts::controls::defaulted' precedes it; "
+  "'<contracts>' declares them">;
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"

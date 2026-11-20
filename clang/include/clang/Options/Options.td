@@ -1833,6 +1833,14 @@ defm contracts : BoolFOption<"contracts",
           "Enable support for C++ contracts">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p4451 : BoolFOption<"contracts-p4451",
+  LangOpts<"ContractsP4451">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P4451 terminating contract assertions, "
+          "`pre<std::contracts::controls::enforced>`"
+          >,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 // C '_Defer' TS
 defm defer_ts : BoolFOption<"defer-ts",
   LangOpts<"DeferTS">, DefaultFalse,

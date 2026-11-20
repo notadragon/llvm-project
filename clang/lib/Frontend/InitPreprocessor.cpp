@@ -778,8 +778,16 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     long CppContracts = 202502L;
     if (LangOpts.ContractsP3097)
       CppContracts = std::max(CppContracts, 202611L);
+    // P4451R2's wording gives P4451's value as 202611L, which is used as is.
+    if (LangOpts.ContractsP4451)
+      CppContracts = std::max(CppContracts, 202611L);
     Builder.defineMacro("__cpp_contracts", Twine(CppContracts) + "L");
   }
+  // P4451 raises __cpp_contracts, which the library cannot key on (another
+  // paper may raise it too), so a vendor macro tells <contracts> to declare
+  // its enforced label and raise __cpp_lib_contracts.
+  if (LangOpts.Contracts && LangOpts.ContractsP4451)
+    Builder.defineMacro("__clang_contracts_p4451", "202611L");
   if (LangOpts.Char8)
     Builder.defineMacro("__cpp_char8_t", "202207L");
   Builder.defineMacro("__cpp_impl_destroying_delete", "201806L");
