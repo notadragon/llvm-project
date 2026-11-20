@@ -112,6 +112,7 @@ add_clang_library(clangCodeGen
   ConstantInitBuilder.cpp
   ContractProve.cpp
   ContractProveFold.cpp
+  ContractProveOverride.cpp
   ContractProvePremises.cpp
   ContractProveShadow.cpp
   ContractShadowDecide.cpp
