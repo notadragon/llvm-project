@@ -1,0 +1,4 @@
+[
+  {"match": {"caller": true, "namespace": "cs"}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

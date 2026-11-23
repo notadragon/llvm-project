@@ -82,6 +82,12 @@ struct LoopAttributes {
 
   /// Value for whether the loop is required to make progress.
   bool MustProgress;
+
+  /// D4405: UnrollEnable is Disable only because the -O level implies
+  /// -fno-unroll-loops, which was not given, and the proof optimization
+  /// level unrolls (-fcontracts-prove-optimize=2 and up, with the proof
+  /// shadow): the proof module drops it.
+  bool UnrollDisableImplied;
 };
 
 /// Update \p Attrs with the loop hints in \p StmtAttrs (`#pragma clang loop`,

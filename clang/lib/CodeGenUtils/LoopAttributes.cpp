@@ -24,7 +24,7 @@ LoopAttributes::LoopAttributes(bool IsParallel)
       UnrollCount(0), UnrollAndJamCount(0),
       DistributeEnable(LoopAttributes::Unspecified), PipelineDisabled(false),
       LICMDisabled(false), PipelineInitiationInterval(0), CodeAlign(0),
-      MustProgress(false) {}
+      MustProgress(false), UnrollDisableImplied(false) {}
 
 void LoopAttributes::clear() {
   IsParallel = false;
@@ -43,6 +43,7 @@ void LoopAttributes::clear() {
   PipelineInitiationInterval = 0;
   CodeAlign = 0;
   MustProgress = false;
+  UnrollDisableImplied = false;
 }
 
 void updateLoopAttributes(LoopAttributes &Attrs, ASTContext &Ctx,
@@ -278,8 +279,14 @@ void updateLoopAttributes(LoopAttributes &Attrs, ASTContext &Ctx,
     // -fno-unroll-loops) and no pragmas override the decision.
     if (!CGOpts.UnrollLoops &&
         (Attrs.UnrollEnable == LoopAttributes::Unspecified &&
-         Attrs.UnrollCount == 0))
+         Attrs.UnrollCount == 0)) {
       Attrs.UnrollEnable = LoopAttributes::Disable;
+      const LangOptions &LO = Ctx.getLangOpts();
+      Attrs.UnrollDisableImplied = !CGOpts.UnrollLoopsGiven &&
+                                   LO.ContractsP4405 &&
+                                   LO.ContractsProveShadow &&
+                                   LO.ContractsProveOptimize >= 2;
+    }
 }
 
 } // namespace clang::CodeGenUtils

@@ -2121,7 +2121,9 @@ void CodeGenFunction::maybeAttachRangeForLoad(llvm::LoadInst *Load, QualType Ty,
   if (EmitScalarRangeCheck(Load, Ty, Loc)) {
     // In order to prevent the optimizer from throwing away the check, don't
     // attach range metadata to the load.
-  } else if (CGM.getCodeGenOpts().isOptimizedBuild()) {
+  } else if (CGM.getCodeGenOpts().isOptimizedBuild() ||
+             CGM.ContractProofsAtO0) {
+    // D4405: for an -O0 module's proofs too (stripped from its real code).
     if (llvm::MDNode *RangeInfo = getRangeForLoadFromType(Ty)) {
       Load->setMetadata(llvm::LLVMContext::MD_range, RangeInfo);
       Load->setMetadata(llvm::LLVMContext::MD_noundef,

@@ -317,6 +317,10 @@ namespace {
       // If there are errors before or when releasing the Builder, reset
       // the module to stop here before invoking the backend.
       if (Diags.hasErrorOccurred()) {
+        // P4405 proving hook: the back end would have decided the proof
+        // shadows and diagnosed what code generation left to it.
+        if (Builder)
+          Builder->reportContractProofsNow();
         if (Builder)
           Builder->clear();
         M.reset();

@@ -1,0 +1,14 @@
+[
+  {"match": {"caller": true, "namespace": "callerside_always"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "callerside_always"}, "output": {"semantic": "ignore"}},
+  {"match": {"caller": true, "namespace": "postcaller_always"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "postcaller_always"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "contract_assert", "caller": false, "namespace": "body_always"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": true, "namespace": "callerside_never"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "callerside_never"}, "output": {"semantic": "ignore"}},
+  {"match": {"caller": true, "namespace": "postcaller_never"}, "output": {"semantic": "enforce"}},
+  {"match": {"caller": false, "namespace": "postcaller_never"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "contract_assert", "caller": false, "namespace": "body_never"}, "output": {"semantic": "enforce"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

@@ -461,6 +461,124 @@ public:
   std::unique_ptr<CGContractData, CGContractDataDeleter> ContractData{
       CGContractDataDeleter::Create()};
 
+  /// P4405 proof shadows (ContractProveShadow.cpp): set while a proof shadow,
+  /// or the predicate of a deferred evaluation, is emitted.
+  struct ContractShadowFunction *ContractShadow = nullptr;
+  /// D4405: the object of the constructor or destructor call whose
+  /// preconditions' analysis evaluations are being placed, which a
+  /// predicate naming `this' is given; null if there is none to give.
+  llvm::Value *ContractCallObject = nullptr;
+  /// D4405: set while a P3097 contract wrapper, or a call that evaluates its
+  /// callee's interface contracts itself, emits them: no analysis evaluation
+  /// is placed there, only in the function's body and at a call.
+  bool InContractInterfaceEvaluation = false;
+  /// D4405: where the destructor call of an object found by its address is
+  /// diagnosed (an automatic variable, a temporary): noteContractDestroySite.
+  llvm::DenseMap<llvm::Value *, const Expr *> ContractDestroySites;
+  /// D4405: an implicit destructor call of the object at \p Addr is
+  /// diagnosed at \p Site.
+  void noteContractDestroySite(Address Addr, const Expr *Site);
+  /// D4405: the same, at the automatic variable \p Var, if its destructor has
+  /// contracts.
+  void noteContractDestroySite(Address Addr, const VarDecl *Var);
+  /// D4405: place the analysis evaluations of the preconditions of the
+  /// destructor \p DD at an implicit call of it for the object at \p This
+  /// (an automatic variable or a temporary going out of scope, a member or a
+  /// base destroyed, a delete-expression \p Site).
+  void DiagnoseImplicitDtorProvingContracts(const CXXDestructorDecl *DD,
+                                            Address This,
+                                            const Expr *Site = nullptr);
+  /// D4405: where an implicit destructor call that no expression shows is
+  /// diagnosed: the end of the function being emitted.
+  const Expr *getContractFallbackDestroySite();
+  /// D4405 (notadragon_wg21 DECISIONS.md E160 (a)): place the analysis
+  /// evaluations of the destructor call that destroys the already-built
+  /// subobject of type \p Ty at \p Addr of an aggregate whose initialization
+  /// goes on, whether or not that partial-destruction cleanup is ever
+  /// emitted.  Emits no code of its own.
+  void DiagnosePartialAggregateDtorProvingContracts(QualType Ty, Address Addr);
+  /// P4405 (notadragon_wg21 DECISIONS.md E169 (9), (11)): the place of the
+  /// runtime check whose predicate is being emitted: the assertion checked,
+  /// in \p S, and the call it is checked at, in \p Site (null: in the
+  /// function's body, the only place so far).  The analysis evaluation of
+  /// the same assertion in the same place and this check report a
+  /// diagnostic they both make once.  False when no check's predicate is
+  /// being emitted, or the check has no such place (a P3097 wrapper's, or
+  /// one at a call that evaluates its callee's interface contracts).
+  bool getContractCheckPlace(const ContractStmt *&S, const Expr *&Site);
+  /// P4405 (DECISIONS.md E169 (13), (14), (18)): under
+  /// -fno-contract-analysis-skip-dead-calls, make the analysis evaluations
+  /// at the calls in \p S, code that code generation does not emit because
+  /// it is never evaluated (a dead arm of a constant condition, a
+  /// statement after a return), decided at once.  Emits no code.
+  void analyzeContractDeadCalls(const Stmt *S);
+  /// P4405: set while analyzeContractDeadCalls makes its evaluations, which
+  /// have no code to defer to a proof shadow.
+  bool InContractDeadCode = false;
+
+  /// P4405: InsertHelper's hook, which tags \p I if it is emitted for the
+  /// predicate of an obligation.
+  void noteContractShadowInstruction(llvm::Instruction *I) const;
+  /// P4405: whether this is the definition of a function a proof shadow can
+  /// be made of.
+  bool isContractShadowable() const;
+  /// P4405: whether code is being emitted inside a loop or switch.
+  bool isInContractShadowLoop() const { return !BreakContinueStack.empty(); }
+  /// P4405: in a proof shadow (or a premise copy, D4405), emit the
+  /// assumption an evaluation of \p S with \p Sem makes there, if any,
+  /// instead of its check; return whether it did.  \p Dynamic: one arm of a
+  /// dynamic selection (never an assumption).  In a real function, note the
+  /// premise a terminating check makes, and the premise copy an observe,
+  /// noexcept_observe or ignore evaluation asks for; never emit.
+  bool emitContractShadowAssumption(const ContractStmt &S,
+                                    ContractEvaluationSemantic Sem,
+                                    bool Dynamic);
+  /// D4405 (-fcontracts-prove-callee-premises, ContractProvePremises.cpp): in
+  /// a real function, note that an evaluation of \p S with \p Sem (\p
+  /// Dynamic: one arm of a dynamic selection) is a premise a shadow would
+  /// assume, so that the function gets a premise copy.
+  void noteContractPremiseCopy(const ContractStmt &S,
+                               ContractEvaluationSemantic Sem, bool Dynamic);
+  /// D4405: whether this is a premise copy being emitted.
+  bool isContractPremiseCopy() const;
+  /// P4405: emit the predicate of obligation \p Id, the evaluation of \p S
+  /// (at the call \p CallSite of \p Callee for a caller-side one, with its
+  /// arguments for the parameters): in a proof shadow as the obligation, in a
+  /// real function as the assumption -fcontracts-prove-assume may keep.
+  /// For an override pair's obligation (D4405), \p Override, which gives an
+  /// assertion of its B::f D::f's parameters and the B subobject.
+  void emitContractShadowPredicate(
+      unsigned Id, const ContractStmt &S, const Expr *CallSite,
+      const FunctionDecl *Callee,
+      const struct ContractOverridePair *Override = nullptr);
+  /// P4405: emit the predicate of \p S, as emitContractShadowPredicate binds
+  /// it, its calls and writes tagged as obligation \p Tag's (none if -1).
+  llvm::Value *emitContractShadowCondition(
+      const ContractStmt &S, const Expr *CallSite, const FunctionDecl *Callee,
+      const struct ContractOverridePair *Override, int Tag);
+  /// P4405: `if (!Pred) unreachable'.
+  void emitContractShadowUnreachableUnless(llvm::Value *Pred);
+  /// D4405: in an override shadow, emit ordinary obligation \p Id, the
+  /// evaluation of \p S, as a premise its proofs rely on.
+  void emitContractShadowPremise(unsigned Id, const ContractStmt &S,
+                                 const Expr *CallSite,
+                                 const FunctionDecl *Callee);
+  /// P4405 (DECISIONS.md E169): the call \p CallSite of \p FD is being
+  /// emitted in a predicate the proof shadow strategy emits.  In a proof
+  /// shadow, in an obligation's predicate, place the evaluations nested in it
+  /// at the call: the analysis evaluations of \p FD's preconditions.  Return
+  /// whether the call is in such a predicate, where nothing else is done at
+  /// it (in a real function's assumption, which never evaluates it, nothing
+  /// at all).
+  bool emitContractShadowNested(const FunctionDecl *FD, const Expr *CallSite);
+  /// D4405: whether the analysis evaluation of \p S is placed where \p S is
+  /// emitted in this function -- the body of a function, for a postcondition
+  /// or an assertion (in C, for a precondition too), and not a P3097 wrapper.
+  bool isContractAnalyzedHere(const ContractStmt &S) const;
+  /// P4405: list the real function being emitted as one whose code holds an
+  /// unsettled contract evaluation (CurFnHoldsUnsettledContract).
+  void noteContractRefinableBody();
+
   CurrentContractInfo *CurContract();
 
   /// The function being emitted holds a contract evaluation whose semantic

@@ -1,0 +1,6 @@
+[
+  {"match": {"location": "p4405-premise-late-summary.cpp:23"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"location": "p4405-premise-late-summary.cpp:38"}, "output": {"semantic": "quick_enforce"}},
+  {"match": {"kind": "contract_assert", "caller": false}, "output": {"semantic": "diagnose"}},
+  {"match": {"caller": false}, "output": {"semantic": "enforce"}}
+]

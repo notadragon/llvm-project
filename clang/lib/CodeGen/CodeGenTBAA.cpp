@@ -19,6 +19,7 @@
 #include "CGCXXABI.h"
 #include "CGRecordLayout.h"
 #include "CodeGenTypes.h"
+#include "ContractProveShadow.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Mangle.h"
@@ -40,7 +41,8 @@ CodeGenTBAA::CodeGenTBAA(ASTContext &Ctx, CodeGenTypes &CGTypes,
     : Context(Ctx), CGTypes(CGTypes), Module(M), CodeGenOpts(CGO),
       Features(Features),
       MangleCtx(ItaniumMangleContext::create(Ctx, Ctx.getDiagnostics())),
-      MDHelper(M.getContext()), Root(nullptr), Char(nullptr) {}
+      MDHelper(M.getContext()), Root(nullptr), Char(nullptr),
+      ContractProofs(contractProofTBAAAtO0(Features, CGO)) {}
 
 CodeGenTBAA::~CodeGenTBAA() {
 }
@@ -378,8 +380,11 @@ llvm::MDNode *CodeGenTBAA::getTypeInfoHelper(const Type *Ty) {
 llvm::MDNode *CodeGenTBAA::getTypeInfo(QualType QTy) {
   // At -O0 or relaxed aliasing, TBAA is not emitted for regular types (unless
   // we're running TypeSanitizer).
+  // D4405: an -O0 module proving at a proof level above 0 makes it for the
+  // proofs (contractProofTBAAAtO0); the back end strips it from the real code.
   if (!Features.Sanitize.has(SanitizerKind::Type) &&
-      (CodeGenOpts.OptimizationLevel == 0 || CodeGenOpts.RelaxedAliasing))
+      ((CodeGenOpts.OptimizationLevel == 0 && !ContractProofs) ||
+       CodeGenOpts.RelaxedAliasing))
     return nullptr;
 
   // If the type has the may_alias attribute (even on a typedef), it is
@@ -520,7 +525,8 @@ CodeGenTBAA::CollectFields(uint64_t BaseOffset,
 
 llvm::MDNode *
 CodeGenTBAA::getTBAAStructInfo(QualType QTy) {
-  if (CodeGenOpts.OptimizationLevel == 0 || CodeGenOpts.RelaxedAliasing)
+  if ((CodeGenOpts.OptimizationLevel == 0 && !ContractProofs) ||
+      CodeGenOpts.RelaxedAliasing)
     return nullptr;
 
   const Type *Ty = Context.getCanonicalType(QTy).getTypePtr();

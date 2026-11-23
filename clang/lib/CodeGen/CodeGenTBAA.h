@@ -141,6 +141,10 @@ class CodeGenTBAA {
   llvm::MDNode *Char;
   llvm::SmallVector<llvm::MDNode *, 4> AnyPtrs;
 
+  /// D4405: an -O0 module that makes TBAA for its proofs
+  /// (contractProofTBAAAtO0).
+  bool ContractProofs;
+
   /// getRoot - This is the mdnode for the root of the metadata type graph
   /// for this translation unit.
   llvm::MDNode *getRoot();
