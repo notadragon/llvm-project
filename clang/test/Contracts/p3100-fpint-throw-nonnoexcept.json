@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "namespace": "obs_ns", "group": "ub:conv.fpint.float.not.represented"}, "output": {"semantic": "observe"}},
+  {"match": {"kind": "implicit", "namespace": "enf_ns", "group": "ub:conv.fpint.float.not.represented"}, "output": {"semantic": "enforce"}}
+]

@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:conv.fpint.float.not.represented", "location": "p3100-float-cast-location.cpp:26-26"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:conv.fpint.float.not.represented"}, "output": {"semantic": "observe"}}
+]
