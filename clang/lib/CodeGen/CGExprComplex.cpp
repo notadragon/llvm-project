@@ -157,7 +157,8 @@ public:
   ComplexPairTy VisitMemberExpr(MemberExpr *ME) {
     if (CodeGenFunction::ConstantEmission Constant =
             CGF.tryEmitAsConstant(ME)) {
-      CGF.EmitIgnoredExpr(ME->getBase());
+      CGF.EmitIgnoredMemberBase(ME->getBase(), ME->isArrow(),
+                                ME->getExprLoc());
       return emitConstant(Constant, ME);
     }
     return EmitLoadOfLValue(ME);
