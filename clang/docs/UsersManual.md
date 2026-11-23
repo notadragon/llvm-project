@@ -2677,6 +2677,36 @@ deeply embedded) where a trap cannot be properly handled, or when
 some custom behavior is desired.
 :::
 
+(contract-violation-information)=
+
+:::{option} -fcontract-violation-information=<full|none>
+
+(Part of the proposed C++ contracts extensions this branch implements,
+P3850.)  Select whether the contract-violation records Clang emits for runtime
+checks carry the source location, comment and message of the assertion:
+`full` (the default) or `none`.  Under `none` every such record has an
+empty file name, an empty function name, line 0, column 0, an empty
+comment and no message (`message()` is null): preconditions,
+postconditions, `contract_assert`, implicit (P3100) contract assertions,
+C contract assertions (P4299), and the comment and message a P3400 label
+computes, so none of that text is in the object.  The kind, semantic,
+detection mode and label fields of the record are unchanged, and constant
+evaluation still diagnoses a violation at the assertion with its message.
+Sanitizer metadata, including the records the sanitizer runtime builds for
+a routed sanitizer check, is not affected.  Applies to C, C++,
+Objective-C and Objective-C++, whatever the other contracts options.
+
+Under `none` Clang predefines `__clang_contracts_violation_information_none`,
+and the library follows: `<cassert>`'s contract-checking `assert` (P3290)
+passes an empty comment and an empty `std::source_location`, the P3290
+manual API `std::contracts::handle_*_contract_violation` defaults its
+location argument to an empty `std::source_location` (a location passed
+explicitly is kept), and the P3290 convenience macros of `<contracts.h>`
+pass an empty location and comment, still evaluating their comment
+argument.  The default violation handlers leave out a location part or a
+comment that is empty.
+:::
+
 :::{option} -ftls-model=[model]
 
 Select which TLS model to use.

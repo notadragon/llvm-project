@@ -1853,6 +1853,19 @@ def fcontract_analysis_semantic_EQ : Joined<["-"], "fcontract-analysis-semantic=
   NormalizedValues<["Ignore", "Diagnose", "Prove"]>,
   MarshallingInfoEnum<LangOpts<"ContractOpts.AnalysisSemantic">, "Ignore">;
 
+// -fcontract-violation-information=none: every contract-violation record the
+// compiler emits for a runtime check has an empty location, an empty comment
+// and no message, and __clang_contracts_violation_information_none is
+// predefined.  C, C++, Objective-C and Objective-C++, whatever the other
+// contracts options.
+def fcontract_violation_information_EQ : Joined<["-"], "fcontract-violation-information=">,
+  HelpText<"Select whether a contract violation records its source location, "
+           "comment and message. The default value is 'full'.">,
+  Values<"full,none">,
+  Visibility<[ClangOption, CC1Option]>,
+  NormalizedValues<["0", "1"]>,
+  MarshallingInfoEnum<LangOpts<"ContractViolationInformationNone">, "0">;
+
 def fcontract_group_evaluation_semantic_EQ : CommaJoined<["-"], "fcontract-group-evaluation-semantic=">,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Set the evaluation semantic for contracts in a specific group. "

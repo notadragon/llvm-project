@@ -91,6 +91,28 @@ void stdc_handle_quick_enforced_contract_violation_explicit(
   stdc_handle_quick_enforced_contract_violation_explicit((comment), __FILE__,  \
                                                          __func__, __LINE__)
 
+// -fcontract-violation-information=none: an empty location and comment, as
+// the compiler records for the contract violations it emits.  The comment
+// argument is still evaluated; one that is a constant, such as a string
+// literal, has nothing to evaluate, and is left out so that its text is not
+// emitted into the object at -O0.
+#ifdef __clang_contracts_violation_information_none
+#define __stdc_contract_no_comment(comment)                                    \
+  (__builtin_constant_p(comment) ? "" : ((void)(comment), ""))
+#undef stdc_handle_enforced_contract_violation
+#define stdc_handle_enforced_contract_violation(comment)                       \
+  stdc_handle_enforced_contract_violation_explicit(                            \
+      __stdc_contract_no_comment(comment), "", "", 0)
+#undef stdc_handle_observed_contract_violation
+#define stdc_handle_observed_contract_violation(comment)                       \
+  stdc_handle_observed_contract_violation_explicit(                            \
+      __stdc_contract_no_comment(comment), "", "", 0)
+#undef stdc_handle_quick_enforced_contract_violation
+#define stdc_handle_quick_enforced_contract_violation(comment)                 \
+  stdc_handle_quick_enforced_contract_violation_explicit(                      \
+      __stdc_contract_no_comment(comment), "", "", 0)
+#endif
+
 // Contract check helpers (called by C compiler codegen)
 __attribute__((__noreturn__))
 void __c_contract_check_enforce(const char *__comment, const char *__file,
