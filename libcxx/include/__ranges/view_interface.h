@@ -116,12 +116,22 @@ public:
     return std::__to_unsigned_like(ranges::end(__derived()) - ranges::begin(__derived()));
   }
 
+  // The non-const front() and back() test their precondition through this.
+  // When the precondition is a contract assertion (-fcontracts), `this` is
+  // const in it, and calling empty() would select the const overload, which a
+  // view that is not const-iterable does not have.  The object itself is not
+  // const there, so the non-const empty() is called on it.
+  template <class _D2 = _Derived>
+  _LIBCPP_HIDE_FROM_ABI constexpr bool __is_empty_() const {
+    return const_cast<view_interface*>(this)->empty();
+  }
+
   template <class _D2 = _Derived>
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr decltype(auto) front()
     requires forward_range<_D2>
   {
     _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS(
-        !empty(), "Precondition `!empty()` not satisfied. `.front()` called on an empty view.");
+        !__is_empty_(), "Precondition `!empty()` not satisfied. `.front()` called on an empty view.");
     return *ranges::begin(__derived());
   }
 
@@ -139,7 +149,7 @@ public:
     requires bidirectional_range<_D2> && common_range<_D2>
   {
     _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS(
-        !empty(), "Precondition `!empty()` not satisfied. `.back()` called on an empty view.");
+        !__is_empty_(), "Precondition `!empty()` not satisfied. `.back()` called on an empty view.");
     return *ranges::prev(ranges::end(__derived()));
   }
 
