@@ -1,0 +1,4 @@
+[
+  {"match": {"caller": true},  "output": {"semantic": "observe"}},
+  {"match": {"caller": false}, "output": {"semantic": "ignore"}}
+]
