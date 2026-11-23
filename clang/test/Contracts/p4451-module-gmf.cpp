@@ -7,6 +7,11 @@
 // RUN: rm -rf %t
 // RUN: split-file %s %t
 // RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400
+// REDEFINE: %{p} = p3400
+// RUN: %{check}
+// REDEFINE: %{v} = -fcontracts-p3400 -fcontracts-p4451
+// RUN: %{check}
 // REQUIRES: contracts-libcxx
 
 // P4451: <contracts> included in a module's global module fragment does not

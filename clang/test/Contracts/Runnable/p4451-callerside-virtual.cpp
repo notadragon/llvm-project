@@ -4,6 +4,9 @@
 // DEFINE:   %libcxx_flags -o %t
 //
 // RUN: %{run} -fcontracts-p4451 && %t
+// RUN: %{run} -fcontracts-p3400 && %t
+// RUN: %{run} -fcontracts-p3400 -fcontracts-p4451 && %t
+
 // P3097, notadragon_wg21 DECISIONS.md E180 (5): the checks a virtual call
 // makes of the contract assertions of the function it names (the interface
 // wrapper) never add ignore to their allowed sets: they use the callee-side

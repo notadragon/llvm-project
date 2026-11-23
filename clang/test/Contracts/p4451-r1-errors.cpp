@@ -1,6 +1,8 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 %libcxx_flags -fsyntax-only -ferror-limit=0 %s
 //
 // RUN: %{cc} -fcontracts-p4451 -Xclang -verify=p4451
+// RUN: %{cc} -fcontracts-p3400 -Xclang -verify=p3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451 -Xclang -verify=p3400
 // REQUIRES: contracts-libcxx
 
 // P4451 [basic.contract.control] (P4451R2): the id-expression of an

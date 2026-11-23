@@ -1,6 +1,8 @@
 // DEFINE: %{cc} = %clangxx -std=c++26 %libcxx_flags -fsyntax-only -Xclang -verify %s
 //
 // RUN: %{cc} -fcontracts-p4451
+// RUN: %{cc} -fcontracts-p3400
+// RUN: %{cc} -fcontracts-p3400 -fcontracts-p4451
 // REQUIRES: contracts-libcxx
 
 // expected-no-diagnostics
