@@ -5631,6 +5631,7 @@ Value *ScalarExprEmitter::VisitBinLAnd(const BinaryOperator *E) {
         CGF.incrementProfileCounter(CGF.UseSkipPath, E);
 
       CGF.markStmtMaybeUsed(E->getRHS());
+      CGF.analyzeContractDeadCalls(E->getRHS()); // P4405
 
       return llvm::Constant::getNullValue(ResTy);
     }
@@ -5800,6 +5801,7 @@ Value *ScalarExprEmitter::VisitBinLOr(const BinaryOperator *E) {
         CGF.incrementProfileCounter(CGF.UseSkipPath, E);
 
       CGF.markStmtMaybeUsed(E->getRHS());
+      CGF.analyzeContractDeadCalls(E->getRHS()); // P4405
 
       return llvm::ConstantInt::get(ResTy, 1);
     }
@@ -5919,6 +5921,7 @@ VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
                                   E, /*UseBoth=*/true);
       Value *Result = Visit(live);
       CGF.markStmtMaybeUsed(dead);
+      CGF.analyzeContractDeadCalls(dead); // P4405
 
       // If the live part is a throw expression, it acts like it has a void
       // type, so evaluating it returns a null Value*.  However, a conditional

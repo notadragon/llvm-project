@@ -384,6 +384,7 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
   }
 
   PGO->markStmtMaybeUsed(D.getInit()); // FIXME: Too lazy
+  analyzeContractDeadCalls(D.getInit()); // P4405
 
 #ifndef NDEBUG
   CharUnits VarSize = CGM.getContext().getTypeSizeInChars(D.getType()) +
@@ -2034,6 +2035,7 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   if (!HaveInsertPoint()) {
     if (!Init || !ContainsLabel(Init)) {
       PGO->markStmtMaybeUsed(Init);
+      analyzeContractDeadCalls(Init); // P4405
       return;
     }
     EnsureInsertPoint();
@@ -2143,6 +2145,7 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   }
 
   PGO->markStmtMaybeUsed(Init);
+  analyzeContractDeadCalls(Init); // P4405
 
   if (!emission.ConstantAggregateInitializer) {
     // For simple scalar/complex initialization, store the value directly.
@@ -2228,6 +2231,8 @@ void CodeGenFunction::emitAutoVarTypeCleanup(
 
   const VarDecl *var = emission.Variable;
   QualType type = var->getType();
+  // D4405: its destructor call is diagnosed at the variable.
+  noteContractDestroySite(addr, var);
 
   CleanupKind cleanupKind = NormalAndEHCleanup;
   CodeGenFunction::Destroyer *destroyer = nullptr;

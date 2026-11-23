@@ -452,6 +452,40 @@ inline constexpr __never_t<contracts::evaluation_semantic::quick_enforce> never_
 inline constexpr __never_t<contracts::evaluation_semantic::observe> never_observe{};
 inline constexpr __never_t<contracts::evaluation_semantic::ignore> never_ignore{};
 
+#    ifdef __cpp_contracts_prove
+// D4405: prove and diagnose set only the analysis semantic, so the runtime
+// evaluations keep the configured semantic; always_prove and always_diagnose
+// allow no runtime semantic, so their analysis evaluation is always prove (or
+// diagnose) and their runtime evaluations ignore.
+struct prove_t {
+  using assertion_control_object = prove_t;
+  _LIBCPP_HIDE_FROM_ABI constexpr contracts::evaluation_semantic analysis_semantic() const {
+    return contracts::evaluation_semantic::prove;
+  }
+};
+inline constexpr prove_t prove{};
+
+struct diagnose_t {
+  using assertion_control_object = diagnose_t;
+  _LIBCPP_HIDE_FROM_ABI constexpr contracts::evaluation_semantic analysis_semantic() const {
+    return contracts::evaluation_semantic::diagnose;
+  }
+};
+inline constexpr diagnose_t diagnose{};
+
+struct always_prove_t {
+  using assertion_control_object = always_prove_t;
+  static constexpr contracts::evaluation_semantic_set allowed_semantics = {contracts::evaluation_semantic::prove};
+};
+inline constexpr always_prove_t always_prove{};
+
+struct always_diagnose_t {
+  using assertion_control_object = always_diagnose_t;
+  static constexpr contracts::evaluation_semantic_set allowed_semantics = {contracts::evaluation_semantic::diagnose};
+};
+inline constexpr always_diagnose_t always_diagnose{};
+#    endif // __cpp_contracts_prove
+
 // A minimal index sequence.  <utility> is deliberately not included here.
 template <class _Tp, _Tp... _Ip>
 struct __gn_seq {};

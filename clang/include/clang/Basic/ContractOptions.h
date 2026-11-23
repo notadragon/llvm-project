@@ -190,6 +190,10 @@ inline constexpr unsigned AllContractSemanticsMaskWithExtensions =
 /// P4451: the semantics a terminating contract assertion may use, the
 /// terminating ones: enforce and quick_enforce.
 inline constexpr unsigned TerminatingContractSemanticsMask =
+    // D4405: and prove, for its analysis evaluation, as P3400's
+    // std::contracts::controls::enforced allows (the -fcontracts-p4405 gate
+    // removes it without that flag).
+    (1u << static_cast<unsigned>(ContractEvaluationSemantic::Prove)) |
     (1u << static_cast<unsigned>(ContractEvaluationSemantic::Enforce)) |
     (1u << static_cast<unsigned>(ContractEvaluationSemantic::QuickEnforce));
 

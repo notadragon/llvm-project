@@ -1,0 +1,5 @@
+[
+  {"match": {"analysis": true, "namespace": "dd"}, "output": {"semantic": "diagnose"}},
+  {"match": {"kind": "pre"}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "enforce"}}
+]
