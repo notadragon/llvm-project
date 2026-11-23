@@ -1,0 +1,6 @@
+[
+  {"match": {"namespace": "mylib::internal", "caller": false}, "output": {"semantic": "ignore"}},
+  {"match": {"namespace": "mylib", "caller": false}, "output": {"semantic": "observe"}},
+  {"match": {"caller": true}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "observe"}}
+]

@@ -1,0 +1,4 @@
+[
+  {"match": {}, "output": {"semantic": "enforce",
+   "dynamic": {"linkage": "C++", "name": "late_include_sel", "provideweak": true}}}
+]

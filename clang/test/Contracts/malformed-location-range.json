@@ -1,0 +1,9 @@
+[
+  { "match": { "location": "err.cpp:10x" },
+    "output": { "semantic": "observe" } },
+  { "match": { "location": "err.cpp:1-2z" },
+    "output": { "semantic": "observe" } },
+  { "match": { "location": "err.cpp:5-" },
+    "output": { "semantic": "observe" } },
+  { "output": { "semantic": "ignore" } }
+]

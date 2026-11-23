@@ -1,0 +1,6 @@
+[
+  { "match": { "namespace": "" },
+    "output": { "semantic": "ignore" } },
+  { "match": { "caller": { "namespace": "" } },
+    "output": { "semantic": "ignore" } }
+]

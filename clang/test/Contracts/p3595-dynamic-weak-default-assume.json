@@ -1,0 +1,5 @@
+[
+  {"output": {"semantic": "assume",
+              "dynamic": {"linkage": "C", "name": "open_bug_weak_assume_sel",
+                          "provideweak": true}}}
+]

@@ -1,0 +1,4 @@
+[
+  { "match": { "module": "other" },
+    "output": { "semantic": "ignore" } }
+]

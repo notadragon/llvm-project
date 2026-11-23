@@ -1,0 +1,4 @@
+[
+  {"match": {"location": "p3595-config-line-range.cpp:18,21-23", "caller": false}, "output": {"semantic": "ignore"}},
+  {"output": {"semantic": "observe"}}
+]

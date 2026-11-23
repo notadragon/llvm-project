@@ -1,0 +1,4 @@
+[
+  { "match": { "location": "p3595-location-line-column.cpp:27:15" },
+    "output": { "semantic": "ignore" } }
+]

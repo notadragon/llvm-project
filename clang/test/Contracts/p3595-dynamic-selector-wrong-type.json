@@ -1,0 +1,12 @@
+[
+  {"match": {"namespace": "u1"}, "output": {"dynamic": {"linkage": "C++", "name": "defined::sel"}}},
+  {"match": {"namespace": "u2"}, "output": {"dynamic": {"linkage": "C++", "name": "declared::sel"}}},
+  {"match": {"namespace": "u3"}, "output": {"dynamic": {"linkage": "C++", "name": "var::sel"}}},
+  {"match": {"namespace": "u4"}, "output": {"dynamic": {"linkage": "C++", "name": "right::sel"}}},
+  {"match": {"namespace": "u5"}, "output": {"dynamic": {"linkage": "C++", "name": "other::sel"}}},
+  {"match": {"namespace": "u6"}, "output": {"dynamic": {"linkage": "C++", "name": "outer::sel"}}},
+  {"match": {"namespace": "u7"}, "output": {"dynamic": {"linkage": "C++", "name": "unused::sel"}}},
+  {"match": {"namespace": "u8"}, "output": {"dynamic": {"linkage": "C++", "name": "global_sel"}}},
+  {"match": {"namespace": "u9"}, "output": {"dynamic": {"linkage": "C", "name": "c_sel"}}},
+  {"match": {"namespace": "u10"}, "output": {"dynamic": {"linkage": "C++", "name": "redecl::sel"}}}
+]
