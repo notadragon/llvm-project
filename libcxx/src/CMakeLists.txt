@@ -6,6 +6,8 @@ set(LIBCXX_SOURCES
   call_once.cpp
   charconv.cpp
   chrono.cpp
+  contracts.cpp
+  contracts_abi.cpp
   debugging.cpp
   error_category.cpp
   exception.cpp
@@ -178,6 +180,18 @@ split_list(LIBCXX_LINK_FLAGS)
 
 include(FindLibcCommonUtils)
 
+# libc++ carries the C++26 contracts runtime (contract_violation members, the
+# default handler, the _noexcept entry-point wrappers), which unconditionally
+# references libcontracts symbols (__cxa_find_field, __contract_dispatch_core).
+# libcontracts is a hard dependency of libc++, for the shared and the static
+# library alike: mirror the libcxxabi/libunwind contract and fail loudly at
+# configure time if it was not requested, rather than silently producing a
+# libc++ with undefined references.  libcontracts is registered before libcxx
+# in LLVM_ENABLE_RUNTIMES, so its CMake targets are visible here.
+if (NOT TARGET contracts_static)
+  message(FATAL_ERROR "libc++ requires libcontracts, but it is not in LLVM_ENABLE_RUNTIMES.")
+endif()
+
 # Build the shared library.
 if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
   add_library(cxx_shared SHARED ${LIBCXX_SOURCES} ${LIBCXX_HEADERS})
@@ -214,6 +228,14 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
     target_link_libraries(cxx_shared PUBLIC libcxx-abi-shared)
   endif()
 
+  # Link against libcontracts (the pure-C contracts ABI core); see the note
+  # before this block.  Linking it gives libc++ a DT_NEEDED on
+  # libcontracts.so, so C++ programs resolve its symbols transitively.
+  if (NOT TARGET contracts_shared)
+    message(FATAL_ERROR "libc++ requires the shared libcontracts, but it is not built.")
+  endif()
+  target_link_libraries(cxx_shared PUBLIC contracts_shared)
+
   # Maybe force some symbols to be weak, not weak or not exported.
   # TODO: This shouldn't depend on the platform, and ideally it should be done in the sources.
   if (APPLE AND LIBCXX_CXX_ABI MATCHES "libcxxabi$"
@@ -241,6 +263,11 @@ if (LIBCXX_SUPPORTS_SHARED_LIBRARY)
         string(APPEND link_libraries " ${CMAKE_LINK_LIBRARY_FLAG}unwind")
       endif()
     endif()
+
+    # libcontracts too: libc++.so.1's own DT_NEEDED on it is not found through
+    # the executable's DT_RUNPATH, which covers only direct dependencies, so a
+    # program linked with -rpath and no contracts flag would not load.
+    string(APPEND link_libraries " ${CMAKE_LINK_LIBRARY_FLAG}$<TARGET_PROPERTY:contracts_shared,OUTPUT_NAME>")
 
     set(linker_script "INPUT($<TARGET_SONAME_FILE_NAME:cxx_shared> ${link_libraries})")
     add_custom_command(TARGET cxx_shared POST_BUILD
@@ -303,6 +330,12 @@ endif()
 if (LIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY)
   target_link_libraries(cxx_static PRIVATE libcxx-abi-static-objects)
 endif()
+
+# Link static libc++ against static libcontracts (see the shared-library note
+# above): the C++26 contract runtime in libc++.a references libcontracts.
+# The FATAL_ERROR guard before the shared-library block ensures this target
+# exists.
+target_link_libraries(cxx_static PUBLIC contracts_static)
 
 # Build the experimental static library
 set(LIBCXX_EXPERIMENTAL_SOURCES
