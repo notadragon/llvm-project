@@ -1238,6 +1238,20 @@ QualType Sema::getCurrentThisType() {
     ThisTy = Context.getPointerType(ClassTy);
   }
 
+  // Constify 'this' within a contract predicate.  The immediate expression
+  // evaluation context is only flagged as a contract-assertion context in the
+  // predicate itself; a nested lambda appearing in the predicate pushes a fresh
+  // evaluation context that loses that flag.  The contract scope stack,
+  // however, remains active across those nested contexts, so also consult it
+  // (via getCurrentContractEntry()) -- adjustCXXThisTypeForContracts
+  // self-guards and only constifies when 'this' belongs to the contracted
+  // function.
+  QualType UncontractedThisTy = ThisTy;
+  if (!ThisTy.isNull() &&
+      (currentEvaluationContext().isContractAssertionContext() ||
+       getCurrentContractEntry()))
+    ThisTy = adjustCXXThisTypeForContracts(ThisTy);
+
   // If we are within a lambda's call operator, the cv-qualifiers of 'this'
   // might need to be adjusted if the lambda or any of its enclosing lambda's
   // captures '*this' by copy.
