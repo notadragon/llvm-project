@@ -1,0 +1,4 @@
+[
+  {"match": {}, "output": {"semantic": "ignore",
+   "dynamic": {"linkage": "C++", "name": "cdyn_bad_sel", "provideweak": false}}}
+]

@@ -1,0 +1,9 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true, "kind": "pre"},
+   "output": {"semantic": "prove"}},
+  {"match": {"analysis": true, "kind": "post"},
+   "output": {"semantic": "ignore"}},
+  {"match": {"analysis": true}, "output": {"semantic": "diagnose"}},
+  {"output": {"semantic": "ignore"}}
+]

@@ -1,0 +1,4 @@
+[
+  {"match": {}, "output": {"semantic": "enforce",
+   "dynamic": {"linkage": "C", "name": "c_dyn_obs_sel", "provideweak": false}}}
+]
