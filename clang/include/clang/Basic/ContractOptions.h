@@ -155,6 +155,12 @@ inline constexpr unsigned AllContractSemanticsMaskWithExtensions =
     (1u << static_cast<unsigned>(ContractEvaluationSemantic::NoexceptObserve)) |
     ProvingContractSemanticsMask;
 
+/// P4451: the semantics a terminating contract assertion may use, the
+/// terminating ones: enforce and quick_enforce.
+inline constexpr unsigned TerminatingContractSemanticsMask =
+    (1u << static_cast<unsigned>(ContractEvaluationSemantic::Enforce)) |
+    (1u << static_cast<unsigned>(ContractEvaluationSemantic::QuickEnforce));
+
 /// Width of a ContractStmt's allowed-semantics mask, which it holds in a
 /// uint16_t member: bit N for every semantic value N up to
 /// LastContractEvaluationSemantic.
