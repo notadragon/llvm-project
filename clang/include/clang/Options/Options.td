@@ -1872,6 +1872,12 @@ defm contracts_p3097 : BoolFOption<"contracts-p3097",
           " (implied by -std=c++2d and later)">,
   NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
 
+defm contracts_p3098 : BoolFOption<"contracts-p3098",
+  LangOpts<"ContractsP3098">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable P3098 postcondition captures on contract assertions">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option]>>;
+
 defm contracts_p4451 : BoolFOption<"contracts-p4451",
   LangOpts<"ContractsP4451">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],
