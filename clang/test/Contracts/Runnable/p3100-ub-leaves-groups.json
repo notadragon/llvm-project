@@ -1,0 +1,8 @@
+[
+  {"match": {"kind": "implicit", "group": "ub:conv.lval.valid.representation.enum"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:conv.lval.valid.representation.bool.enum"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.div.by.zero.int.mod"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.mul.div.by.zero.int"}, "output": {"semantic": "noexcept_observe"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.expr.eval.signed.integer.negate"}, "output": {"semantic": "ignore"}},
+  {"match": {"kind": "implicit", "group": "ub:expr.expr.eval"}, "output": {"semantic": "noexcept_observe"}}
+]
