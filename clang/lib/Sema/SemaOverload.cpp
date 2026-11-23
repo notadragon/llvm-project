@@ -6403,6 +6403,13 @@ ExprResult Sema::PerformImplicitObjectArgumentInitialization(
             << From->getSourceRange();
         Diag(Method->getLocation(), diag::note_previous_decl)
           << Method->getDeclName();
+
+        // A contract predicate made `this` const: point at the contract.
+        if (getCurrentContractEntry() &&
+            getCurrentContractEntry()->AddedConstToCXXThis) {
+          Diag(getCurrentContractKeywordLoc(),
+               diag::note_cxx_this_const_in_contract_introduced_here);
+        }
         return ExprError();
       }
       break;
