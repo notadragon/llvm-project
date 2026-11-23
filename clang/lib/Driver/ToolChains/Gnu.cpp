@@ -459,6 +459,25 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                    options::OPT_r)) {
     if (ToolChain.ShouldLinkCXXStdlib(Args)) {
+      // Contracts with libstdc++: its C++ contracts runtime (the
+      // std::contracts::contract_violation accessors and the default
+      // violation handler) lives in the static archive libstdc++exp, which
+      // g++ links whenever contracts are on.  libcontracts refers to the
+      // default handler and to the noexcept dispatch barrier only weakly,
+      // and a weak reference does not pull a member from an archive, so
+      // both are named with -u, as g++ does.  The archive goes before
+      // libstdc++, which it depends on, and before libcontracts (below).
+      // Only when the GCC installation provides it: one that predates it
+      // has no C++ contracts runtime to link.
+      if (ToolChain.GetCXXStdlibType(Args) == ToolChain::CST_Libstdcxx &&
+          needsContractsRuntime(ToolChain, JA, Args) &&
+          ToolChain.GetFilePath("libstdc++exp.a") != "libstdc++exp.a") {
+        CmdArgs.push_back("-u");
+        CmdArgs.push_back("__contract_invoke_default_handler");
+        CmdArgs.push_back("-u");
+        CmdArgs.push_back("__contract_dispatch_core_noexcept");
+        CmdArgs.push_back("-lstdc++exp");
+      }
       bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
                                  !Args.hasArg(options::OPT_static);
       if (OnlyLibstdcxxStatic)
@@ -512,6 +531,16 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         WantPthread = true;
 
       addLLVMOffloadingRuntime(C, CmdArgs, ToolChain, Args);
+      // Contracts: a translation unit that enables contracts references
+      // libcontracts (the pure-C ABI core: __cxa_contract_violation*,
+      // __c_contract_check_*, stdc_*).  These are direct references from the
+      // user's objects, so libcontracts must be on the link line explicitly
+      // (an indirect DT_NEEDED via libc++ does not satisfy them under the
+      // default --no-copy-dt-needed-entries).  Placed before the runtime libs
+      // and -lc so libcontracts' own libc references resolve.
+      if (needsContractsRuntime(ToolChain, JA, Args))
+        CmdArgs.push_back("-lcontracts");
+
       AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
 
       // LLVM support for atomics on 32-bit SPARC V8+ is incomplete, so

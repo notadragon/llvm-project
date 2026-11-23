@@ -627,6 +627,10 @@ void baremetal::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     CmdArgs.push_back("--start-group");
+    // The contracts runtime, which a translation unit with contracts
+    // references directly (see the GNU linker).
+    if (needsContractsRuntime(TC, JA, Args))
+      CmdArgs.push_back("-lcontracts");
     AddRunTimeLibs(TC, D, CmdArgs, Args);
     if (!Args.hasArg(options::OPT_nolibc))
       CmdArgs.push_back("-lc");
