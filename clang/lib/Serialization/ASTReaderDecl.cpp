@@ -1582,7 +1582,8 @@ void ASTDeclReader::VisitFieldDecl(FieldDecl *FD) {
   FD->Mutable = Record.readInt();
 
   unsigned Bits = Record.readInt();
-  FD->StorageKind = Bits >> 1;
+  FD->StorageKind = Bits >> 2;
+  FD->setIsConstifiedCapture((Bits >> 1) & 1);
   if (FD->StorageKind == FieldDecl::ISK_CapturedVLAType)
     FD->CapturedVLAType =
         cast<VariableArrayType>(Record.readType().getTypePtr());
@@ -2114,6 +2115,7 @@ void ASTDeclReader::ReadCXXDefinitionData(
       bool IsImplicit = CaptureBits.getNextBit();
       auto Kind =
           static_cast<LambdaCaptureKind>(CaptureBits.getNextBits(/*Width=*/3));
+      bool AcrossContract = CaptureBits.getNextBit();
       switch (Kind) {
       case LCK_StarThis:
       case LCK_This:
@@ -2128,6 +2130,9 @@ void ASTDeclReader::ReadCXXDefinitionData(
         new (ToCapture) Capture(Loc, IsImplicit, Kind, Var, EllipsisLoc);
         break;
       }
+      if (AcrossContract)
+        ToCapture->setCapturedAcrossContract(true);
+      ToCapture++;
     }
   }
 }

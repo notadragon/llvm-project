@@ -47,6 +47,7 @@ class LambdaCapture {
   // - or, is a nullptr and Capture_This is not set in Bits if this represents
   //   a capture of a VLA type.
   llvm::PointerIntPair<Decl*, 3> DeclAndBits;
+  bool CapturedAcrossContract = false;
 
   SourceLocation Loc;
   SourceLocation EllipsisLoc;
@@ -134,6 +135,9 @@ public:
     assert(isPackExpansion() && "No ellipsis location for a non-expansion");
     return EllipsisLoc;
   }
+
+  bool isCapturedAcrossContract() const { return CapturedAcrossContract; }
+  void setCapturedAcrossContract(bool Value) { CapturedAcrossContract = Value; }
 };
 
 } // end namespace clang
