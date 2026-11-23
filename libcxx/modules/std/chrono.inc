@@ -304,3 +304,12 @@ export namespace std::inline literals::inline chrono_literals {
   // [using std::literals::chrono_literals::.cal.year.nonmembers], non-member functions
   using std::literals::chrono_literals::operator""y;
 } // namespace std::inline literals::inline chrono_literals
+
+// The using-directive <chrono> declares in std::chrono ([time.syn]), so that
+// `using namespace std::chrono;` finds the duration literals after
+// `import std;` as it does after `#include <chrono>`.  A using-directive is
+// not a declaration, so a sweep over the header's declarations does not list
+// it.  std.compat re-exports std, and with it this directive.
+export namespace std::chrono {
+  using namespace literals::chrono_literals;
+} // namespace std::chrono

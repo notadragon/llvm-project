@@ -4164,7 +4164,11 @@ llvm::Constant *CodeGenFunction::EmitCheckSourceLocation(SourceLocation Loc) {
 
   PresumedLoc PLoc = getContext().getSourceManager().getPresumedLoc(Loc);
   if (PLoc.isValid()) {
-    StringRef FilenameString = PLoc.getFilename();
+    // The filename is remapped as __FILE__ is (-fmacro-prefix-map, which
+    // -ffile-prefix-map implies), then stripped.
+    SmallString<256> FilenameBuf(PLoc.getFilename());
+    getLangOpts().remapPathPrefix(FilenameBuf);
+    StringRef FilenameString = FilenameBuf;
 
     int PathComponentsToStrip =
         CGM.getCodeGenOpts().EmitCheckPathComponentsToStrip;

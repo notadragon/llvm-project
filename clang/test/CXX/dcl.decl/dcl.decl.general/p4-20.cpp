@@ -20,6 +20,14 @@ void (*pf)()
 // expected-error@+1{{trailing requires clause can only be used when declaring a function}}
 void g(int (*)() requires true);
 
+// A typedef of a function type declares no function.
+// expected-error@+1{{trailing requires clause can only be used when declaring a function}}
+typedef int F(int) requires true;
+template <typename T> struct TD {
+  // expected-error@+1{{trailing requires clause can only be used when declaring a function}}
+  typedef void G() requires true;
+};
+
 // expected-error@+1{{expected expression}}
 auto *p = new void(*)(char)
   requires true;
