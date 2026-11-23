@@ -1,0 +1,4 @@
+[
+  {"match": {"kind": "pre"}, "output": {"semantic": "prove"}},
+  {"match": {}, "output": {"semantic": "diagnose"}}
+]

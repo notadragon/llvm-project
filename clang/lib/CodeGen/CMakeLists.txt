@@ -110,6 +110,7 @@ add_clang_library(clangCodeGen
   CodeGenTBAA.cpp
   CodeGenTypes.cpp
   ConstantInitBuilder.cpp
+  ContractProve.cpp
   CoverageMappingGen.cpp
   ItaniumCXXABI.cpp
   HLSLBufferLayoutBuilder.cpp
