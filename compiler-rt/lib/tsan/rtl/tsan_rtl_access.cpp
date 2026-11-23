@@ -164,6 +164,7 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
   if (typ & kAccessSlotLocked)
     SlotUnlock(thr);
   ReportRace(thr, shadow_mem, cur, Shadow(old), typ);
+  FlushPendingContractReport();
   if (typ & kAccessSlotLocked)
     SlotLock(thr);
 }
