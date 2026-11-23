@@ -100,7 +100,7 @@ struct DlsymAlloc : public DlSymAllocator<DlsymAlloc> {
       ReportUMRInsideAddressRange(__func__, x, n, __offset);      \
       __msan::PrintWarningWithOrigin(                             \
           pc, bp, __msan_get_origin((const char *)x + __offset)); \
-      if (__msan::flags()->halt_on_error) {                       \
+      if (__msan::MsanHaltOnError()) {                            \
         Printf("Exiting\n");                                      \
         Die();                                                    \
       }                                                           \
