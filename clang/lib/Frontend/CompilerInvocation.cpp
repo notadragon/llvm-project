@@ -3872,6 +3872,12 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
   if (Opts.Contracts && Opts.CPlusPlus26 && !Opts.ContractsP4451)
     GenerateArg(Consumer, OPT_fno_contracts_p4451);
 
+  // C++29 with contracts on enables P3097 likewise (recorded once when
+  // -fcontracts-p3850 is on too).
+  if (Opts.Contracts && Opts.CPlusPlus29 && !Opts.ContractsP3850 &&
+      !Opts.ContractsP3097)
+    GenerateArg(Consumer, OPT_fno_contracts_p3097);
+
   // -fcontracts-p4405 enables each P4405 proving strategy from its proof
   // optimization level up, unless given explicitly; record the resolved
   // level, and each strategy whose state is not the level's.
@@ -4937,6 +4943,14 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
   if (Opts.Contracts && Opts.CPlusPlus26)
     Opts.ContractsP4451 =
         Args.hasFlag(OPT_fcontracts_p4451, OPT_fno_contracts_p4451, true);
+  // C++29 adds P3097: with contracts on, -std=c++2d and every later standard
+  // imply -fcontracts-p3097 unless -fno-contracts-p3097 turns it off
+  // (notadragon_wg21 DECISIONS.md E222 (2)), again from the language mode
+  // alone.
+  if (Opts.Contracts && Opts.CPlusPlus29)
+    Opts.ContractsP3097 =
+        Args.hasFlag(OPT_fcontracts_p3097, OPT_fno_contracts_p3097, true);
+
   // -fcontracts-p4405 (so also -fcontracts-p3850) implies the P4405 proving
   // strategy flags from their proof optimization level up (DECISIONS.md
   // E162-E168, E205): folding from 0, the proof shadow and assume from 1,

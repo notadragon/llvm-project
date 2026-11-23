@@ -775,6 +775,10 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     // The greatest value any enabled paper gives __cpp_contracts, P2900's
     // 202502L when none raises it.
     long CppContracts = 202502L;
+    // P3097's value is 202612L (notadragon_wg21 DECISIONS.md E222 (3)); there
+    // is no P3097-only macro, so a client compares __cpp_contracts >= 202612L.
+    if (LangOpts.ContractsP3097)
+      CppContracts = std::max(CppContracts, 202612L);
     // P4451R2's wording gives P4451's value as 202611L, which is used as is.
     if (LangOpts.ContractsP4451)
       CppContracts = std::max(CppContracts, 202611L);

@@ -4,6 +4,14 @@
 // RUN: %clang_cc1 -std=c++26 -fcontracts -triple x86_64-unknown-linux-gnu \
 // RUN:   -fcxx-exceptions -fexceptions -O2 -disable-llvm-passes -emit-llvm \
 // RUN:   -o - %s | FileCheck %s
+// RUN: %clang_cc1 -std=c++26 -fcontracts -fcontracts-p3097 -DP3097 \
+// RUN:   -triple x86_64-unknown-linux-gnu -fcxx-exceptions -fexceptions \
+// RUN:   -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,P3097
+// RUN: %clang_cc1 -std=c++26 -fcontracts -fcontracts-p3097 -DP3097 \
+// RUN:   -triple x86_64-unknown-linux-gnu -fcxx-exceptions -fexceptions \
+// RUN:   -O2 -disable-llvm-passes -emit-llvm -o - %s \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,P3097
+
 // A postcondition on a function whose body never returns -- an infinite
 // loop, a throw, a [[noreturn]] call, __builtin_unreachable -- is never
 // evaluated: nothing reaches the return block.  Its checks used to be
@@ -159,6 +167,17 @@ int assert_loop(int x) post(true) { while (true) { contract_assert(x > 0); } }
 // CHECK: ret i32
 // CHECK-NEXT: }
 int one_path(bool b) post(r: r > 0) { if (b) return 1; throw 2; }
+
+// A virtual function's own postcondition, under P3097.
+#ifdef P3097
+struct B { virtual int v() post(true); };
+// P3097-LABEL: define {{.*}}i32 @_ZN1B1vEv(
+// P3097-NOT: contract
+// P3097: while.body:
+// P3097-NEXT: br label %while.body
+// P3097-NEXT: }
+int B::v() post(true) { while (true) {} }
+#endif
 
 // A lambda's call operator, emitted after its user.
 // CHECK-LABEL: define {{.*}}i32 @_Z11call_lambdav()

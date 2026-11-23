@@ -13379,6 +13379,10 @@ def err_contract_terminating_specifier : Error<
 def note_contract_terminating_declared_by : Note<
   "no declaration of 'std::contracts::controls::enforced' precedes it; "
   "'<contracts>' declares it">;
+// P3097 virtual function contracts diagnostics
+def err_contracts_on_virtual_require_flag : Error<
+  "contracts on virtual functions require '-fcontracts-p3097'">;
+
 def err_contract_member_access_without_object : Error<
   "cannot access non-static member %0 in the "
   "%select{precondition of a constructor|postcondition of a destructor|"
