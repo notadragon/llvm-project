@@ -214,6 +214,9 @@ bool takeContractDiagnostic(const ContractProofQuery &Q, ContractProofResult R,
                             ArrayRef<ContractNestedEvaluation> Nested,
                             const LangOptions &LangOpts);
 
+/// -fcontracts-prove-fold (ContractProveFold.cpp).
+extern const ContractProofStrategy ContractProveFoldStrategy;
+
 } // namespace CodeGen
 } // namespace clang
 
