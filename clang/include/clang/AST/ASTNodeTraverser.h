@@ -560,6 +560,9 @@ public:
     if (const AssociatedConstraint &TRC = D->getTrailingRequiresClause())
       Visit(TRC.ConstraintExpr);
 
+    if (const ContractSpecifierDecl *CSD = D->getContracts())
+      Visit(CSD);
+
     if (Traversal == TK_IgnoreUnlessSpelledInSource && D->isDefaulted())
       return;
 
@@ -760,6 +763,11 @@ public:
   void VisitConceptDecl(const ConceptDecl *D) {
     dumpTemplateParameters(D->getTemplateParameters());
     Visit(D->getConstraintExpr());
+  }
+
+  void VisitContractSpecifierDecl(const ContractSpecifierDecl *CSD) {
+    for (auto *CS : CSD->contracts())
+      Visit(CS);
   }
 
   void VisitImplicitConceptSpecializationDecl(

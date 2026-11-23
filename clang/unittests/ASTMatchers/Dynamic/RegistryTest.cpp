@@ -142,6 +142,36 @@ TEST_F(RegistryTest, CanConstructNoArgs) {
   EXPECT_FALSE(matches(BoolSnippet, IsArrowValue));
 }
 
+TEST_F(RegistryTest, ContractMatchers) {
+  for (StringRef Name :
+       {"contractStmt", "contractSpecifierDecl", "resultNameDecl",
+        "postconditionCaptureDecl", "hasContractSpecifier", "hasAnyContract", "hasResultName",
+        "forEachContract", "isPrecondition", "isPostcondition",
+        "isContractAssert", "hasFunctionContracts"})
+    EXPECT_TRUE(lookupMatcherCtor(Name).has_value()) << Name.str();
+
+  Matcher<Decl> Value =
+      constructMatcher("functionDecl", constructMatcher("hasFunctionContracts"))
+          .getTypedMatcher<Decl>();
+  EXPECT_TRUE(matchesConditionally("void f(int x) pre(x > 0);", Value,
+                                   /*ExpectMatch=*/true,
+                                   {"-std=c++26", "-fcontracts"}));
+  EXPECT_TRUE(matchesConditionally("void f(int x);", Value,
+                                   /*ExpectMatch=*/false,
+                                   {"-std=c++26", "-fcontracts"}));
+
+  Matcher<Decl> Capture =
+      constructMatcher("postconditionCaptureDecl",
+                       constructMatcher("hasName", StringRef("old")))
+          .getTypedMatcher<Decl>();
+  EXPECT_TRUE(matchesConditionally(
+      "int f(int x) post [old = x] (r : r > old);", Capture,
+      /*ExpectMatch=*/true, {"-std=c++26", "-fcontracts", "-fcontracts-p3098"}));
+  EXPECT_TRUE(matchesConditionally(
+      "int f(const int old) post (r : r > old);", Capture,
+      /*ExpectMatch=*/false, {"-std=c++26", "-fcontracts", "-fcontracts-p3098"}));
+}
+
 TEST_F(RegistryTest, ConstructWithSimpleArgs) {
   Matcher<Decl> Value = constructMatcher(
       "namedDecl", constructMatcher("hasName", StringRef("X")))
