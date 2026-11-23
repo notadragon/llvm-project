@@ -22,6 +22,10 @@
 // RUN: %clangxx %libcxx_flags -std=c++26 -fcontract-evaluation-semantic=ignore \
 // RUN:   -DON -S -emit-llvm -o - %s | FileCheck --check-prefix=IR %s
 //
+// RUN: not %{cc} -std=c++26 -fcontracts-p3400 -fno-contracts-p4451 2>&1 \
+// RUN:   | FileCheck --check-prefix=ERR %s
+// ERR: error: '-fno-contracts-p4451' cannot be combined with '-fcontracts-p3400', which subsumes P4451
+//
 // REQUIRES: contracts-libcxx
 
 // P4451R2 is part of C++26 (notadragon_wg21 DECISIONS.md E220 (2)):

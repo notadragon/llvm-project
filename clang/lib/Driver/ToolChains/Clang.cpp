@@ -5256,6 +5256,211 @@ static void ProcessVSRuntimeLibrary(const ToolChain &TC, const ArgList &Args,
     CmdArgs.push_back("--dependent-lib=softintrin");
 }
 
+/// Render the options that configure contract evaluation, which C++ contracts
+/// and P4299's C contracts share.
+static void RenderContractConfigurationArgs(const ArgList &Args,
+                                            ArgStringList &CmdArgs) {
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_evaluation_semantic_EQ);
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_analysis_semantic_EQ);
+  for (const Arg *A :
+       Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                     options::OPT_fcontract_configuration_EQ,
+                     options::OPT_fcontract_configuration_file_EQ)) {
+    A->claim();
+    A->render(Args, CmdArgs);
+  }
+}
+
+// The contracts option rule (notadragon_wg21 DECISIONS.md E175-E178),
+// decided from the final option values and diagnosed here, where the options
+// are still visible: the driver forwards only the resolved set to -cc1.
+//
+// In C++ every per-paper option turns -fcontracts on (tools::
+// wantsCxxContracts), and one left on is an error when contracts end up off,
+// which only an explicit, final -fno-contracts does; a negative per-paper
+// option is always allowed.  In C, -fcontracts-p3100, -fcontracts-p4298,
+// -fcontracts-p4405 and the umbrella -fcontracts-p3850, which implies the
+// first three there, relate to -fcontracts-p4299 in the same way (tools::
+// wantsCContracts; notadragon_wg21 DECISIONS.md E179 (1)); the C++-only
+// options -- the per-paper ones (E179 (3)), -fcontracts itself and the
+// non-paper ones (E183 (1)) -- are not valid for C and say so, as GCC does,
+// in either form.  P4451 is on when it is given, or when P3400 or P3850 is
+// on; P3400 subsumes it, so an explicit -fno-contracts-p4451 may turn off only
+// what -fcontracts-p3850 adds, and with P3400 on it is an error.
+//
+// The contracts options that mean nothing when contracts end up off, and the
+// P4405 sub-options given positively when P4405 ends up off, have no effect;
+// say so, and claim them so that they are not also reported as unused.  A
+// negative form asks for nothing and is claimed silently; a joined option
+// warns for any value, its default included.  -fcontract-violation-information=
+// is not among them: the libraries' violation records follow it whatever the
+// contracts options.
+static void handleContractsOptionRule(const Driver &D, const ArgList &Args,
+                                      types::ID InputType) {
+  const bool IsCXX = types::isCXX(InputType);
+  struct PaperOption {
+    options::ID Pos, Neg;
+  };
+  static const PaperOption CxxPapers[] = {
+      {options::OPT_fcontracts_p3097, options::OPT_fno_contracts_p3097},
+      {options::OPT_fcontracts_p3098, options::OPT_fno_contracts_p3098},
+      {options::OPT_fcontracts_p3099, options::OPT_fno_contracts_p3099},
+      {options::OPT_fcontracts_p3100, options::OPT_fno_contracts_p3100},
+      {options::OPT_fcontracts_p3290, options::OPT_fno_contracts_p3290},
+      {options::OPT_fcontracts_p3400, options::OPT_fno_contracts_p3400},
+      {options::OPT_fcontracts_p3850, options::OPT_fno_contracts_p3850},
+      {options::OPT_fcontracts_p4283, options::OPT_fno_contracts_p4283},
+      {options::OPT_fcontracts_p4298, options::OPT_fno_contracts_p4298},
+      {options::OPT_fcontracts_p4301, options::OPT_fno_contracts_p4301},
+      {options::OPT_fcontracts_p4405, options::OPT_fno_contracts_p4405},
+      {options::OPT_fcontracts_p4451, options::OPT_fno_contracts_p4451},
+  };
+  static const PaperOption CPapers[] = {
+      {options::OPT_fcontracts_p3100, options::OPT_fno_contracts_p3100},
+      {options::OPT_fcontracts_p3850, options::OPT_fno_contracts_p3850},
+      {options::OPT_fcontracts_p4298, options::OPT_fno_contracts_p4298},
+      {options::OPT_fcontracts_p4405, options::OPT_fno_contracts_p4405},
+  };
+  // The contracts options with no C meaning: -fcontracts itself, every
+  // per-paper option in CxxPapers but those in CPapers, and the C++-only
+  // non-paper options (notadragon_wg21 DECISIONS.md E183 (1)).
+  static const options::ID CxxOnlyOptions[] = {
+      options::OPT_fcontracts, options::OPT_fno_contracts,
+      options::OPT_fcontracts_p3097, options::OPT_fno_contracts_p3097,
+      options::OPT_fcontracts_p3098, options::OPT_fno_contracts_p3098,
+      options::OPT_fcontracts_p3099, options::OPT_fno_contracts_p3099,
+      options::OPT_fcontracts_p3290, options::OPT_fno_contracts_p3290,
+      options::OPT_fcontracts_p3400, options::OPT_fno_contracts_p3400,
+      options::OPT_fcontracts_p4283, options::OPT_fno_contracts_p4283,
+      options::OPT_fcontracts_p4301, options::OPT_fno_contracts_p4301,
+      options::OPT_fcontracts_p4451, options::OPT_fno_contracts_p4451,
+      options::OPT_fcontract_bypass_rethrowing_local_handler,
+      options::OPT_fno_contract_bypass_rethrowing_local_handler,
+      options::OPT_fcontract_analysis_skip_dead_calls,
+      options::OPT_fno_contract_analysis_skip_dead_calls,
+  };
+  // The last of the pair if it is the positive option, else null.
+  auto PositiveArg = [&](options::ID Pos, options::ID Neg) -> const Arg * {
+    const Arg *A = Args.getLastArg(Pos, Neg);
+    return A && A->getOption().matches(Pos) ? A : nullptr;
+  };
+
+  bool ContractsOn;
+  StringRef ContractsName;
+  if (IsCXX) {
+    ContractsOn = tools::wantsCxxContracts(Args);
+    ContractsName = "-fcontracts";
+    if (!ContractsOn) {
+      // Only an explicit, final -fno-contracts turns contracts off with a
+      // per-paper option on.  One left on only by -fcontracts-p3850 (or P4451
+      // by P3400) is diagnosed through the option that implied it.
+      for (const PaperOption &P : CxxPapers)
+        if (const Arg *A = PositiveArg(P.Pos, P.Neg))
+          D.Diag(diag::err_drv_contracts_paper_option_contracts_off)
+              << A->getSpelling() << "-fno-contracts";
+    } else {
+      const bool P3850 = Args.hasFlag(options::OPT_fcontracts_p3850,
+                                      options::OPT_fno_contracts_p3850, false);
+      const Arg *P3400Arg = Args.getLastArg(options::OPT_fcontracts_p3400,
+                                            options::OPT_fno_contracts_p3400);
+      const bool P3400 =
+          P3400Arg ? P3400Arg->getOption().matches(options::OPT_fcontracts_p3400)
+                   : P3850;
+      const Arg *P4451Arg = Args.getLastArg(options::OPT_fcontracts_p4451,
+                                            options::OPT_fno_contracts_p4451);
+      if (P3400 && P4451Arg &&
+          P4451Arg->getOption().matches(options::OPT_fno_contracts_p4451))
+        D.Diag(diag::err_drv_contracts_no_p4451_with_p3400)
+            << (P3400Arg ? 0 : 1);
+    }
+  } else {
+    for (const Arg *A : Args)
+      if (llvm::is_contained(CxxOnlyOptions, A->getOption().getID())) {
+        A->claim();
+        D.Diag(diag::warn_drv_contracts_option_cxx_only)
+            << A->getSpelling() << (types::isObjC(InputType) ? 1 : 0);
+      }
+    ContractsOn = tools::wantsCContracts(Args);
+    ContractsName = "-fcontracts-p4299";
+    if (!ContractsOn)
+      for (const PaperOption &P : CPapers)
+        if (const Arg *A = PositiveArg(P.Pos, P.Neg))
+          D.Diag(diag::err_drv_contracts_paper_option_contracts_off)
+              << A->getSpelling() << "-fno-contracts-p4299";
+  }
+
+  struct DependentOption {
+    options::ID Pos, Neg; // Neg is OPT_INVALID for a joined option.
+    bool CxxOnly;         // Reported as C++-only above on a C input.
+  };
+  static const DependentOption Dependent[] = {
+      {options::OPT_fcontracts_allow_assume,
+       options::OPT_fno_contracts_allow_assume, false},
+      {options::OPT_fcontract_evaluation_semantic_EQ, options::OPT_INVALID,
+       false},
+      {options::OPT_fcontract_analysis_semantic_EQ, options::OPT_INVALID,
+       false},
+      {options::OPT_fcontract_bypass_rethrowing_local_handler,
+       options::OPT_fno_contract_bypass_rethrowing_local_handler, true},
+  };
+  static const DependentOption P4405Dependent[] = {
+      {options::OPT_fcontracts_prove_fold,
+       options::OPT_fno_contracts_prove_fold, false},
+      {options::OPT_fcontracts_prove_shadow,
+       options::OPT_fno_contracts_prove_shadow, false},
+      {options::OPT_fcontracts_prove_override,
+       options::OPT_fno_contracts_prove_override, false},
+      {options::OPT_fcontracts_prove_callee_premises,
+       options::OPT_fno_contracts_prove_callee_premises, false},
+      {options::OPT_fcontracts_prove_assume,
+       options::OPT_fno_contracts_prove_assume, false},
+      {options::OPT_fcontracts_prove_optimize_EQ, options::OPT_INVALID, false},
+      {options::OPT_fcontract_analysis_skip_dead_calls,
+       options::OPT_fno_contract_analysis_skip_dead_calls, true},
+  };
+  // Warn for the option if it ends up given positively (a joined option:
+  // given at all) and claim it either way.
+  auto WarnNoEffect = [&](const DependentOption &O, StringRef Without) {
+    if (O.CxxOnly && !IsCXX)
+      return;
+    const Arg *A = O.Neg == options::OPT_INVALID ? Args.getLastArg(O.Pos)
+                                                 : PositiveArg(O.Pos, O.Neg);
+    if (!A)
+      return;
+    // A joined option is named without its argument.
+    D.Diag(diag::warn_drv_contracts_option_no_effect)
+        << A->getOption().getPrefixedName() << Without;
+  };
+  if (!ContractsOn) {
+    for (const DependentOption &O : Dependent)
+      WarnNoEffect(O, ContractsName);
+    bool AnyConfiguration = false;
+    for (const Arg *A :
+         Args.filtered(options::OPT_fcontract_group_evaluation_semantic_EQ,
+                       options::OPT_fcontract_configuration_EQ,
+                       options::OPT_fcontract_configuration_file_EQ)) {
+      A->claim();
+      AnyConfiguration = true;
+    }
+    if (AnyConfiguration)
+      D.Diag(diag::warn_drv_contract_configuration_no_effect) << ContractsName;
+  }
+  const bool P4405 =
+      ContractsOn &&
+      tools::hasContractsPaperFlag(Args, options::OPT_fcontracts_p4405,
+                                   options::OPT_fno_contracts_p4405);
+  if (!P4405)
+    for (const DependentOption &O : P4405Dependent)
+      WarnNoEffect(O, "-fcontracts-p4405");
+  // D4405: the proof optimization level is 0, 1, 2, 3 or follow, whether or
+  // not it has an effect.
+  for (const Arg *A : Args.filtered(options::OPT_fcontracts_prove_optimize_EQ))
+    if (!llvm::is_contained({"0", "1", "2", "3", "follow"},
+                            StringRef(A->getValue())))
+      D.Diag(diag::err_drv_invalid_value_with_suggestion)
+          << A->getSpelling() << A->getValue() << "0 1 2 3 follow";
+}
+
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                          const InputInfo &Output, const InputInfoList &Inputs,
                          const ArgList &Args, const char *LinkingOutput) const {
@@ -8043,6 +8248,123 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fno-aligned-allocation");
     else
       CmdArgs.push_back("-faligned-allocation");
+  }
+
+  // Contracts (C++26).  -fcontracts is enabled by the base flag, by C++26 mode,
+  // or by any per-paper C++ contracts sub-flag; an explicit -fno-contracts
+  // suppresses it.  tools::wantsCxxContracts is the single predicate shared
+  // with the link decision in Gnu.cpp so the two never disagree.
+  //
+  // On a C input the option rule reports and drops the C++-only options,
+  // -fcontracts itself among them (C contracts are -fcontracts-p4299), and
+  // the C per-paper options turn C contracts on.
+  handleContractsOptionRule(D, Args, InputType);
+  const bool RenderCxxContracts =
+      types::isCXX(InputType) && tools::wantsCxxContracts(Args);
+  if (RenderCxxContracts) {
+    CmdArgs.push_back("-fcontracts");
+    RenderContractConfigurationArgs(Args, CmdArgs);
+
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3097,
+                    options::OPT_fno_contracts_p3097);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3098,
+                    options::OPT_fno_contracts_p3098);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3099,
+                    options::OPT_fno_contracts_p3099);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3290,
+                    options::OPT_fno_contracts_p3290);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3400,
+                    options::OPT_fno_contracts_p3400);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4283,
+                    options::OPT_fno_contracts_p4283);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4451,
+                    options::OPT_fno_contracts_p4451);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3850,
+                    options::OPT_fno_contracts_p3850);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p3100,
+                    options::OPT_fno_contracts_p3100);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4298,
+                    options::OPT_fno_contracts_p4298);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4301,
+                    options::OPT_fno_contracts_p4301);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_p4405,
+                    options::OPT_fno_contracts_p4405);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_fold,
+                    options::OPT_fno_contracts_prove_fold);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_shadow,
+                    options::OPT_fno_contracts_prove_shadow);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_assume,
+                    options::OPT_fno_contracts_prove_assume);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_override,
+                    options::OPT_fno_contracts_prove_override);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_callee_premises,
+                    options::OPT_fno_contracts_prove_callee_premises);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_optimize_EQ);
+    Args.AddLastArg(CmdArgs, options::OPT_fcontract_analysis_skip_dead_calls,
+                    options::OPT_fno_contract_analysis_skip_dead_calls);
+    Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
+                      options::OPT_fno_contracts_allow_assume);
+    Args.addOptOutFlag(
+        CmdArgs, options::OPT_fcontract_bypass_rethrowing_local_handler,
+        options::OPT_fno_contract_bypass_rethrowing_local_handler);
+  } else if (types::isCXX(InputType) &&
+             Args.hasArg(options::OPT_fno_contracts)) {
+    // Explicitly disabled (e.g. -std=c++26 -fno-contracts): tell -cc1.
+    CmdArgs.push_back("-fno-contracts");
+  }
+
+  // P4299: C contracts support.  In C, -fcontracts-p3100, -fcontracts-p4298,
+  // -fcontracts-p4405 and -fcontracts-p3850 turn it on (tools::
+  // wantsCContracts); in C++ only -fcontracts-p4299 itself does, a spelling
+  // modifier outside the option rule.  The configuration options are rendered
+  // here only when the C++ contracts block above has not already done so.
+  const bool RenderCContracts =
+      types::isCXX(InputType)
+          ? Args.hasFlag(options::OPT_fcontracts_p4299,
+                         options::OPT_fno_contracts_p4299, false)
+          : tools::wantsCContracts(Args);
+  if (RenderCContracts) {
+    CmdArgs.push_back("-fcontracts-p4299");
+    if (!RenderCxxContracts) {
+      RenderContractConfigurationArgs(Args, CmdArgs);
+      Args.addOptInFlag(CmdArgs, options::OPT_fcontracts_allow_assume,
+                        options::OPT_fno_contracts_allow_assume);
+      // The C per-paper options, which the C++ block renders when it runs,
+      // as resolved here: -fcontracts-p3850 implies them in C, unless one is
+      // explicitly disabled, and is not itself a C option of -cc1.
+      // P4405's prove and diagnose are supported in C too.
+      struct CPaperOption {
+        options::ID Pos, Neg;
+        const char *Spelling;
+      };
+      static const CPaperOption CPapers[] = {
+          {options::OPT_fcontracts_p3100, options::OPT_fno_contracts_p3100,
+           "-fcontracts-p3100"},
+          {options::OPT_fcontracts_p4298, options::OPT_fno_contracts_p4298,
+           "-fcontracts-p4298"},
+          {options::OPT_fcontracts_p4405, options::OPT_fno_contracts_p4405,
+           "-fcontracts-p4405"},
+      };
+      for (const CPaperOption &P : CPapers) {
+        Args.ClaimAllArgs(P.Pos);
+        Args.ClaimAllArgs(P.Neg);
+        if (tools::hasContractsPaperFlag(Args, P.Pos, P.Neg))
+          CmdArgs.push_back(P.Spelling);
+      }
+      Args.ClaimAllArgs(options::OPT_fcontracts_p3850);
+      Args.ClaimAllArgs(options::OPT_fno_contracts_p3850);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_fold,
+                      options::OPT_fno_contracts_prove_fold);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_shadow,
+                      options::OPT_fno_contracts_prove_shadow);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_assume,
+                      options::OPT_fno_contracts_prove_assume);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_override,
+                      options::OPT_fno_contracts_prove_override);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_callee_premises,
+                      options::OPT_fno_contracts_prove_callee_premises);
+      Args.AddLastArg(CmdArgs, options::OPT_fcontracts_prove_optimize_EQ);
+    }
   }
 
   // The default new alignment can be specified using a dedicated option or via
