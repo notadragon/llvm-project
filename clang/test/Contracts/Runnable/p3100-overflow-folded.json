@@ -1,0 +1,1 @@
+[{"match": {"kind": "implicit", "group": "ub:expr.expr.eval.signed.integer"}, "output": {"semantic": "noexcept_observe"}}]

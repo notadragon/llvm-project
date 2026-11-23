@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common.h"
+#include "sanitizer_contract_routing.h"
 #include "sanitizer_libc.h"
 
 namespace __sanitizer {
@@ -91,9 +92,53 @@ void NORETURN CheckFailed(const char *file, int line, const char *cond,
 
 using namespace __sanitizer;
 
+// P3100: runtime guardrail for the shared death-callback setter.
+//
+// __sanitizer_set_death_callback lives in sanitizer_common (shared by every
+// sanitizer), and each routing runtime conveys its state through a descriptor
+// of its own: ASan, TSan and MSan a scalar (__asan_contract_semantic,
+// __tsan_contract_semantic, __msan_contract_semantic; wire 1 = observe,
+// 2 = enforce; absent / 0 = stock), UBSan a per-check table only its runtime
+// can size, read through __ubsan_contract_routing_active.  Every reference is
+// weak and introduces no dependency on the runtime it names: when a runtime is
+// not linked -- or routing is off, whether via the
+// -fsanitize-noncontract-callbacks opt-out or a non-p3100 program -- its
+// descriptor is absent (or 0) and this guard is a no-op, so stock behavior is
+// byte-for-byte unchanged.  When routing IS active, installing a death callback
+// would let the program interpose on the terminate path that contract
+// enforcement drives, so we refuse with a fatal error naming the opt-out.
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __asan_contract_semantic;
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __tsan_contract_semantic;
+extern "C" SANITIZER_WEAK_ATTRIBUTE unsigned char __msan_contract_semantic;
+extern "C" SANITIZER_WEAK_ATTRIBUTE bool __ubsan_contract_routing_active();
+
+static bool ContractRoutingActive() {
+  auto Routed = [](unsigned char route) {
+    return route == kContractRouteObserve || route == kContractRouteEnforce;
+  };
+  if (&__asan_contract_semantic != nullptr &&
+      Routed(__asan_contract_semantic))
+    return true;
+  if (&__tsan_contract_semantic != nullptr &&
+      Routed(__tsan_contract_semantic))
+    return true;
+  if (&__msan_contract_semantic != nullptr &&
+      Routed(__msan_contract_semantic))
+    return true;
+  return &__ubsan_contract_routing_active != nullptr &&
+         __ubsan_contract_routing_active();
+}
+
 extern "C" {
 SANITIZER_INTERFACE_ATTRIBUTE
 void __sanitizer_set_death_callback(void (*callback)(void)) {
+  if (ContractRoutingActive()) {
+    Report(
+        "ERROR: stock death callbacks are disabled under contract routing "
+        "(-fcontracts-p3100); rebuild with -fsanitize-noncontract-callbacks "
+        "to use them\n");
+    Die();
+  }
   SetUserDieCallback(callback);
 }
 }  // extern "C"
